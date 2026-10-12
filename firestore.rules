@@ -2,6 +2,9 @@ rules_version = '2';
 
 // アクセス制御の本体。画面側（app.js）で隠すだけでは、通信を覗けば中身が見えてしまう。
 // 「誰が何を読めるか」はすべてここで判定する。
+//
+// チーム表（teamSets）は複数持てる。発表はチーム表ごとで、発表すると
+// そのチーム表の teams / memberships の published が true になる（管理者画面がまとめて書き換える）。
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -20,12 +23,11 @@ service cloud.firestore {
       return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
     }
 
-    function teamsPublished() {
-      return get(/databases/$(database)/documents/config/app).data.get('teamsPublished', false) == true;
-    }
-
-    function myTeam() {
-      return get(/databases/$(database)/documents/assignments/$(request.auth.uid)).data.teamId;
+    // 自分が teamId のチームに所属していて、そのチーム表が発表済みか
+    // （所属は memberships/{teamId}_{uid} というIDのドキュメントで表す）
+    function inPublishedTeam(teamId) {
+      return teamId is string
+        && get(/databases/$(database)/documents/memberships/$(teamId + '_' + request.auth.uid)).data.published == true;
     }
 
     function validAnnouncement(d) {
@@ -59,34 +61,49 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // チーム編成は「発表」するまで参加者には見えない
+    // チーム表・チーム・所属は、そのチーム表が発表されるまで参加者には見えない
+    match /teamSets/{setId} {
+      allow read: if isAdmin() || (isMember() && resource.data.published == true);
+      allow write: if isAdmin();
+    }
+
     match /teams/{teamId} {
-      allow read: if isAdmin() || (isMember() && teamsPublished());
-      allow write: if isAdmin();
+      allow read: if isAdmin() || (isMember() && resource.data.published == true);
+      allow write: if isAdmin()
+        && (request.resource == null || (request.resource.data.setId is string && request.resource.data.published is bool));
     }
 
+    match /memberships/{id} {
+      allow read: if isAdmin() || (isMember() && resource.data.published == true);
+      allow write: if isAdmin()
+        && (request.resource == null || (
+          id == request.resource.data.teamId + '_' + request.resource.data.uid
+          && request.resource.data.setId is string
+          && request.resource.data.published is bool));
+    }
+
+    // 旧版（チーム表が1つだけだった頃）のデータ。管理者画面が新形式へ移したあと削除する
     match /assignments/{uid} {
-      allow read: if isAdmin() || (isMember() && teamsPublished());
-      allow write: if isAdmin();
+      allow read, write: if isAdmin();
     }
 
-    // scope: 'all' = 全員 / 'team' = target のチームだけ / 'user' = target 本人だけ
+    // scope: 'all' = 全員 / 'team' = target のチームのメンバーだけ / 'user' = target 本人だけ
     match /announcements/{id} {
       allow read: if isAdmin() || (isMember() && (
            resource.data.scope == 'all'
         || (resource.data.scope == 'user' && resource.data.target == request.auth.uid)
-        || (resource.data.scope == 'team' && teamsPublished() && resource.data.target == myTeam())
+        || (resource.data.scope == 'team' && inPublishedTeam(resource.data.target))
       ));
       allow create, update: if isAdmin() && validAnnouncement(request.resource.data);
       allow delete: if isAdmin();
     }
 
-    // visibility: 'public' = 全員 / 'team' = teamId のチームだけ / 'private' = target 本人だけ
+    // visibility: 'public' = 全員 / 'team' = teamId のチームのメンバーだけ / 'private' = target 本人だけ
     match /pointLogs/{id} {
       allow read: if isAdmin() || (isMember() && (
            resource.data.visibility == 'public'
         || (resource.data.visibility == 'private' && resource.data.target == request.auth.uid)
-        || (resource.data.visibility == 'team' && teamsPublished() && resource.data.teamId == myTeam())
+        || (resource.data.visibility == 'team' && inPublishedTeam(resource.data.teamId))
       ));
       allow create, update: if isAdmin() && validPointLog(request.resource.data);
       allow delete: if isAdmin();

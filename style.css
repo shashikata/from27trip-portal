@@ -385,3 +385,122 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ---------- チーム表の切り替え ---------- */
+.set-bar {
+  display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px 20px; padding: 2px 16px 4px;
+  scrollbar-width: none;
+}
+.set-bar::-webkit-scrollbar { display: none; }
+.set-bar button {
+  flex: none; display: inline-flex; align-items: center; gap: 4px;
+  border: none; border-radius: 999px; padding: 7px 14px; min-height: 34px;
+  background: var(--cell); font-size: 15px; font-weight: 500; white-space: nowrap;
+}
+.set-bar button .icon { width: 15px; height: 15px; color: var(--label-2); }
+.set-bar button[aria-selected=true] { background: var(--label); color: var(--bg); }
+.set-bar button[aria-selected=true] .icon { color: inherit; }
+.set-bar button.add { background: transparent; color: var(--blue); }
+.set-bar button.add .icon { color: var(--blue); }
+
+.team-label.strong { font-weight: 600; }
+.team-cell.me { background: color-mix(in srgb, var(--blue) 8%, transparent); }
+.team-cell .cell-sub { margin-top: 3px; line-height: 1.5; }
+.you { font-size: 13px; font-weight: 600; margin-left: 8px; }
+.member-row .cell-sub .team-label .dot { width: 8px; height: 8px; margin-right: 4px; }
+
+/* ---------- PC：1画面のダッシュボード ---------- */
+.desk { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.desk-bar {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  height: 56px; padding: 0 20px;
+  background: var(--bar); border-bottom: .5px solid var(--separator);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+}
+.desk-icon { width: 30px; height: 30px; border-radius: 7px; }
+.desk-title { font-size: 17px; font-weight: 600; white-space: nowrap; }
+.badge.static { position: static; }
+.desk-bar .status { margin: 0 0 0 8px; padding: 5px 10px; }
+.desk-actions { margin-left: auto; display: flex; gap: 4px; }
+.desk-btn {
+  display: inline-flex; align-items: center; gap: 6px; border: none; background: transparent;
+  color: var(--blue); font-size: 15px; font-weight: 500; padding: 8px 12px; border-radius: 8px;
+}
+.desk-btn:hover { background: var(--fill); }
+.desk-btn .icon { width: 20px; height: 20px; }
+
+.desk-grid {
+  flex: 1; min-height: 0; display: grid; gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.panel {
+  min-height: 0; overflow-y: auto; padding: 20px 20px 40px;
+  border-right: .5px solid var(--separator);
+  overscroll-behavior: contain;
+}
+.panel:last-child { border-right: none; }
+.panel .large-title { font-size: 28px; margin: 0 4px 14px; }
+.panel .stat-value { font-size: 44px; }
+.panel .set-bar { margin: 0 -20px 16px; padding: 2px 20px 4px; }
+@media (min-width: 1500px) {
+  .desk-grid { max-width: 1800px; margin: 0 auto; width: 100%; }
+  .panel { padding: 24px 28px 48px; }
+}
+
+/* 小窓（参加者・設定） */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .32);
+  display: grid; place-items: center; padding: 32px; animation: fade .2s;
+}
+.sheet {
+  width: min(620px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+  background: var(--bg); border-radius: 14px; overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .3);
+  animation: rise .25s cubic-bezier(.2, .9, .3, 1);
+}
+@keyframes rise { from { transform: translateY(16px); opacity: 0; } }
+.sheet-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px 6px 20px; border-bottom: .5px solid var(--separator); background: var(--bar);
+}
+.sheet-title { font-size: 17px; font-weight: 600; }
+.sheet-body { overflow-y: auto; padding: 20px; }
+
+/* ---------- お知らせ欄のポイント通知 ---------- */
+.point-notice {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+  border-left: 4px solid var(--pc);
+  background: color-mix(in srgb, var(--pc) 9%, var(--cell));
+}
+.point-notice.plus { --pc: var(--green); }
+.point-notice.minus { --pc: var(--red); }
+.pn-delta {
+  flex: none; min-width: 64px; text-align: center; color: var(--pc);
+  font-family: var(--font-rounded); font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1;
+}
+.pn-delta small { font-size: 13px; font-weight: 600; margin-left: 2px; }
+.pn-main { flex: 1; min-width: 0; }
+.pn-who { font-weight: 600; display: flex; align-items: center; }
+.pn-reason { font-size: 15px; word-break: break-word; }
+.pn-meta { font-size: 12px; color: var(--label-2); margin-top: 2px; }
+
+/* ---------- 右上：所属チームと所持ポイント ---------- */
+.me-chip {
+  display: flex; align-items: center; gap: 8px; max-width: 70%;
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.navbar .me-chip {
+  position: absolute; right: 12px; bottom: 7px;
+  background: var(--bar); border-radius: 999px; padding: 4px 10px;
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: 0 0 0 .5px var(--separator);
+}
+.navbar.scrolled .me-chip { box-shadow: none; background: transparent; }
+.navbar.scrolled .nav-title { margin-right: auto; margin-left: 4px; }
+.me-team { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.me-team .dot { width: 8px; height: 8px; margin-right: 4px; }
+.me-points { font-family: var(--font-rounded); color: var(--blue); font-variant-numeric: tabular-nums; }
+.me-points small { font-size: 11px; margin-left: 1px; }
+.desk-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+.desk-right .desk-actions { margin-left: 0; }
+.desk-bar .me-chip { font-size: 14px; gap: 12px; }

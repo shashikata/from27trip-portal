@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  collection, doc, query, where, onSnapshot, getDoc, setDoc, addDoc, updateDoc, deleteDoc,
+  collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   writeBatch, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR } from "./config.js";
@@ -40,21 +40,30 @@ const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
 const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").toLowerCase());
 
 // ---------------------------------------------------------------- 状態
+//
+// データの形
+//   teamSets/{setId}            { name, order, published }      チーム表（例：1日目の競技、料理班）
+//   teams/{teamId}              { setId, name, color, order, published }
+//   memberships/{teamId}_{uid}  { teamId, uid, setId, published } 誰がどのチームか
+// published はチーム表を発表したときに、そのチーム表の teams / memberships にもまとめて書き込む。
+// 参加者はセキュリティルールにより published == true のものしか読めない。
 
 const S = {
   authReady: false,
   user: null,
   isAdmin: false,
   me: undefined,             // members/{uid}（undefined = 読み込み中, null = 存在しない）
-  config: { teamsPublished: false, title: APP_TITLE },
+  config: { title: APP_TITLE },
   members: new Map(),
+  sets: new Map(),
   teams: new Map(),
-  assignments: new Map(),
+  memberships: new Map(),
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
   meta: {},                  // クエリごとの fromCache / hasPendingWrites
-  subTeamId: null,
+  teamSubs: new Set(),       // 参加者：購読中の自チームID
   tab: "home",
+  sheet: null,               // PC 版で開いている小窓 { key, title, view }
 };
 
 const subs = new Map();
@@ -105,14 +114,39 @@ const merged = (src) => {
 
 function startAdmin() {
   getDoc(doc(db, "config", "app"))
-    .then((d) => { if (!d.exists()) return setDoc(doc(db, "config", "app"), { teamsPublished: false, title: APP_TITLE }); })
+    .then((d) => { if (!d.exists()) return setDoc(doc(db, "config", "app"), { title: APP_TITLE }); })
+    .then(migrateLegacyTeams)
     .catch((e) => console.warn(e));
   listen("config", doc(db, "config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
   listen("members", collection(db, "members"), (s) => { S.members = toMap(s); });
+  listen("sets", collection(db, "teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", collection(db, "teams"), (s) => { S.teams = toMap(s); });
-  listen("assignments", collection(db, "assignments"), (s) => { S.assignments = toMap(s); });
+  listen("memberships", collection(db, "memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", collection(db, "announcements"), (s) => { S.annSrc.all = toMap(s); });
   listen("logs", collection(db, "pointLogs"), (s) => { S.logSrc.all = toMap(s); });
+}
+
+// 旧版（チーム表が1つだけ）で作ったチームと振り分けを「チーム表1」に移す
+async function migrateLegacyTeams() {
+  const [asg, teamsSnap, cfg] = await Promise.all([
+    getDocs(collection(db, "assignments")),
+    getDocs(collection(db, "teams")),
+    getDoc(doc(db, "config", "app")),
+  ]);
+  const legacy = teamsSnap.docs.filter((d) => !d.data().setId);
+  if (!legacy.length && asg.empty) return;
+  const published = !!cfg.data()?.teamsPublished;
+  const setRef = doc(collection(db, "teamSets"));
+  const legacyIds = new Set(legacy.map((d) => d.id));
+  const b = writeBatch(db);
+  if (legacy.length) b.set(setRef, { name: "チーム表1", order: Date.now(), published });
+  legacy.forEach((t) => b.update(t.ref, { setId: setRef.id, published }));
+  asg.forEach((a) => {
+    const teamId = a.data().teamId;
+    if (legacyIds.has(teamId)) b.set(doc(db, "memberships", `${teamId}_${a.id}`), { teamId, uid: a.id, setId: setRef.id, published });
+    b.delete(a.ref);
+  });
+  await b.commit();
 }
 
 function startMember(uid) {
@@ -125,61 +159,113 @@ function startMember(uid) {
 function startMemberData(uid) {
   const ann = collection(db, "announcements");
   const logs = collection(db, "pointLogs");
-  listen("config", doc(db, "config", "app"), (s) => {
-    if (s?.exists()) S.config = { ...S.config, ...s.data() };
-    refreshTeamListeners(uid);
-  });
+  const published = (name) => query(collection(db, name), where("published", "==", true));
+  listen("config", doc(db, "config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
   listen("members", collection(db, "members"), (s) => { if (s) S.members = toMap(s); });
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
+  listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
+  listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
+  listen("memberships", published("memberships"), (s) => { S.memberships = toMap(s); refreshTeamListeners(uid); });
   listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
   listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
   listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
   listen("logPrivate", query(logs, where("visibility", "==", "private"), where("target", "==", uid)), (s) => { S.logSrc.priv = toMap(s); });
 }
 
+// 自分が入っている（発表済みの）チームごとに、チーム宛てのお知らせとチーム内ポイントを購読する
 function refreshTeamListeners(uid) {
-  if (S.config.teamsPublished) {
-    listen("teams", collection(db, "teams"), (s) => { S.teams = toMap(s); });
-    listen("assignments", collection(db, "assignments"), (s) => {
-      S.assignments = toMap(s);
-      refreshTeamListeners(uid);
-    });
-  } else {
-    unlisten("teams");
-    unlisten("assignments");
-    S.teams = new Map();
-    S.assignments = new Map();
+  const now = new Set(myTeamIds(uid));
+  for (const teamId of S.teamSubs) {
+    if (now.has(teamId)) continue;
+    unlisten(`annTeam:${teamId}`);
+    unlisten(`logTeam:${teamId}`);
+    delete S.annSrc[`team:${teamId}`];
+    delete S.logSrc[`team:${teamId}`];
   }
-  const teamId = S.config.teamsPublished ? S.assignments.get(uid)?.teamId ?? null : null;
-  if (teamId === S.subTeamId) return;
-  unlisten("annTeam");
-  unlisten("logTeam");
-  delete S.annSrc.team;
-  delete S.logSrc.team;
-  S.subTeamId = teamId;
-  if (!teamId) return;
-  listen("annTeam", query(collection(db, "announcements"), where("scope", "==", "team"), where("target", "==", teamId)),
-    (s) => { S.annSrc.team = toMap(s); });
-  listen("logTeam", query(collection(db, "pointLogs"), where("visibility", "==", "team"), where("teamId", "==", teamId)),
-    (s) => { S.logSrc.team = toMap(s); });
+  for (const teamId of now) {
+    listen(`annTeam:${teamId}`, query(collection(db, "announcements"), where("scope", "==", "team"), where("target", "==", teamId)),
+      (s) => { S.annSrc[`team:${teamId}`] = toMap(s); });
+    listen(`logTeam:${teamId}`, query(collection(db, "pointLogs"), where("visibility", "==", "team"), where("teamId", "==", teamId)),
+      (s) => { S.logSrc[`team:${teamId}`] = toMap(s); });
+  }
+  S.teamSubs = now;
 }
 
 onAuthStateChanged(auth, (user) => {
   unlistenAll();
   Object.assign(S, {
     authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), me: undefined,
-    config: { teamsPublished: false, title: APP_TITLE },
-    members: new Map(), teams: new Map(), assignments: new Map(),
-    annSrc: {}, logSrc: {}, meta: {}, subTeamId: null, tab: "home",
+    config: { title: APP_TITLE },
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(),
+    annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home", sheet: null,
   });
   shell = null;
-  currentView = null;
   if (user) (S.isAdmin ? startAdmin() : startMember(user.uid));
   scheduleRender();
 });
 
 window.addEventListener("online", () => scheduleRender());
 window.addEventListener("offline", () => scheduleRender());
+
+// ---------------------------------------------------------------- データの参照
+
+const byNatural = (a, b) => String(a).localeCompare(String(b), "ja", { numeric: true });
+const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name);
+const sortedMembers = () => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId));
+const sortedSets = () => [...S.sets.values()].sort(byOrder);
+const teamsInSet = (setId) => [...S.teams.values()].filter((t) => t.setId === setId).sort(byOrder);
+const membershipsOf = (pred) => [...S.memberships.values()].filter(pred);
+const teamOfIn = (uid, setId) => membershipsOf((m) => m.uid === uid && m.setId === setId)[0]?.teamId ?? null;
+const membersOfTeam = (teamId) => {
+  const uids = new Set(membershipsOf((m) => m.teamId === teamId).map((m) => m.uid));
+  return sortedMembers().filter((m) => uids.has(m.id));
+};
+const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.teamId)).map((m) => m.teamId);
+const memberName = (uid) => S.members.get(uid)?.name ?? "（削除済み）";
+const teamName = (teamId) => {
+  const t = S.teams.get(teamId);
+  if (!t) return "（チーム）";
+  const set = S.sets.get(t.setId);
+  return set ? `${set.name}・${t.name}` : t.name;
+};
+const teamOptions = () => sortedSets().flatMap((s) => teamsInSet(s.id).map((t) => ({ value: t.id, label: t.name, group: s.name })));
+
+const ts = (x) => (x?.toMillis ? x.toMillis() : 0);
+const fmtDate = (x) => {
+  if (!x?.toDate) return "送信中…";
+  const d = x.toDate();
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
+const sum = (logs) => logs.reduce((a, l) => a + (Number(l.delta) || 0), 0);
+
+// ---------------------------------------------------------------- チーム表の操作（管理者）
+
+function setPublished(setId, published) {
+  const b = writeBatch(db);
+  b.update(doc(db, "teamSets", setId), { published });
+  teamsInSet(setId).forEach((t) => b.update(doc(db, "teams", t.id), { published }));
+  membershipsOf((m) => m.setId === setId).forEach((m) => b.update(doc(db, "memberships", m.id), { published }));
+  return b.commit();
+}
+
+function assignMember(uid, setId, teamId) {
+  const b = writeBatch(db);
+  membershipsOf((m) => m.uid === uid && m.setId === setId && m.teamId !== teamId)
+    .forEach((m) => b.delete(doc(db, "memberships", m.id)));
+  if (teamId) {
+    b.set(doc(db, "memberships", `${teamId}_${uid}`), { teamId, uid, setId, published: !!S.sets.get(setId)?.published });
+  }
+  return b.commit();
+}
+
+function deleteSet(setId) {
+  const b = writeBatch(db);
+  b.delete(doc(db, "teamSets", setId));
+  teamsInSet(setId).forEach((t) => b.delete(doc(db, "teams", t.id)));
+  membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+  return b.commit();
+}
 
 // ---------------------------------------------------------------- 部品
 
@@ -218,6 +304,7 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   xmark: '<path d="M7 7l10 10M17 7 7 17"/>',
   copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
 };
 
 function icon(name, cls = "") {
@@ -227,20 +314,6 @@ function icon(name, cls = "") {
   span.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
   return span;
 }
-
-const byNatural = (a, b) => String(a).localeCompare(String(b), "ja", { numeric: true });
-const sortedMembers = () => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId));
-const sortedTeams = () => [...S.teams.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name));
-const memberName = (uid) => S.members.get(uid)?.name ?? "（削除済み）";
-const teamOf = (uid) => S.assignments.get(uid)?.teamId ?? null;
-const ts = (x) => (x?.toMillis ? x.toMillis() : 0);
-const fmtDate = (x) => {
-  if (!x?.toDate) return "送信中…";
-  const d = x.toDate();
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-const signed = (n) => (n > 0 ? `+${n}` : `${n}`);
-const sum = (logs) => logs.reduce((a, l) => a + (Number(l.delta) || 0), 0);
 
 // iOS のシステムカラー
 const TEAM_COLORS = [
@@ -253,11 +326,6 @@ const TEAM_COLORS = [
 const VIS_LABEL = { public: "全員に公開", team: "チーム内のみ", private: "本人のみ" };
 
 const dot = (color) => h("span", { class: "dot", style: `--c:${color || "#8E8E93"}` });
-
-function teamLabel(team) {
-  if (!team) return h("span", { class: "secondary" }, "未所属");
-  return h("span", { class: "team-label" }, dot(team.color), team.name);
-}
 
 function toast(msg, isError = false) {
   document.querySelector(".toast")?.remove();
@@ -295,13 +363,19 @@ function fire(promise, okMsg) {
   if (!online) toast("オフラインです。電波が戻ったら自動で送信されます");
 }
 
+// options: [{ value, label, group? }]。group があるものは <optgroup> にまとめる
 function fillSelect(sel, options, placeholder) {
   if (document.activeElement === sel) return; // 選択中のプルダウンを閉じさせない
   const cur = sel.value;
-  sel.replaceChildren(
-    ...(placeholder ? [h("option", { value: "" }, placeholder)] : []),
-    ...options.map((o) => h("option", { value: o.value }, o.label)),
-  );
+  const nodes = placeholder != null ? [h("option", { value: "" }, placeholder)] : [];
+  const groups = new Map();
+  for (const o of options) {
+    const opt = h("option", { value: o.value }, o.label);
+    if (!o.group) { nodes.push(opt); continue; }
+    if (!groups.has(o.group)) { groups.set(o.group, h("optgroup", { label: o.group })); nodes.push(groups.get(o.group)); }
+    groups.get(o.group).append(opt);
+  }
+  sel.replaceChildren(...nodes);
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
 
@@ -371,6 +445,7 @@ function editableInput(attrs = {}) {
   const el = h("input", { type: "text", ...attrs });
   el.addEventListener("input", () => { el.dataset.dirty = "1"; });
   el.sync = (v) => { if (!el.dataset.dirty && document.activeElement !== el) el.value = v; };
+  el.force = (v) => { delete el.dataset.dirty; el.value = v; };
   el.saved = () => { delete el.dataset.dirty; };
   return el;
 }
@@ -423,9 +498,11 @@ function largeTitle(text) {
   return h("h1", { class: "large-title" }, text);
 }
 
+const none = (text = "まだありません") => cell(h("span", { class: "secondary" }, text));
+
 function announcementCard(a, { admin = false } = {}) {
   let scope = "全員";
-  if (a.scope === "team") scope = admin ? `${S.teams.get(a.target)?.name ?? "?"} のみ` : "チーム限定";
+  if (a.scope === "team") scope = admin ? `${teamName(a.target)} のみ` : `チーム限定（${teamName(a.target)}）`;
   if (a.scope === "user") scope = admin ? `${memberName(a.target)} のみ` : "あなた宛て";
   return h("article", { class: `card ann${a.pinned ? " pinned" : ""}` },
     h("div", { class: "ann-meta" },
@@ -448,11 +525,12 @@ function announcementCard(a, { admin = false } = {}) {
 const sortAnnouncements = (list) => list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || ts(b.createdAt) - ts(a.createdAt));
 
 function logCell(l, { showTarget = true, admin = false } = {}) {
-  const target = l.kind === "team" ? S.teams.get(l.target)?.name ?? "（チーム）" : memberName(l.target);
+  const target = l.kind === "team" ? teamName(l.target) : memberName(l.target);
+  const vis = l.visibility === "team" && l.kind === "user" ? `チーム内のみ（${teamName(l.teamId)}）` : VIS_LABEL[l.visibility];
   return h("div", { class: "cell log" },
     h("div", { class: "cell-main" },
       h("div", null, showTarget ? h("span", { class: "log-target" }, target) : null, l.reason || "（理由なし）"),
-      h("div", { class: "cell-sub" }, `${fmtDate(l.createdAt)} · ${VIS_LABEL[l.visibility]}`),
+      h("div", { class: "cell-sub" }, `${fmtDate(l.createdAt)} · ${vis}`),
     ),
     h("div", { class: `delta ${l.delta >= 0 ? "plus" : "minus"}` }, signed(l.delta)),
     admin ? h("button", {
@@ -463,7 +541,7 @@ function logCell(l, { showTarget = true, admin = false } = {}) {
 }
 
 function rankingCells(rows) {
-  if (!rows.length) return cell(h("span", { class: "secondary" }, "まだありません"));
+  if (!rows.length) return none();
   rows.sort((a, b) => b.value - a.value);
   let rank = 0, prev = null;
   return rows.map((r, i) => {
@@ -508,16 +586,37 @@ function loginView() {
 
 // ---------------------------------------------------------------- 画面：参加者
 
+// お知らせ欄に流すポイントの加点・減点（加点は緑、減点は赤）
+function pointNotice(l) {
+  const uid = S.user.uid;
+  const team = l.kind === "team" ? S.teams.get(l.target) : null;
+  const who = l.kind === "team" ? teamName(l.target) : l.target === uid ? "あなた" : memberName(l.target);
+  const scope = { public: "全員に公開", team: "チーム内のみ", private: "あなただけ" }[l.visibility];
+  return h("article", { class: `card point-notice ${l.delta >= 0 ? "plus" : "minus"}` },
+    h("div", { class: "pn-delta" }, signed(l.delta), h("small", null, "pt")),
+    h("div", { class: "pn-main" },
+      h("div", { class: "pn-who" }, team ? dot(team.color) : null, who),
+      h("div", { class: "pn-reason" }, l.reason || "（理由なし）"),
+      h("div", { class: "pn-meta" }, `${fmtDate(l.createdAt)} · ${scope}`)),
+  );
+}
+
 function memberHome() {
+  const filter = segmented([{ value: "all", label: "すべて" }, { value: "ann", label: "お知らせ" }, { value: "pt", label: "ポイント" }]);
+  filter.addEventListener("change", () => scheduleRender());
   const list = h("div", { class: "stack" });
-  const el = h("div", null, largeTitle("お知らせ"), list);
+  const el = h("div", null, largeTitle("お知らせ"), h("div", { class: "seg-wrap" }, filter), list);
   return {
     el,
     update() {
-      const items = sortAnnouncements(merged(S.annSrc));
+      const anns = filter.value === "pt" ? [] : merged(S.annSrc).map((a) => ({ type: "ann", at: ts(a.createdAt) || Date.now(), a }));
+      const pts = filter.value === "ann" ? [] : merged(S.logSrc).map((l) => ({ type: "pt", at: ts(l.createdAt) || Date.now(), l }));
+      const pinned = anns.filter((x) => x.a.pinned).sort((x, y) => y.at - x.at);
+      const rest = [...anns.filter((x) => !x.a.pinned), ...pts].sort((x, y) => y.at - x.at);
+      const items = [...pinned, ...rest];
       list.replaceChildren(...(items.length
-        ? items.map((a) => announcementCard(a))
-        : [emptyState("megaphone", "お知らせはありません", "新しいお知らせが届くとここに表示されます。")]));
+        ? items.map((x) => (x.type === "ann" ? announcementCard(x.a) : pointNotice(x.l)))
+        : [emptyState("megaphone", "まだありません", "新しいお知らせやポイントが届くとここに表示されます。")]));
     },
   };
 }
@@ -528,24 +627,25 @@ function memberTeam() {
   return {
     el,
     update() {
-      if (!S.config.teamsPublished) {
+      const sets = sortedSets();
+      if (!sets.length) {
         body.replaceChildren(emptyState("lock", "チーム発表はまだです", "発表されるとここに表示されます。"));
         return;
       }
       const uid = S.user.uid;
-      const myId = teamOf(uid);
-      const membersOf = (tid) => sortedMembers().filter((m) => teamOf(m.id) === tid);
-      const my = S.teams.get(myId);
-      const teamGroup = (t, header) => group(header, membersOf(t.id).map((m) =>
-        cell(m.name, m.id === uid ? h("span", { class: "tint" }, "あなた") : null)));
+      const mine = sets.map((s) => ({ set: s, team: S.teams.get(teamOfIn(uid, s.id)) }));
       body.replaceChildren(
-        my
-          ? h("div", { class: "hero", style: `--c:${my.color}` },
-              h("div", { class: "hero-label" }, "あなたのチーム"),
-              h("div", { class: "hero-title" }, my.name),
-              h("div", { class: "hero-sub" }, `${membersOf(myId).length}人`))
-          : emptyState("flag", "まだチームに入っていません"),
-        ...sortedTeams().map((t) => teamGroup(t, h("span", { class: "team-label" }, dot(t.color), t.name))),
+        group("あなたのチーム", mine.map(({ set, team }) =>
+          cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"))),
+        ...sets.map((s) => group(s.name, teamsInSet(s.id).map((t) => {
+          const ms = membersOfTeam(t.id);
+          const isMine = ms.some((m) => m.id === uid);
+          return h("div", { class: `cell team-cell${isMine ? " me" : ""}` },
+            h("div", { class: "cell-main" },
+              h("div", { class: "team-label strong" }, dot(t.color), t.name, isMine ? h("span", { class: "tint you" }, "あなた") : null),
+              h("div", { class: "cell-sub" }, ms.length ? ms.map((m) => m.name).join("・") : "メンバーなし")),
+          );
+        }))),
       );
     },
   };
@@ -553,8 +653,8 @@ function memberTeam() {
 
 function memberPoints() {
   const body = h("div");
-  const rankSeg = segmented([{ value: "team", label: "チーム" }, { value: "user", label: "個人" }]);
-  rankSeg.addEventListener("change", () => scheduleRender());
+  const rankSel = h("select", { class: "inline-select", "aria-label": "ランキングの種類" });
+  rankSel.addEventListener("change", () => scheduleRender());
   const el = h("div", null, largeTitle("ポイント"), body);
   return {
     el,
@@ -562,44 +662,39 @@ function memberPoints() {
       const uid = S.user.uid;
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
       const mine = logs.filter((l) => l.kind === "user" && l.target === uid);
-      const myTeamId = S.config.teamsPublished ? teamOf(uid) : null;
-      const myTeam = S.teams.get(myTeamId);
-      const teamLogs = myTeamId ? logs.filter((l) => l.kind === "team" && l.target === myTeamId) : [];
       const byVis = (arr, v) => sum(arr.filter((l) => l.visibility === v));
+      const myTeams = myTeamIds(uid).map((id) => S.teams.get(id)).filter(Boolean)
+        .sort((a, b) => byOrder(S.sets.get(a.setId) ?? {}, S.sets.get(b.setId) ?? {}));
 
       const parts = [
         statCard("あなた", sum(mine), [["全員に公開", byVis(mine, "public")], ["チーム内", byVis(mine, "team")], ["本人のみ", byVis(mine, "private")]]),
       ];
-      if (myTeam) {
-        parts.push(statCard(myTeam.name, sum(teamLogs), [["全員に公開", byVis(teamLogs, "public")], ["チーム内のみ", byVis(teamLogs, "team")]], myTeam.color));
+      for (const t of myTeams) {
+        const tl = logs.filter((l) => l.kind === "team" && l.target === t.id);
+        parts.push(statCard(teamName(t.id), sum(tl), [["全員に公開", byVis(tl, "public")], ["チーム内のみ", byVis(tl, "team")]], t.color));
       }
-      parts.push(group("あなたの履歴", mine.length ? mine.map((l) => logCell(l, { showTarget: false })) : cell(h("span", { class: "secondary" }, "まだありません"))));
-      if (myTeam) {
-        parts.push(group("チームの履歴", teamLogs.length ? teamLogs.map((l) => logCell(l, { showTarget: false })) : cell(h("span", { class: "secondary" }, "まだありません"))));
-        parts.push(group("チームメンバー", rankingCells(sortedMembers().filter((m) => teamOf(m.id) === myTeamId).map((m) => ({
-          label: m.name, value: sum(logs.filter((l) => l.kind === "user" && l.target === m.id)), highlight: m.id === uid,
-        }))), "あなたに見える範囲のポイントで集計しています。"));
-      }
+      parts.push(group("あなたの履歴", mine.length ? mine.map((l) => logCell(l, { showTarget: false })) : none()));
+      const teamLogs = logs.filter((l) => l.kind === "team" && myTeams.some((t) => t.id === l.target));
+      if (myTeams.length) parts.push(group("チームの履歴", teamLogs.length ? teamLogs.map((l) => logCell(l)) : none()));
+
+      fillSelect(rankSel, [{ value: "user", label: "個人" }, ...sortedSets().map((s) => ({ value: s.id, label: `${s.name}（チーム）` }))]);
       const pub = logs.filter((l) => l.visibility === "public");
-      if (!S.config.teamsPublished && rankSeg.value === "team") rankSeg.value = "user";
-      const rows = rankSeg.value === "team" && S.config.teamsPublished
-        ? sortedTeams().map((t) => ({ label: t.name, color: t.color, value: sum(pub.filter((l) => l.kind === "team" && l.target === t.id)), highlight: t.id === myTeamId }))
-        : sortedMembers().map((m) => ({ label: m.name, value: sum(pub.filter((l) => l.kind === "user" && l.target === m.id)), highlight: m.id === uid }));
-      parts.push(h("div", { class: "group-header standalone" }, "ランキング"));
-      if (S.config.teamsPublished) parts.push(h("div", { class: "seg-wrap" }, rankSeg));
-      parts.push(group(null, rankingCells(rows), "「全員に公開」のポイントだけで集計しています。"));
+      const rows = rankSel.value === "user" || !S.sets.has(rankSel.value)
+        ? sortedMembers().map((m) => ({ label: m.name, value: sum(pub.filter((l) => l.kind === "user" && l.target === m.id)), highlight: m.id === uid }))
+        : teamsInSet(rankSel.value).map((t) => ({ label: t.name, color: t.color, value: sum(pub.filter((l) => l.kind === "team" && l.target === t.id)), highlight: myTeams.some((x) => x.id === t.id) }));
+      parts.push(group("ランキング", [field("表示", rankSel), ...[rankingCells(rows)].flat()], "「全員に公開」のポイントだけで集計しています。"));
       body.replaceChildren(...parts);
     },
   };
 }
 
-function settingsView() {
+function settingsView({ withTitle = true } = {}) {
   const cur = h("input", { type: "password", autocomplete: "current-password", placeholder: "必須", required: true });
   const next = h("input", { type: "password", autocomplete: "new-password", minlength: "6", placeholder: "6文字以上", required: true });
   const btn = h("button", { class: "cell cell-button", type: "submit" }, "パスワードを変更");
   const adminBox = h("div");
   const el = h("div", null,
-    largeTitle("設定"),
+    withTitle ? largeTitle("設定") : null,
     group(null, [
       cell("ID", emailToId(S.user.email)),
       cell("名前", S.isAdmin ? "管理者" : S.me?.name ?? ""),
@@ -639,7 +734,7 @@ function adminAnnouncements() {
   const title = h("input", { type: "text", maxlength: "100", placeholder: "タイトル", required: true, class: "plain title-input" });
   const body = h("textarea", { rows: "4", placeholder: "本文", class: "plain" });
   const scope = segmented([{ value: "all", label: "全員" }, { value: "team", label: "チーム" }, { value: "user", label: "個人" }]);
-  const target = h("select");
+  const target = h("select", { "aria-label": "宛先" });
   const targetCell = field("宛先", target);
   const pinned = toggle();
   const fileInput = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
@@ -658,7 +753,7 @@ function adminAnnouncements() {
 
   const refreshTarget = () => {
     targetCell.hidden = scope.value === "all";
-    if (scope.value === "team") fillSelect(target, sortedTeams().map((t) => ({ value: t.id, label: t.name })), "選択");
+    if (scope.value === "team") fillSelect(target, teamOptions(), "選択");
     if (scope.value === "user") fillSelect(target, sortedMembers().map((m) => ({ value: m.id, label: m.name })), "選択");
   };
   scope.addEventListener("change", () => { target.value = ""; refreshTarget(); });
@@ -694,7 +789,8 @@ function adminAnnouncements() {
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
       h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned)]),
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned)],
+      "「チーム」宛ては、そのチーム表を発表するまで届きません。"),
     btn,
   );
 
@@ -709,7 +805,7 @@ function adminAnnouncements() {
   };
 }
 
-function adminMembers() {
+function adminMembers({ withTitle = true } = {}) {
   const id = h("input", { type: "text", placeholder: "user17", autocapitalize: "none", autocorrect: "off", pattern: "[a-z0-9_\\-]+", required: true });
   const name = h("input", { type: "text", placeholder: "たろう", required: true });
   const pw = h("input", { type: "text", placeholder: "空欄なら自動生成", minlength: "6", autocapitalize: "none" });
@@ -747,7 +843,7 @@ function adminMembers() {
   }
 
   const el = h("div", null,
-    largeTitle("参加者"),
+    withTitle ? largeTitle("参加者") : null,
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
@@ -791,9 +887,9 @@ function adminMembers() {
       listGroup.hidden = ms.length === 0;
       keyedList(listBody, ms, (m) => {
         const nm = editableInput({ class: "plain", "aria-label": `${m.loginId} の名前` });
-        const team = h("span", { class: "cell-sub" });
+        const sub = h("div", { class: "cell-sub" });
         const el = h("div", { class: "cell member-row" },
-          h("div", { class: "cell-main" }, nm, h("div", { class: "cell-sub" }, m.loginId, " · ", team)),
+          h("div", { class: "cell-main" }, nm, sub),
           h("button", {
             class: "text-btn",
             onclick: () => { fire(updateDoc(doc(db, "members", m.id), { name: nm.value.trim() || m.loginId }), "保存しました"); nm.saved(); },
@@ -805,86 +901,146 @@ function adminMembers() {
               if (!confirm(`${cur?.name}（${m.loginId}）を削除しますか？\nこの人は何も見られなくなります。`)) return;
               const b = writeBatch(db);
               b.delete(doc(db, "members", m.id));
-              b.delete(doc(db, "assignments", m.id));
+              membershipsOf((x) => x.uid === m.id).forEach((x) => b.delete(doc(db, "memberships", x.id)));
               fire(b.commit(), "削除しました");
             },
           }, "削除"),
         );
-        return { el, nm, team };
+        return { el, nm, sub };
       }, (row, m) => {
         row.nm.sync(m.name);
-        row.team.replaceChildren(teamLabel(S.teams.get(teamOf(m.id))));
+        const teams = sortedSets().map((s) => S.teams.get(teamOfIn(m.id, s.id))).filter(Boolean);
+        row.sub.replaceChildren(m.loginId, ...teams.flatMap((t) => [" · ", h("span", { class: "team-label" }, dot(t.color), t.name)]));
       });
     },
   };
 }
 
 function adminTeams() {
+  let setId = null;
+  let justCreated = null; // 追加直後でまだ一覧に届いていないチーム表
+  const setBar = h("div", { class: "set-bar", role: "tablist" });
+  const noSets = emptyState("flag", "チーム表がありません", "「チーム表を追加」で作成してください。");
+  const setName = editableInput({ "aria-label": "チーム表の名前" });
+  const publish = toggle();
+  const publishFooter = h("span");
   const name = h("input", { type: "text", placeholder: "Aチーム", required: true });
   const color = h("select", null, TEAM_COLORS.map((c) => h("option", { value: c.value }, c.label)));
   const colorDot = dot(TEAM_COLORS[0].value);
   color.addEventListener("change", () => colorDot.style.setProperty("--c", color.value));
-  const publish = toggle();
-  const publishFooter = h("span");
   const teamBody = h("div", { class: "group-body" });
+  const teamGroup = h("section", { class: "group" }, h("div", { class: "group-header" }, "チーム"), teamBody);
   const assignBody = h("div", { class: "group-body" });
   const assignEmpty = emptyState("people", "まだ参加者がいません");
 
   publish.addEventListener("change", () => {
     const next = publish.checked;
-    if (!confirm(next ? "チームを発表しますか？参加者全員に表示されます。" : "発表を取り消して、チームを非公開に戻しますか？")) {
+    const set = S.sets.get(setId);
+    if (!set || !confirm(next ? `「${set.name}」を発表しますか？参加者全員に表示されます。` : `「${set.name}」の発表を取り消して、非公開に戻しますか？`)) {
       publish.checked = !next;
       return;
     }
-    fire(updateDoc(doc(db, "config", "app"), { teamsPublished: next }), next ? "チームを発表しました" : "非公開に戻しました");
+    fire(setPublished(setId, next), next ? `「${set.name}」を発表しました` : "非公開に戻しました");
   });
 
+  function addSet() {
+    const n = S.sets.size + 1;
+    const ref = doc(collection(db, "teamSets"));
+    fire(setDoc(ref, { name: `チーム表${n}`, order: Date.now(), published: false }), `チーム表${n} を追加しました`);
+    setId = justCreated = ref.id;
+    setName.force(`チーム表${n}`);
+    scheduleRender();
+  }
+
   function randomAssign() {
-    const teams = sortedTeams();
+    const teams = teamsInSet(setId);
     const ms = sortedMembers();
     if (!teams.length || !ms.length) return toast("チームと参加者を先に作ってください", true);
-    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます。今の振り分けは上書きされます。`)) return;
+    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます。このチーム表の今の振り分けは上書きされます。`)) return;
     const shuffled = [...ms];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
+    const published = !!S.sets.get(setId)?.published;
     const b = writeBatch(db);
-    shuffled.forEach((m, i) => b.set(doc(db, "assignments", m.id), { teamId: teams[i % teams.length].id }));
+    membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+    shuffled.forEach((m, i) => {
+      const teamId = teams[i % teams.length].id;
+      b.set(doc(db, "memberships", `${teamId}_${m.id}`), { teamId, uid: m.id, setId, published });
+    });
     fire(b.commit(), "振り分けました");
   }
 
-  const el = h("div", null,
-    largeTitle("チーム"),
-    group(null, field("参加者に発表", publish), publishFooter),
+  const detail = h("div", null,
+    group("チーム表", [
+      field("名前", setName),
+      h("button", {
+        class: "cell cell-button",
+        onclick: () => { fire(updateDoc(doc(db, "teamSets", setId), { name: setName.value.trim() || "チーム表" }), "保存しました"); setName.saved(); },
+      }, "名前を保存"),
+      field("参加者に発表", publish),
+    ], publishFooter),
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
-        fire(addDoc(collection(db, "teams"), { name: name.value.trim(), color: color.value, order: Date.now() }), "作成しました");
+        fire(addDoc(collection(db, "teams"), {
+          setId, name: name.value.trim(), color: color.value, order: Date.now(), published: !!S.sets.get(setId)?.published,
+        }), "作成しました");
         name.value = "";
         color.selectedIndex = (color.selectedIndex + 1) % TEAM_COLORS.length;
         colorDot.style.setProperty("--c", color.value);
       },
     }, group("新しいチーム", [field("名前", name), field(h("span", { class: "team-label" }, colorDot, "色"), color),
       h("button", { class: "cell cell-button", type: "submit" }, "チームを作成")])),
-    h("section", { class: "group" }, h("div", { class: "group-header" }, "チーム"), teamBody),
+    teamGroup,
     h("div", { class: "group-header standalone with-action" }, "振り分け",
       h("button", { class: "text-btn", onclick: () => randomAssign() }, icon("shuffle"), "ランダム")),
     assignEmpty,
     h("section", { class: "group" }, assignBody),
+    group(null, h("button", {
+      class: "cell cell-button destructive",
+      onclick: () => {
+        const set = S.sets.get(setId);
+        if (!set || !confirm(`「${set.name}」を削除しますか？\nこのチーム表のチームと振り分けもすべて消えます（ポイント履歴は残ります）。`)) return;
+        fire(deleteSet(setId), "削除しました");
+        setId = null;
+      },
+    }, "このチーム表を削除")),
   );
+
+  const el = h("div", null, largeTitle("チーム"), setBar, noSets, detail);
 
   return {
     el,
     update() {
-      const published = !!S.config.teamsPublished;
-      publish.checked = published;
-      publishFooter.textContent = published
-        ? "発表済みです。参加者は自分のチームと全チームの顔ぶれを見られます。"
-        : "オフの間、参加者にはチームが一切見えません。振り分けが終わったらオンにしてください。";
+      const sets = sortedSets();
+      if (S.sets.has(justCreated)) justCreated = null;
+      if (!S.sets.has(setId) && !(justCreated && setId === justCreated)) {
+        setId = sets[0]?.id ?? null;
+        if (setId) setName.force(S.sets.get(setId).name);
+      }
+      setBar.replaceChildren(
+        ...sets.map((s) => h("button", {
+          type: "button", role: "tab", "aria-selected": String(s.id === setId), "data-set": s.id,
+          class: s.published ? "published" : null,
+          onclick: () => { setId = s.id; setName.force(s.name); scheduleRender(); },
+        }, s.published ? null : icon("lock"), s.name)),
+        h("button", { type: "button", class: "add", onclick: addSet }, icon("plus"), "チーム表を追加"),
+      );
+      noSets.hidden = sets.length > 0;
+      detail.hidden = !S.sets.has(setId);
+      if (!S.sets.has(setId)) return;
 
-      const teams = sortedTeams();
-      const ms = sortedMembers();
+      const set = S.sets.get(setId);
+      setName.sync(set.name);
+      publish.checked = !!set.published;
+      publishFooter.textContent = set.published
+        ? "発表済みです。参加者はこのチーム表のチームと顔ぶれを見られます。"
+        : "オフの間、参加者にはこのチーム表が一切見えません。振り分けが終わったらオンにしてください。";
+
+      const teams = teamsInSet(setId);
+      teamGroup.hidden = teams.length === 0;
       keyedList(teamBody, teams, (t) => {
         const nm = editableInput({ class: "plain", "aria-label": "チーム名" });
         const d = dot(t.color);
@@ -903,7 +1059,7 @@ function adminTeams() {
               if (!confirm(`チーム「${cur?.name}」を削除しますか？所属メンバーは未所属になります。`)) return;
               const b = writeBatch(db);
               b.delete(doc(db, "teams", t.id));
-              sortedMembers().filter((m) => teamOf(m.id) === t.id).forEach((m) => b.delete(doc(db, "assignments", m.id)));
+              membershipsOf((m) => m.teamId === t.id).forEach((m) => b.delete(doc(db, "memberships", m.id)));
               fire(b.commit(), "削除しました");
             },
           }, "削除"),
@@ -912,29 +1068,26 @@ function adminTeams() {
       }, (row, t) => {
         row.d.style.setProperty("--c", t.color);
         row.nm.sync(t.name);
-        row.count.textContent = `${ms.filter((m) => teamOf(m.id) === t.id).length}人`;
+        row.count.textContent = `${membersOfTeam(t.id).length}人`;
       });
-      teamBody.parentElement.hidden = teams.length === 0;
 
+      const ms = sortedMembers();
       assignEmpty.hidden = ms.length > 0;
       assignBody.parentElement.hidden = ms.length === 0;
-      const teamOptions = teams.map((t) => ({ value: t.id, label: t.name }));
+      const options = teams.map((t) => ({ value: t.id, label: t.name }));
       keyedList(assignBody, ms, (m) => {
         const label = h("div", { class: "cell-main" });
-        const sel = h("select", {
-          class: "inline-select",
-          "aria-label": "所属チーム",
-          onchange: () => fire(sel.value
-            ? setDoc(doc(db, "assignments", m.id), { teamId: sel.value })
-            : deleteDoc(doc(db, "assignments", m.id))),
-        });
+        const sel = h("select", { class: "inline-select", "aria-label": "所属チーム" });
+        sel.addEventListener("change", () => fire(assignMember(m.id, sel.dataset.set, sel.value)));
         return { el: h("div", { class: "cell" }, label, sel), label, sel };
       }, (row, m) => {
-        const t = S.teams.get(teamOf(m.id));
-        row.label.replaceChildren(dot(t?.color), m.name);
-        if (document.activeElement !== row.sel) {
-          fillSelect(row.sel, teamOptions, "未所属");
-          row.sel.value = teamOf(m.id) ?? "";
+        const teamId = teamOfIn(m.id, setId);
+        row.label.replaceChildren(dot(S.teams.get(teamId)?.color), m.name);
+        if (document.activeElement !== row.sel || row.sel.dataset.set !== setId) {
+          row.sel.dataset.set = setId;
+          row.sel.blur();
+          fillSelect(row.sel, options, "未所属");
+          row.sel.value = teamId ?? "";
         }
       });
     },
@@ -947,20 +1100,23 @@ function adminPoints() {
   const delta = h("input", { type: "number", step: "any", value: "1", required: true, inputmode: "decimal", class: "delta-input" });
   const reason = h("input", { type: "text", maxlength: "200", placeholder: "ビーチフラッグ1位" });
   const visibility = segmented([]);
+  const visSet = h("select", { "aria-label": "どのチーム表のチーム内か" });
+  const visSetCell = field("チーム表", visSet);
   const visFooter = h("span");
-  const teamSummary = h("div", { class: "group-body" });
-  const userSummary = h("div", { class: "group-body" });
+  const summary = h("div");
   const list = h("div", { class: "group-body" });
 
   const VIS_HELP = {
     public: "全員のランキングに反映されます。",
-    team: "そのチームのメンバーだけに見えます。",
+    team: "そのチームのメンバーだけに見えます（チーム表が発表されてから）。",
     private: "本人だけに見えます。",
   };
 
   const refreshForm = () => {
-    if (kind.value === "team") fillSelect(target, sortedTeams().map((t) => ({ value: t.id, label: t.name })), "選択");
+    if (kind.value === "team") fillSelect(target, teamOptions(), "選択");
     else fillSelect(target, sortedMembers().map((m) => ({ value: m.id, label: m.name })), "選択");
+    visSetCell.hidden = !(kind.value === "user" && visibility.value === "team");
+    fillSelect(visSet, sortedSets().map((s) => ({ value: s.id, label: s.name })));
     visFooter.textContent = VIS_HELP[visibility.value] ?? "";
   };
   const refreshVis = () => {
@@ -981,12 +1137,16 @@ function adminPoints() {
       if (!target.value) return toast("対象を選んでください", true);
       const d = Number(delta.value);
       if (!Number.isFinite(d) || d === 0) return toast("0 以外の数値を入れてください", true);
-      const teamId = kind.value === "team" ? target.value : teamOf(target.value);
-      if (visibility.value === "team" && !teamId) return toast("この人はまだチームに入っていません", true);
+      let teamId = null;
+      if (kind.value === "team") teamId = target.value;
+      else if (visibility.value === "team") {
+        teamId = teamOfIn(target.value, visSet.value);
+        if (!teamId) return toast(`この人は「${S.sets.get(visSet.value)?.name ?? "そのチーム表"}」でチームに入っていません`, true);
+      }
       fire(addDoc(collection(db, "pointLogs"), {
         kind: kind.value,
         target: target.value,
-        teamId: teamId ?? null,
+        teamId,
         visibility: visibility.value,
         delta: d,
         reason: reason.value.trim(),
@@ -998,65 +1158,68 @@ function adminPoints() {
   },
     group("対象", [h("div", { class: "cell" }, kind), field("名前", target)]),
     group("点数", [field("ポイント", delta), h("div", { class: "cell" }, quick), field("理由", reason)]),
-    group("公開範囲", h("div", { class: "cell" }, visibility), visFooter),
+    group("公開範囲", [h("div", { class: "cell" }, visibility), visSetCell], visFooter),
     h("button", { class: "btn-filled", type: "submit" }, "ポイントを付ける"),
   );
 
   const el = h("div", null,
     largeTitle("ポイント"),
     form,
-    h("section", { class: "group" }, h("div", { class: "group-header" }, "チーム集計"), teamSummary),
-    h("section", { class: "group" }, h("div", { class: "group-header" }, "個人集計"), userSummary,
-      h("div", { class: "group-footer" }, "集計は管理者にだけ表示されます。")),
+    summary,
     h("section", { class: "group" }, h("div", { class: "group-header" }, "履歴"), list),
   );
 
   const breakdown = (ls, keys) => keys.map((k) => `${{ public: "公開", team: "チーム内", private: "本人" }[k]} ${sum(ls.filter((l) => l.visibility === k))}`).join(" · ");
+  const totalCell = (labelEl, ls, keys) => h("div", { class: "cell" },
+    h("div", { class: "cell-main" }, labelEl, h("div", { class: "cell-sub" }, breakdown(ls, keys))),
+    h("div", { class: "rank-value" }, sum(ls), h("small", null, " pt")));
 
   return {
     el,
     update() {
       refreshForm();
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
-      const teams = sortedTeams();
-      teamSummary.replaceChildren(...(teams.length ? teams.map((t) => {
-        const ls = logs.filter((l) => l.kind === "team" && l.target === t.id);
-        return h("div", { class: "cell" },
-          h("div", { class: "cell-main" }, h("span", { class: "team-label" }, dot(t.color), t.name), h("div", { class: "cell-sub" }, breakdown(ls, ["public", "team"]))),
-          h("div", { class: "rank-value" }, sum(ls), h("small", null, " pt")));
-      }) : [cell(h("span", { class: "secondary" }, "チームがありません"))]));
+      const setGroups = sortedSets().map((s) => {
+        const teams = teamsInSet(s.id);
+        return group(`${s.name} の集計`, teams.length
+          ? teams.map((t) => totalCell(h("span", { class: "team-label" }, dot(t.color), t.name), logs.filter((l) => l.kind === "team" && l.target === t.id), ["public", "team"]))
+          : none("チームがありません"));
+      });
       const ms = sortedMembers();
-      userSummary.replaceChildren(...(ms.length ? ms.map((m) => {
-        const ls = logs.filter((l) => l.kind === "user" && l.target === m.id);
-        return h("div", { class: "cell" },
-          h("div", { class: "cell-main" }, m.name, h("div", { class: "cell-sub" }, breakdown(ls, ["public", "team", "private"]))),
-          h("div", { class: "rank-value" }, sum(ls), h("small", null, " pt")));
-      }) : [cell(h("span", { class: "secondary" }, "参加者がいません"))]));
-      list.replaceChildren(...(logs.length
-        ? logs.slice(0, 200).map((l) => logCell(l, { admin: true }))
-        : [cell(h("span", { class: "secondary" }, "まだありません"))]));
+      summary.replaceChildren(
+        ...setGroups,
+        group("個人の集計", ms.length
+          ? ms.map((m) => totalCell(m.name, logs.filter((l) => l.kind === "user" && l.target === m.id), ["public", "team", "private"]))
+          : none("参加者がいません"), "集計は管理者にだけ表示されます。"),
+      );
+      list.replaceChildren(...(logs.length ? logs.slice(0, 200).map((l) => logCell(l, { admin: true })) : [none()]));
     },
   };
 }
 
 // ---------------------------------------------------------------- 画面の組み立て
+//
+// スマホ：下のタブで画面を切り替える
+// PC（幅 1100px 以上）：お知らせ・チーム・ポイントを横に並べた1画面のダッシュボード。参加者と設定は小窓で開く
 
 const MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
-  { key: "settings", icon: "gear", label: "設定", view: settingsView },
+  { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 const ADMIN_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
-  { key: "members", icon: "people", label: "参加者", view: adminMembers },
   { key: "team", icon: "flag", label: "チーム", view: adminTeams },
   { key: "points", icon: "trophy", label: "ポイント", view: adminPoints },
-  { key: "settings", icon: "gear", label: "設定", view: settingsView },
+  { key: "members", icon: "people", label: "参加者", view: adminMembers, sheet: true },
+  { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 
+const desktopQuery = window.matchMedia("(min-width: 1100px)");
+desktopQuery.addEventListener("change", () => { shell = null; S.sheet = null; scheduleRender(); });
+
 let shell = null;
-let currentView = null;
 let renderQueued = false;
 
 function scheduleRender() {
@@ -1065,31 +1228,139 @@ function scheduleRender() {
   requestAnimationFrame(() => { renderQueued = false; render(); });
 }
 
-function buildShell(tabs) {
+// 参加者用：所属チームと所持ポイントを右上に常に表示する
+function meChip() {
+  const el = h("div", { class: "me-chip", "aria-label": "あなたの所属チームとポイント" });
+  el.paint = () => {
+    const uid = S.user.uid;
+    const teams = sortedSets().map((s) => S.teams.get(teamOfIn(uid, s.id))).filter(Boolean);
+    const points = sum(merged(S.logSrc).filter((l) => l.kind === "user" && l.target === uid));
+    el.replaceChildren(
+      ...teams.map((t) => h("span", { class: "me-team", title: teamName(t.id) }, dot(t.color), t.name)),
+      h("span", { class: "me-points" }, points, h("small", null, "pt")),
+    );
+  };
+  return el;
+}
+
+function statusBar() {
+  return h("div", { class: "status", hidden: true });
+}
+
+function paintStatus(status) {
+  const offline = !navigator.onLine || Object.values(S.meta).some((m) => m.cache);
+  const pending = Object.values(S.meta).some((m) => m.pending);
+  status.hidden = !offline && !pending;
+  status.replaceChildren(
+    icon(pending ? "clock" : "wifiOff"),
+    pending ? "未送信の変更があります。電波が戻ると自動で送信されます。" : "オフライン — 最後に受信した内容を表示しています",
+  );
+}
+
+function buildMobileShell(tabs) {
   const navTitle = h("div", { class: "nav-title" });
   const appName = h("div", { class: "app-name" });
-  const status = h("div", { class: "status", hidden: true });
+  const status = statusBar();
   const main = h("main");
   const nav = h("nav", { class: "tabbar" }, tabs.map((t) =>
     h("button", {
       "data-tab": t.key,
       onclick: () => {
         if (S.tab === t.key) return window.scrollTo({ top: 0, behavior: "smooth" });
-        S.tab = t.key; currentView = null; scheduleRender(); window.scrollTo(0, 0);
+        S.tab = t.key; shell.view = null; scheduleRender(); window.scrollTo(0, 0);
       },
     }, icon(t.icon), h("span", null, t.label))));
-  const header = h("header", { class: "navbar" }, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : null);
+  const chip = S.isAdmin ? null : meChip();
+  const header = h("header", { class: "navbar" }, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : chip);
   const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
   const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 44);
   window.addEventListener("scroll", onScroll, { passive: true });
-  return { root, navTitle, appName, status, main, nav, tabs };
+  return {
+    root,
+    update() {
+      appName.textContent = S.config.title || APP_TITLE;
+      paintStatus(status);
+      chip?.paint();
+      const tab = tabs.find((t) => t.key === S.tab) ?? tabs[0];
+      navTitle.textContent = tab.label;
+      for (const b of nav.children) {
+        const active = b.dataset.tab === tab.key;
+        b.classList.toggle("active", active);
+        if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      }
+      if (!this.view) {
+        this.view = tab.view();
+        main.replaceChildren(this.view.el);
+      }
+      this.view.update();
+    },
+  };
+}
+
+function openSheet(tab) {
+  const view = tab.view({ withTitle: false });
+  S.sheet = { key: tab.key, title: tab.label, view };
+  scheduleRender();
+}
+
+function closeSheet() {
+  if (!S.sheet && !document.querySelector(".sheet-backdrop")) return;
+  S.sheet = null;
+  document.querySelector(".sheet-backdrop")?.remove();
+  scheduleRender();
+}
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet) closeSheet(); });
+
+function buildDesktopShell(tabs) {
+  const panels = tabs.filter((t) => !t.sheet);
+  const views = panels.map((t) => t.view());
+  const title = h("div", { class: "desk-title" });
+  const status = statusBar();
+  const actions = h("div", { class: "desk-actions" },
+    tabs.filter((t) => t.sheet).map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
+  const chip = S.isAdmin ? null : meChip();
+  const header = h("header", { class: "desk-bar" },
+    h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
+    S.isAdmin ? h("span", { class: "badge static" }, "管理者") : null,
+    status, h("div", { class: "desk-right" }, chip, actions));
+  const grid = h("main", { class: `desk-grid cols-${panels.length}` },
+    views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el)));
+  const root = h("div", { class: "desk" }, header, grid);
+  let sheetKey = null;
+  return {
+    root,
+    update() {
+      title.textContent = S.config.title || APP_TITLE;
+      paintStatus(status);
+      chip?.paint();
+      views.forEach((v) => v.update());
+      if (S.sheet) {
+        if (sheetKey !== S.sheet.key) {
+          document.querySelector(".sheet-backdrop")?.remove();
+          sheetKey = S.sheet.key;
+          const backdrop = h("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) closeSheet(); } },
+            h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": S.sheet.title },
+              h("div", { class: "sheet-head" },
+                h("div", { class: "sheet-title" }, S.sheet.title),
+                h("button", { class: "text-btn", onclick: closeSheet }, "閉じる")),
+              h("div", { class: "sheet-body" }, S.sheet.view.el)));
+          document.body.append(backdrop);
+        }
+        S.sheet.view.update();
+      } else {
+        sheetKey = null;
+      }
+    },
+  };
 }
 
 function render() {
   if (!S.authReady) return;
   if (!S.user) {
     shell = null;
+    closeSheet();
     if (!document.querySelector(".login")) $app.replaceChildren(loginView());
     return;
   }
@@ -1102,35 +1373,14 @@ function render() {
         h("button", { class: "btn-filled", onclick: () => signOut(auth) }, "ログアウト")));
     }
   }
-  const tabs = S.isAdmin ? ADMIN_TABS : MEMBER_TABS;
   if (!shell) {
-    shell = buildShell(tabs);
+    closeSheet();
+    const tabs = S.isAdmin ? ADMIN_TABS : MEMBER_TABS;
+    shell = desktopQuery.matches ? buildDesktopShell(tabs) : buildMobileShell(tabs);
     $app.replaceChildren(shell.root);
   }
-  const title = S.config.title || APP_TITLE;
-  shell.appName.textContent = title;
-  document.title = title;
-
-  const offline = !navigator.onLine || Object.values(S.meta).some((m) => m.cache);
-  const pending = Object.values(S.meta).some((m) => m.pending);
-  shell.status.hidden = !offline && !pending;
-  shell.status.replaceChildren(
-    icon(pending ? "clock" : "wifiOff"),
-    pending ? "未送信の変更があります。電波が戻ると自動で送信されます。" : "オフライン — 最後に受信した内容を表示しています",
-  );
-
-  const tab = tabs.find((t) => t.key === S.tab) ?? tabs[0];
-  shell.navTitle.textContent = tab.label;
-  for (const b of shell.nav.children) {
-    const active = b.dataset.tab === tab.key;
-    b.classList.toggle("active", active);
-    if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
-  }
-  if (!currentView) {
-    currentView = tab.view();
-    shell.main.replaceChildren(currentView.el);
-  }
-  currentView.update();
+  document.title = S.config.title || APP_TITLE;
+  shell.update();
 }
 
 const $app = document.getElementById("app");
