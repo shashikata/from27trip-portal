@@ -3,12 +3,12 @@
 // Firebase コンソール →「プロジェクトの設定」→「マイアプリ」→ ウェブアプリの設定値を貼り付ける。
 // （この値は公開されても問題ない。アクセス制御は firestore.rules で行っている）
 const productionConfig = {
-  apiKey: "REPLACE_ME",
-  authDomain: "REPLACE_ME.firebaseapp.com",
-  projectId: "REPLACE_ME",
-  storageBucket: "REPLACE_ME.appspot.com",
-  messagingSenderId: "REPLACE_ME",
-  appId: "REPLACE_ME",
+  apiKey: "AIzaSyDDOVgcxdgv68LorfMXi0_LYOAsa2rQF2o",
+  authDomain: "island2027spring.firebaseapp.com",
+  projectId: "island2027spring",
+  storageBucket: "island2027spring.firebasestorage.app",
+  messagingSenderId: "732560470365",
+  appId: "1:732560470365:web:400b9f62fe7ed4cdf0b8b4",
 };
 
 // 画面上部に出るタイトル（管理画面の「設定」からも変更できる）
