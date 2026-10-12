@@ -524,7 +524,32 @@ function quickButtons(input, steps) {
   };
   return h("div", { class: "quick" },
     steps.map((n) => h("button", { type: "button", class: `pill${n < 0 ? " neg" : ""}`, onclick: () => add(n) }, signed(n))),
-    h("button", { type: "button", class: "pill reset", onclick: () => { input.value = ""; } }, "0に戻す"));
+    h("button", { type: "button", class: "pill reset", onclick: () => { input.value = ""; input.dispatchEvent(new Event("input")); } }, "0に戻す"));
+}
+
+// 点数のプルダウン。値の本体は input（数値欄）で、プルダウン・加算ボタン・自由入力のどれから変えても同期する
+function amountPicker(input, values, label = "ポイント") {
+  const CUSTOM = "custom";
+  const sel = h("select", { "aria-label": "点数" },
+    h("option", { value: "" }, "選択"),
+    values.map((v) => h("option", { value: String(v) }, `${signed(v)} pt`)),
+    h("option", { value: CUSTOM }, "自由に入力"));
+  const customCell = field("点数を入力", input);
+  const sync = () => {
+    const v = input.value === "" ? "" : String(Number(input.value));
+    if (v === "") { if (sel.value !== CUSTOM) sel.value = ""; }
+    else sel.value = values.map(String).includes(v) ? v : CUSTOM;
+    customCell.hidden = sel.value !== CUSTOM;
+  };
+  sel.addEventListener("change", () => {
+    if (sel.value !== CUSTOM) input.value = sel.value;
+    customCell.hidden = sel.value !== CUSTOM;
+    if (sel.value === CUSTOM) input.focus();
+  });
+  input.addEventListener("input", sync);
+  input.addEventListener("change", sync);
+  sync();
+  return [field(label, sel), customCell];
 }
 
 // 見出しを押すと開閉する欄
@@ -1532,11 +1557,13 @@ function adminPoints() {
       contributor.value = "";
       reason.value = "";
       delta.value = "";
+      delta.dispatchEvent(new Event("input"));
     },
   },
     group("対象", [h("div", { class: "cell" }, kind), field("名前", target), contributorCell, spyDestCell],
       "チームに付けるときは、誰の功績かを選べます（選ばなければチーム全体）。"),
-    group("点数", [field("ポイント", delta), h("div", { class: "cell" }, quick), field("理由", reason)]),
+    group("点数", [...amountPicker(delta, [1, 2, 3, 5, 10, 15, 20, 30, 50, 100, -1, -2, -3, -5, -10, -20]), h("div", { class: "cell" }, quick), field("理由", reason)],
+      "プルダウンで選ぶか、下のボタンを押した回数だけ足せます。"),
     group("公開範囲", [h("div", { class: "cell" }, visibility), visSetCell], visFooter),
     h("button", { class: "btn-filled", type: "submit" }, "ポイントを付ける"),
   );
@@ -1606,13 +1633,14 @@ function adminPoints() {
       fire(b.commit(), `${name(from)} → ${name(to)} に ${n}pt 移しました`);
       xReason.value = "";
       xAmount.value = "";
+      xAmount.dispatchEvent(new Event("input"));
     },
   },
     group("ポイント交換", [
       h("div", { class: "cell" }, xKind),
       field("渡す側", xFrom),
       field("受け取る側", xTo),
-      field("ポイント", xAmount),
+      ...amountPicker(xAmount, [1, 2, 3, 5, 10, 15, 20, 30, 50, 100]),
       h("div", { class: "cell" }, quickButtons(xAmount, [1, 3, 5, 10])),
       field("理由", xReason),
     ], "渡す側から引いて、受け取る側に同じだけ足します。取り消すと両方まとめて元に戻ります。"),
