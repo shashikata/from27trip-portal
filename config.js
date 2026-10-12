@@ -1,0 +1,29 @@
+// ===== ここだけ自分の環境に合わせて書き換える =====
+
+// Firebase コンソール →「プロジェクトの設定」→「マイアプリ」→ ウェブアプリの設定値を貼り付ける。
+// （この値は公開されても問題ない。アクセス制御は firestore.rules で行っている）
+const productionConfig = {
+  apiKey: "REPLACE_ME",
+  authDomain: "REPLACE_ME.firebaseapp.com",
+  projectId: "REPLACE_ME",
+  storageBucket: "REPLACE_ME.appspot.com",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME",
+};
+
+// 画面上部に出るタイトル（管理画面の「設定」からも変更できる）
+export const APP_TITLE = "七日島 無人島企画";
+
+// ログインID → メールアドレスへの変換に使うドメイン（実在しない予約ドメイン。メールは送信されない）
+export const EMAIL_DOMAIN = "island.example.com";
+
+// 管理者のログインID。firestore.rules の isAdmin() と必ず一致させること
+export const ADMIN_IDS = ["admin1", "admin2"];
+
+// ===== ここから下は触らなくてよい =====
+
+export const USE_EMULATOR = ["localhost", "127.0.0.1"].includes(location.hostname);
+
+export const firebaseConfig = USE_EMULATOR
+  ? { apiKey: "demo-key", authDomain: "localhost", projectId: "demo-island", appId: "demo-app" }
+  : productionConfig;

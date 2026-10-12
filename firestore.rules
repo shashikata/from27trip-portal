@@ -1,0 +1,95 @@
+rules_version = '2';
+
+// アクセス制御の本体。画面側（app.js）で隠すだけでは、通信を覗けば中身が見えてしまう。
+// 「誰が何を読めるか」はすべてここで判定する。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // 管理者のメールアドレス。config.js の ADMIN_IDS + EMAIL_DOMAIN と一致させる
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email in ['admin1@island.example.com', 'admin2@island.example.com'];
+    }
+
+    // 管理者が members/{uid} を作った人だけが参加者（勝手にアカウントを作っても何も読めない）
+    function isMember() {
+      return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
+
+    function teamsPublished() {
+      return get(/databases/$(database)/documents/config/app).data.get('teamsPublished', false) == true;
+    }
+
+    function myTeam() {
+      return get(/databases/$(database)/documents/assignments/$(request.auth.uid)).data.teamId;
+    }
+
+    function validAnnouncement(d) {
+      return d.keys().hasAll(['title', 'body', 'scope', 'target', 'images', 'pinned', 'createdAt'])
+        && d.title is string && d.title.size() <= 100
+        && d.body is string && d.body.size() <= 5000
+        && d.scope in ['all', 'team', 'user']
+        && (d.scope == 'all' || d.target is string)
+        && d.images is list && d.images.size() <= 3
+        && d.pinned is bool;
+    }
+
+    function validPointLog(d) {
+      return d.keys().hasAll(['kind', 'target', 'teamId', 'visibility', 'delta', 'reason', 'createdAt'])
+        && d.kind in ['user', 'team']
+        && d.target is string
+        && d.delta is number
+        && d.reason is string && d.reason.size() <= 200
+        && d.visibility in ['public', 'team', 'private']
+        && (d.visibility != 'private' || d.kind == 'user')
+        && (d.visibility != 'team' || d.teamId is string);
+    }
+
+    match /config/{id} {
+      allow read: if isAdmin() || isMember();
+      allow write: if isAdmin();
+    }
+
+    match /members/{uid} {
+      allow read: if isAdmin() || isMember() || (signedIn() && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    // チーム編成は「発表」するまで参加者には見えない
+    match /teams/{teamId} {
+      allow read: if isAdmin() || (isMember() && teamsPublished());
+      allow write: if isAdmin();
+    }
+
+    match /assignments/{uid} {
+      allow read: if isAdmin() || (isMember() && teamsPublished());
+      allow write: if isAdmin();
+    }
+
+    // scope: 'all' = 全員 / 'team' = target のチームだけ / 'user' = target 本人だけ
+    match /announcements/{id} {
+      allow read: if isAdmin() || (isMember() && (
+           resource.data.scope == 'all'
+        || (resource.data.scope == 'user' && resource.data.target == request.auth.uid)
+        || (resource.data.scope == 'team' && teamsPublished() && resource.data.target == myTeam())
+      ));
+      allow create, update: if isAdmin() && validAnnouncement(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // visibility: 'public' = 全員 / 'team' = teamId のチームだけ / 'private' = target 本人だけ
+    match /pointLogs/{id} {
+      allow read: if isAdmin() || (isMember() && (
+           resource.data.visibility == 'public'
+        || (resource.data.visibility == 'private' && resource.data.target == request.auth.uid)
+        || (resource.data.visibility == 'team' && teamsPublished() && resource.data.teamId == myTeam())
+      ));
+      allow create, update: if isAdmin() && validPointLog(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}
