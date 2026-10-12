@@ -193,6 +193,18 @@ await test("見ました：余計な項目は付けられない", () => assertFa
 await test("見ました：部外者は押せない", () => assertFails(ack(outsider(), "ackAll", "hacker")));
 await test("見ました：管理者は全員分を読める", async () => assert.equal((await getDocs(collection(admin(), "acks"))).size, 1));
 
+// ----- 表・メモ
+await env.withSecurityRulesDisabled(async (ctx) => {
+  const db = ctx.firestore();
+  await setDoc(doc(db, "notes/pub"), { title: "ルール", type: "memo", body: "1位 +10", shared: true });
+  await setDoc(doc(db, "notes/secret"), { title: "採点メモ", type: "memo", body: "内緒", shared: false });
+});
+await test("表・メモ：公開分だけ読める", async () =>
+  assert.deepEqual(await ids(query(collection(alice(), "notes"), where("shared", "==", true))), ["pub"]));
+await test("表・メモ：非公開は読めない", () => assertFails(getDoc(doc(alice(), "notes/secret"))));
+await test("表・メモ：参加者は書けない", () => assertFails(setDoc(doc(alice(), "notes/x"), { title: "x", shared: true })));
+await test("表・メモ：管理者は書ける", () => assertSucceeds(setDoc(doc(admin(), "notes/x"), { title: "x", type: "memo", body: "", shared: false })));
+
 // ----- 発表の切り替え：表2を発表すると alice は X 宛てを読めるようになる
 await env.withSecurityRulesDisabled(async (ctx) => {
   const db = ctx.firestore();

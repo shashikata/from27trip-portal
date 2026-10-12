@@ -110,6 +110,12 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // 表・メモ（ポイントの決め方、リーグ戦の表など）。shared == true のものだけ参加者に見える
+    match /notes/{id} {
+      allow read: if isAdmin() || (isMember() && resource.data.shared == true);
+      allow write: if isAdmin();
+    }
+
     // 「見ました」の記録。acks/{annId}_{uid}。参加者は自分の分だけ作成・取り消しでき、自分の分だけ読める
     match /acks/{id} {
       allow read: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);

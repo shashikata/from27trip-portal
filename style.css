@@ -603,3 +603,47 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 /* 項目名は文字数に合わせて伸ばす（狭い列で折り返さない） */
 .field-label { width: auto; min-width: 5.5em; margin-right: 12px; white-space: nowrap; }
 .desk-grid.cols-4 .field-label { width: auto; min-width: 4.5em; }
+
+/* ---------- 表・メモ ---------- */
+.note-add { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.note-add .pill { display: inline-flex; align-items: center; gap: 4px; color: var(--blue); }
+.note-add .pill .icon { width: 17px; height: 17px; }
+.note-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.note-head .icon { width: 20px; height: 20px; color: var(--label-2); flex: none; }
+.note-head h3 { margin: 0; font-size: 18px; font-weight: 700; }
+.note-head input { font-size: 18px; }
+.note-body { margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+.note-table { border-collapse: collapse; width: 100%; font-size: 15px; font-variant-numeric: tabular-nums; }
+.note-table th, .note-table td { border: .5px solid var(--separator); padding: 7px 10px; text-align: center; white-space: nowrap; }
+.note-table th { background: var(--fill); font-weight: 600; }
+.note-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--fill) 40%, transparent); }
+.note-table.edit th, .note-table.edit td { padding: 0; }
+.note-table.edit input {
+  width: 100%; min-width: 64px; border: none; background: transparent; padding: 7px 8px;
+  font-size: 15px; text-align: center; outline: none;
+}
+.note-table.edit th input { font-weight: 600; }
+.note-table.edit input:focus { background: color-mix(in srgb, var(--blue) 10%, transparent); }
+.table-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.table-tools .pill { font-size: 13px; padding: 4px 10px; min-width: 0; }
+.note-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.note-share { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--label-2); }
+.note-actions { display: flex; gap: 12px; }
+.note.editor.dirty { box-shadow: 0 0 0 1.5px var(--orange); }
+.note.editor.shared .note-head .icon { color: var(--green); }
+.side-gap { height: 12px; }
+/* 管理者スマホ：左上の歯車と右上の「管理者」が並ぶ */
+.navbar .nav-gear + .nav-title { margin: 0 auto; }
+.desk-grid.cols-4 { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, .9fr); }
+
+/* ---------- 折りたたみ・加算ボタン ---------- */
+.fold { margin-bottom: 20px; }
+.fold > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+  font-size: 17px; font-weight: 700; padding: 6px 4px 10px;
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary .icon { width: 18px; height: 18px; color: var(--label-2); transition: transform .2s; }
+.fold[open] > summary .icon { transform: rotate(90deg); }
+.pill.reset { color: var(--label-2); }

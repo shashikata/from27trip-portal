@@ -59,6 +59,7 @@ const S = {
   teams: new Map(),
   memberships: new Map(),
   memSrc: {},                // 参加者：所属のクエリごとの結果
+  notes: new Map(),          // 表・メモ
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
@@ -127,6 +128,7 @@ function startAdmin() {
   listen("ann", collection(db, "announcements"), (s) => { S.annSrc.all = toMap(s); });
   listen("logs", collection(db, "pointLogs"), (s) => { S.logSrc.all = toMap(s); });
   listen("acks", collection(db, "acks"), (s) => { S.acks = toMap(s); });
+  listen("notes", collection(db, "notes"), (s) => { S.notes = toMap(s); });
 }
 
 // 旧版（チーム表が1つだけ）で作ったチームと振り分けを「チーム表1」に移す
@@ -180,6 +182,7 @@ function startMemberData(uid) {
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
   listen("acks", query(collection(db, "acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
+  listen("notes", query(collection(db, "notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
   listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
   listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
@@ -210,7 +213,7 @@ onAuthStateChanged(auth, (user) => {
   Object.assign(S, {
     authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), me: undefined,
     config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home", sheet: null,
   });
   shell = null;
@@ -345,6 +348,9 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   spy: '<path d="M3 11h18M6 11l1.5-5.5h9L18 11"/><circle cx="7.5" cy="16" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/><path d="M10 16h4"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  note: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
+  table: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
   arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
 };
 
@@ -507,6 +513,23 @@ function segmented(options, initial) {
   Object.defineProperty(el, "value", { get: () => value, set: (v) => { value = v; paint(); } });
   el.setOptions(options);
   return el;
+}
+
+// 押した回数だけ足されるボタン列（最後に「0に戻す」）
+function quickButtons(input, steps) {
+  const add = (n) => {
+    const v = (Number(input.value) || 0) + n;
+    input.value = Math.round(v * 100) / 100;
+    input.dispatchEvent(new Event("input"));
+  };
+  return h("div", { class: "quick" },
+    steps.map((n) => h("button", { type: "button", class: `pill${n < 0 ? " neg" : ""}`, onclick: () => add(n) }, signed(n))),
+    h("button", { type: "button", class: "pill reset", onclick: () => { input.value = ""; } }, "0に戻す"));
+}
+
+// 見出しを押すと開閉する欄
+function fold(title, content, open) {
+  return h("details", { class: "fold", open }, h("summary", null, h("span", null, title), icon("chevron")), content);
 }
 
 function toggle(checked = false) {
@@ -676,6 +699,122 @@ function statCard(label, total, parts, color) {
     h("div", { class: "stat-value" }, total, h("small", null, "pt")),
     h("div", { class: "stat-parts" }, parts.map(([k, v]) => h("div", null, h("div", { class: "stat-part-value" }, v), h("div", { class: "stat-part-label" }, k)))),
   );
+}
+
+// ---------------------------------------------------------------- 表・メモ
+//   notes/{id} { title, type: "memo" | "table", body, rows: [{ c: [セル...] }], shared, order }
+//   （Firestore は配列の中に配列を入れられないので、表の各行は { c: [...] } にしている）
+
+const sortedNotes = () => [...S.notes.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const tableRows = (n) => (n.rows?.length ? n.rows.map((r) => [...(r.c ?? [])]) : [["", ""], ["", ""]]);
+
+function noteDisplay(n) {
+  const rows = tableRows(n);
+  const width = Math.max(...rows.map((r) => r.length));
+  return h("article", { class: "card note", "data-note": n.id },
+    h("div", { class: "note-head" }, icon(n.type === "table" ? "table" : "note"), h("h3", null, n.title || "（無題）")),
+    n.type === "table"
+      ? h("div", { class: "table-wrap" }, h("table", { class: "note-table" },
+          h("thead", null, h("tr", null, Array.from({ length: width }, (_, i) => h("th", null, rows[0][i] ?? "")))),
+          h("tbody", null, rows.slice(1).map((r) => h("tr", null, Array.from({ length: width }, (_, i) => h("td", null, r[i] ?? "")))))))
+      : h("p", { class: "note-body" }, n.body || ""),
+  );
+}
+
+// 管理者用の編集カード。保存を押すまで手元の下書きを保ち、他の端末からの更新で消えないようにする
+function noteEditor(n) {
+  let draft = null;
+  let dirty = false;
+  const title = h("input", { type: "text", class: "plain title-input", placeholder: "タイトル", "aria-label": "タイトル" });
+  const shared = toggle();
+  const body = h("textarea", { class: "plain", rows: "4", placeholder: "例：ビーチフラッグ 1位 +10 / 2位 +6 / 3位 +3" });
+  const grid = h("div", { class: "table-wrap" });
+  const saveBtn = h("button", { class: "text-btn", disabled: true }, "保存");
+  const markDirty = () => { dirty = true; saveBtn.disabled = false; el.classList.add("dirty"); };
+  title.addEventListener("input", markDirty);
+  body.addEventListener("input", markDirty);
+  shared.addEventListener("change", () => fire(updateDoc(doc(db, "notes", n.id), { shared: shared.checked }), shared.checked ? "参加者に公開しました" : "管理者だけにしました"));
+
+  const paintGrid = () => {
+    const width = Math.max(1, ...draft.map((r) => r.length));
+    draft.forEach((r) => { while (r.length < width) r.push(""); });
+    grid.replaceChildren(h("table", { class: "note-table edit" }, h("tbody", null, draft.map((r, ri) => h("tr", null, r.map((v, ci) => {
+      const inp = h("input", { type: "text", value: v, "aria-label": `${ri + 1}行${ci + 1}列` });
+      inp.addEventListener("input", () => { draft[ri][ci] = inp.value; markDirty(); });
+      return h(ri === 0 ? "th" : "td", null, inp);
+    }))))));
+  };
+  const edit = (fn) => { fn(); markDirty(); paintGrid(); };
+  const tableTools = h("div", { class: "table-tools" },
+    h("button", { class: "pill", type: "button", onclick: () => edit(() => draft.push(Array(draft[0].length).fill(""))) }, "＋ 行"),
+    h("button", { class: "pill", type: "button", onclick: () => edit(() => draft.forEach((r) => r.push(""))) }, "＋ 列"),
+    h("button", { class: "pill neg", type: "button", onclick: () => edit(() => { if (draft.length > 1) draft.pop(); }) }, "− 行"),
+    h("button", { class: "pill neg", type: "button", onclick: () => edit(() => { if (draft[0].length > 1) draft.forEach((r) => r.pop()); }) }, "− 列"));
+
+  saveBtn.addEventListener("click", () => {
+    const data = { title: title.value.trim() };
+    if (n.type === "table") data.rows = draft.map((r) => ({ c: [...r] }));
+    else data.body = body.value;
+    fire(updateDoc(doc(db, "notes", n.id), data), "保存しました");
+    dirty = false; saveBtn.disabled = true; el.classList.remove("dirty");
+  });
+
+  const el = h("article", { class: "card note editor", "data-note": n.id },
+    h("div", { class: "note-head" }, icon(n.type === "table" ? "table" : "note"), title),
+    n.type === "table" ? [grid, tableTools] : body,
+    h("div", { class: "note-foot" },
+      h("label", { class: "note-share" }, shared, "参加者に公開"),
+      h("div", { class: "note-actions" },
+        saveBtn,
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${n.title || "無題"}」を削除しますか？`)) fire(deleteDoc(doc(db, "notes", n.id)), "削除しました"); } }, "削除"))),
+  );
+  return {
+    el,
+    patch(next) {
+      n = next;
+      shared.checked = !!n.shared;
+      el.classList.toggle("shared", !!n.shared);
+      if (dirty) return;
+      title.value = n.title ?? "";
+      if (n.type === "table") { draft = tableRows(n); paintGrid(); } else body.value = n.body ?? "";
+    },
+  };
+}
+
+function notesView({ admin = false, compact = false, withTitle = true } = {}) {
+  const list = h("div", { class: "stack" });
+  const add = (type) => fire(addDoc(collection(db, "notes"), {
+    title: type === "table" ? "新しい表" : "新しいメモ", type, body: "",
+    rows: type === "table" ? [{ c: ["", "", ""] }, { c: ["", "", ""] }] : [],
+    shared: false, order: Date.now(),
+  }), type === "table" ? "表を追加しました" : "メモを追加しました");
+  const el = h("div", null,
+    withTitle ? sectionTitle("表・メモ", compact) : null,
+    admin ? h("div", { class: "note-add" },
+      h("button", { class: "pill", onclick: () => add("memo") }, icon("note"), "メモを追加"),
+      h("button", { class: "pill", onclick: () => add("table") }, icon("table"), "表を追加")) : null,
+    list);
+  return {
+    el,
+    update() {
+      const notes = sortedNotes();
+      if (!notes.length) {
+        list._rows?.clear();
+        list.replaceChildren(emptyState("note", "まだありません", admin ? "ポイントの決め方やリーグ戦の表などを、自由に追加できます。" : null));
+        return;
+      }
+      if (!admin) { list.replaceChildren(...notes.map(noteDisplay)); return; }
+      if (list.querySelector(".empty")) list.replaceChildren();
+      keyedList(list, notes, (n) => noteEditor(n), (row, n) => row.patch(n));
+    },
+  };
+}
+
+// 管理者 PC の4列目：表・メモ ＋ 参加者
+function adminSide() {
+  const notes = notesView({ admin: true });
+  const members = adminMembers({ withTitle: true });
+  return { el: h("div", null, notes.el, h("div", { class: "side-gap" }), members.el), update() { notes.update(); members.update(); } };
 }
 
 // ---------------------------------------------------------------- 画面：ログイン
@@ -1295,7 +1434,7 @@ function adminTeams() {
 function adminPoints() {
   const kind = segmented([{ value: "team", label: "チーム" }, { value: "user", label: "個人" }]);
   const target = h("select", { "aria-label": "対象" });
-  const delta = h("input", { type: "number", step: "any", value: "1", required: true, inputmode: "decimal", class: "delta-input" });
+  const delta = h("input", { type: "number", step: "any", placeholder: "0", inputmode: "decimal", class: "delta-input" });
   const reason = h("input", { type: "text", maxlength: "200", placeholder: "ビーチフラッグ1位" });
   const contributor = h("select", { "aria-label": "誰の功績か" });
   const contributorCell = field("誰の功績", contributor);
@@ -1358,15 +1497,15 @@ function adminPoints() {
   spyDest.addEventListener("change", refreshForm);
   visibility.addEventListener("change", refreshForm);
 
-  const quick = h("div", { class: "quick" }, [1, 3, 5, 10, -1, -5].map((n) =>
-    h("button", { type: "button", class: `pill${n < 0 ? " neg" : ""}`, onclick: () => { delta.value = n; } }, signed(n))));
+  // ボタンは押した回数だけ足される（+5 を2回で 10）
+  const quick = quickButtons(delta, [1, 3, 5, 10, -1, -5]);
 
   const form = h("form", {
     onsubmit: (e) => {
       e.preventDefault();
       if (!target.value) return toast("対象を選んでください", true);
       const d = Number(delta.value);
-      if (!Number.isFinite(d) || d === 0) return toast("0 以外の数値を入れてください", true);
+      if (!Number.isFinite(d) || d === 0) return toast("点数を入れてください（ボタンを押すか、数字を入力）", true);
       let teamId = null;
       let finalTarget = target.value;
       const who = kind.value === "team" ? contributor.value || null : null;
@@ -1392,6 +1531,7 @@ function adminPoints() {
       }), `${signed(d)} pt を付けました${toTrue ? `（本当のチーム ${S.teams.get(real)?.name} へ）` : ""}`);
       contributor.value = "";
       reason.value = "";
+      delta.value = "";
     },
   },
     group("対象", [h("div", { class: "cell" }, kind), field("名前", target), contributorCell, spyDestCell],
@@ -1405,7 +1545,7 @@ function adminPoints() {
   const xKind = segmented([{ value: "user", label: "個人間" }, { value: "team", label: "チーム間" }]);
   const xFrom = h("select", { "aria-label": "渡す側" });
   const xTo = h("select", { "aria-label": "受け取る側" });
-  const xAmount = h("input", { type: "number", step: "any", min: "0", value: "1", required: true, inputmode: "decimal", class: "delta-input" });
+  const xAmount = h("input", { type: "number", step: "any", min: "0", placeholder: "0", inputmode: "decimal", class: "delta-input" });
   const xReason = h("input", { type: "text", maxlength: "200", placeholder: "食料と交換" });
   const xVis = segmented([]);
   const xSet = h("select", { "aria-label": "どのチーム表のチーム内か" });
@@ -1465,6 +1605,7 @@ function adminPoints() {
       b.set(doc(collection(db, "pointLogs")), { ...base, target: to, teamId: toTeam, delta: n, counterId: from });
       fire(b.commit(), `${name(from)} → ${name(to)} に ${n}pt 移しました`);
       xReason.value = "";
+      xAmount.value = "";
     },
   },
     group("ポイント交換", [
@@ -1472,6 +1613,7 @@ function adminPoints() {
       field("渡す側", xFrom),
       field("受け取る側", xTo),
       field("ポイント", xAmount),
+      h("div", { class: "cell" }, quickButtons(xAmount, [1, 3, 5, 10])),
       field("理由", xReason),
     ], "渡す側から引いて、受け取る側に同じだけ足します。取り消すと両方まとめて元に戻ります。"),
     group("交換の公開範囲", [h("div", { class: "cell" }, xVis), xSetCell], xFooter),
@@ -1480,8 +1622,8 @@ function adminPoints() {
 
   const el = h("div", null,
     largeTitle("ポイント"),
-    form,
-    transferForm,
+    fold("ポイントを付ける", form, true),
+    fold("ポイント交換", transferForm, false),
     summary,
     h("section", { class: "group" }, h("div", { class: "group-header" }, "履歴"), list),
   );
@@ -1520,17 +1662,21 @@ function adminPoints() {
 // スマホ：下のタブで画面を切り替える
 // PC（幅 1100px 以上）：お知らせ・チーム・ポイントを横に並べた1画面のダッシュボード。参加者と設定は小窓で開く
 
+// sheet: 小窓で開く / desktopOnly: PC の列だけ / mobileOnly: スマホのタブだけ
 const MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
+  { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 const ADMIN_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
   { key: "team", icon: "flag", label: "チーム", view: adminTeams },
   { key: "points", icon: "trophy", label: "ポイント", view: adminPoints },
-  { key: "members", icon: "people", label: "参加者", view: adminMembers },
+  { key: "side", icon: "note", label: "表・メモ", view: adminSide, desktopOnly: true },
+  { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
+  { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 
@@ -1575,7 +1721,9 @@ function paintStatus(status) {
   );
 }
 
-function buildMobileShell(tabs) {
+function buildMobileShell(allTabs) {
+  const tabs = allTabs.filter((t) => !t.sheet && !t.desktopOnly);
+  const sheetTabs = allTabs.filter((t) => t.sheet);
   const navTitle = h("div", { class: "nav-title" });
   const appName = h("div", { class: "app-name" });
   const status = statusBar();
@@ -1589,7 +1737,8 @@ function buildMobileShell(tabs) {
       },
     }, icon(t.icon), h("span", null, t.label))));
   const chip = S.isAdmin ? null : meChip();
-  const header = h("header", { class: "navbar" }, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : chip);
+  const gears = sheetTabs.map((t) => h("button", { class: "nav-gear", "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon)));
+  const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : chip);
   const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
   const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 44);
@@ -1612,6 +1761,7 @@ function buildMobileShell(tabs) {
         main.replaceChildren(this.view.el);
       }
       this.view.update();
+      paintSheet();
     },
   };
 }
@@ -1651,7 +1801,7 @@ function paintSheet() {
 }
 
 function buildDesktopShell(tabs) {
-  const panels = tabs.filter((t) => !t.sheet);
+  const panels = tabs.filter((t) => !t.sheet && !t.mobileOnly);
   const views = panels.map((t) => t.view());
   const title = h("div", { class: "desk-title" });
   const status = statusBar();
@@ -1683,6 +1833,7 @@ function buildMemberPageShell() {
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
     { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
+    { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
   ];
   const summary = memberSummary();
   const chip = meChip();
@@ -1708,6 +1859,8 @@ function buildMemberPageShell() {
       const el = document.getElementById(`sec-${sec.key}`);
       if (el && el.getBoundingClientRect().top < 160) current = sec.key;
     }
+    // 一番下まで来たら（それ以上スクロールできないので）最後の欄を選択中にする
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = sections[sections.length - 1].key;
     for (const b of jump.querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.jump === current));
   };
   window.addEventListener("scroll", onScroll, { passive: true });
