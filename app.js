@@ -58,6 +58,8 @@ const S = {
   sets: new Map(),
   teams: new Map(),
   memberships: new Map(),
+  memSrc: {},                // 参加者：所属のクエリごとの結果
+  acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
   meta: {},                  // クエリごとの fromCache / hasPendingWrites
@@ -124,6 +126,7 @@ function startAdmin() {
   listen("memberships", collection(db, "memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", collection(db, "announcements"), (s) => { S.annSrc.all = toMap(s); });
   listen("logs", collection(db, "pointLogs"), (s) => { S.logSrc.all = toMap(s); });
+  listen("acks", collection(db, "acks"), (s) => { S.acks = toMap(s); });
 }
 
 // 旧版（チーム表が1つだけ）で作ったチームと振り分けを「チーム表1」に移す
@@ -133,6 +136,13 @@ async function migrateLegacyTeams() {
     getDocs(collection(db, "teams")),
     getDoc(doc(db, "config", "app")),
   ]);
+  const memSnap = await getDocs(collection(db, "memberships"));
+  const noHidden = memSnap.docs.filter((d) => typeof d.data().hidden !== "boolean");
+  if (noHidden.length) {
+    const b0 = writeBatch(db);
+    noHidden.forEach((d) => b0.update(d.ref, { hidden: false }));
+    await b0.commit();
+  }
   const legacy = teamsSnap.docs.filter((d) => !d.data().setId);
   if (!legacy.length && asg.empty) return;
   const published = !!cfg.data()?.teamsPublished;
@@ -143,7 +153,7 @@ async function migrateLegacyTeams() {
   legacy.forEach((t) => b.update(t.ref, { setId: setRef.id, published }));
   asg.forEach((a) => {
     const teamId = a.data().teamId;
-    if (legacyIds.has(teamId)) b.set(doc(db, "memberships", `${teamId}_${a.id}`), { teamId, uid: a.id, setId: setRef.id, published });
+    if (legacyIds.has(teamId)) b.set(doc(db, "memberships", `${teamId}_${a.id}`), { teamId, uid: a.id, setId: setRef.id, published, hidden: false });
     b.delete(a.ref);
   });
   await b.commit();
@@ -165,7 +175,11 @@ function startMemberData(uid) {
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
-  listen("memberships", published("memberships"), (s) => { S.memberships = toMap(s); refreshTeamListeners(uid); });
+  const memRef = collection(db, "memberships");
+  const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshTeamListeners(uid); };
+  listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
+  listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
+  listen("acks", query(collection(db, "acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
   listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
   listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
   listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
@@ -196,7 +210,7 @@ onAuthStateChanged(auth, (user) => {
   Object.assign(S, {
     authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), me: undefined,
     config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home", sheet: null,
   });
   shell = null;
@@ -209,15 +223,21 @@ window.addEventListener("offline", () => scheduleRender());
 
 // ---------------------------------------------------------------- データの参照
 
+// replaceChildren と同じだが、null / false は飛ばす（そのまま渡すと "null" という文字が出てしまう）
+const setKids = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+
 const byNatural = (a, b) => String(a).localeCompare(String(b), "ja", { numeric: true });
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name);
 const sortedMembers = () => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId));
 const sortedSets = () => [...S.sets.values()].sort(byOrder);
 const teamsInSet = (setId) => [...S.teams.values()].filter((t) => t.setId === setId).sort(byOrder);
 const membershipsOf = (pred) => [...S.memberships.values()].filter(pred);
-const teamOfIn = (uid, setId) => membershipsOf((m) => m.uid === uid && m.setId === setId)[0]?.teamId ?? null;
-const membersOfTeam = (teamId) => {
-  const uids = new Set(membershipsOf((m) => m.teamId === teamId).map((m) => m.uid));
+// 表向きの所属（スパイなら参加先のチーム）
+const teamOfIn = (uid, setId) => membershipsOf((m) => m.uid === uid && m.setId === setId && !m.hidden)[0]?.teamId ?? null;
+// スパイの本当のチーム（本人と管理者にしか届かない）
+const trueTeamOf = (uid, setId) => membershipsOf((m) => m.uid === uid && m.setId === setId && m.hidden)[0]?.teamId ?? null;
+const membersOfTeam = (teamId, { includeHidden = false } = {}) => {
+  const uids = new Set(membershipsOf((m) => m.teamId === teamId && (includeHidden || !m.hidden)).map((m) => m.uid));
   return sortedMembers().filter((m) => uids.has(m.id));
 };
 const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.teamId)).map((m) => m.teamId);
@@ -249,13 +269,31 @@ function setPublished(setId, published) {
   return b.commit();
 }
 
+// 表向きの所属を変える（スパイの本当のチームと同じになったら、スパイは解除される）
 function assignMember(uid, setId, teamId) {
   const b = writeBatch(db);
-  membershipsOf((m) => m.uid === uid && m.setId === setId && m.teamId !== teamId)
+  membershipsOf((m) => m.uid === uid && m.setId === setId && !m.hidden && m.teamId !== teamId)
     .forEach((m) => b.delete(doc(db, "memberships", m.id)));
   if (teamId) {
-    b.set(doc(db, "memberships", `${teamId}_${uid}`), { teamId, uid, setId, published: !!S.sets.get(setId)?.published });
+    b.set(doc(db, "memberships", `${teamId}_${uid}`), { teamId, uid, setId, published: !!S.sets.get(setId)?.published, hidden: false });
   }
+  return b.commit();
+}
+
+// スパイ登録：参加先（表向き）と本当のチームを同時に書く
+function setSpy(uid, setId, coverTeamId, trueTeamId) {
+  const published = !!S.sets.get(setId)?.published;
+  const b = writeBatch(db);
+  membershipsOf((m) => m.uid === uid && m.setId === setId && m.teamId !== coverTeamId)
+    .forEach((m) => b.delete(doc(db, "memberships", m.id)));
+  b.set(doc(db, "memberships", `${coverTeamId}_${uid}`), { teamId: coverTeamId, uid, setId, published, hidden: false });
+  b.set(doc(db, "memberships", `${trueTeamId}_${uid}`), { teamId: trueTeamId, uid, setId, published, hidden: true });
+  return b.commit();
+}
+
+function clearSpy(uid, setId) {
+  const b = writeBatch(db);
+  membershipsOf((m) => m.uid === uid && m.setId === setId && m.hidden).forEach((m) => b.delete(doc(db, "memberships", m.id)));
   return b.commit();
 }
 
@@ -305,6 +343,9 @@ const ICONS = {
   xmark: '<path d="M7 7l10 10M17 7 7 17"/>',
   copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  spy: '<path d="M3 11h18M6 11l1.5-5.5h9L18 11"/><circle cx="7.5" cy="16" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/><path d="M10 16h4"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
 };
 
 function icon(name, cls = "") {
@@ -498,13 +539,57 @@ function largeTitle(text) {
   return h("h1", { class: "large-title" }, text);
 }
 
+const sectionTitle = (text, compact) => (compact ? h("h2", { class: "section-title" }, text) : largeTitle(text));
+
 const none = (text = "まだありません") => cell(h("span", { class: "secondary" }, text));
+
+// 「見ました」の対象者（宛先に合わせる）
+function ackAudience(a) {
+  if (a.scope === "team") return membersOfTeam(a.target, { includeHidden: true });
+  if (a.scope === "user") return sortedMembers().filter((m) => m.id === a.target);
+  return sortedMembers();
+}
+
+const openAckLists = new Set(); // 管理者が開いている「見た人」一覧（再描画しても閉じないように）
+
+function ackBox(a, admin) {
+  if (!a.ack) return null;
+  if (!admin) {
+    const uid = S.user.uid;
+    const ackId = `${a.id}_${uid}`;
+    const done = S.acks.has(ackId);
+    return h("button", {
+      class: `ack-btn${done ? " done" : ""}`, "aria-pressed": String(done),
+      onclick: () => fire(done
+        ? deleteDoc(doc(db, "acks", ackId))
+        : setDoc(doc(db, "acks", ackId), { annId: a.id, uid, at: serverTimestamp() })),
+    }, done ? [icon("check"), "見ました"] : "見ました");
+  }
+  const audience = ackAudience(a);
+  const seen = audience.filter((m) => S.acks.has(`${a.id}_${m.id}`));
+  const notYet = audience.filter((m) => !S.acks.has(`${a.id}_${m.id}`));
+  const details = h("details", { class: "ack-list", open: openAckLists.has(a.id) },
+    h("summary", null, icon("check"), `見た人 ${seen.length} / ${audience.length}人`),
+    h("div", { class: "ack-names" },
+      h("div", null, h("b", null, "見た："), seen.length ? seen.map((m) => m.name).join("・") : "まだいません"),
+      h("div", null, h("b", null, "まだ："), notYet.length ? notYet.map((m) => m.name).join("・") : "全員見ました")));
+  details.addEventListener("toggle", () => { if (details.open) openAckLists.add(a.id); else openAckLists.delete(a.id); });
+  return details;
+}
+
+function deleteAnnouncement(a) {
+  if (!confirm(`「${a.title}」を削除しますか？`)) return;
+  const b = writeBatch(db);
+  b.delete(doc(db, "announcements", a.id));
+  [...S.acks.values()].filter((x) => x.annId === a.id).forEach((x) => b.delete(doc(db, "acks", x.id)));
+  fire(b.commit(), "削除しました");
+}
 
 function announcementCard(a, { admin = false } = {}) {
   let scope = "全員";
   if (a.scope === "team") scope = admin ? `${teamName(a.target)} のみ` : `チーム限定（${teamName(a.target)}）`;
   if (a.scope === "user") scope = admin ? `${memberName(a.target)} のみ` : "あなた宛て";
-  return h("article", { class: `card ann${a.pinned ? " pinned" : ""}` },
+  return h("article", { class: `card ann${a.pinned ? " pinned" : ""}`, "data-ann": a.id },
     h("div", { class: "ann-meta" },
       a.pinned ? h("span", { class: "ann-pin" }, icon("pin"), "固定") : null,
       h("span", { class: `ann-scope scope-${a.scope}` }, scope),
@@ -515,28 +600,59 @@ function announcementCard(a, { admin = false } = {}) {
     a.images?.length
       ? h("div", { class: `ann-images n${a.images.length}` }, a.images.map((src) => h("img", { src, alt: "", loading: "lazy", onclick: () => openLightbox(src) })))
       : null,
+    ackBox(a, admin),
     admin ? h("div", { class: "ann-actions" },
       h("button", { class: "text-btn", onclick: () => fire(updateDoc(doc(db, "announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
-      h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${a.title}」を削除しますか？`)) fire(deleteDoc(doc(db, "announcements", a.id)), "削除しました"); } }, "削除"),
+      h("button", { class: "text-btn destructive", onclick: () => deleteAnnouncement(a) }, "削除"),
     ) : null,
   );
 }
 
 const sortAnnouncements = (list) => list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || ts(b.createdAt) - ts(a.createdAt));
 
+// ポイント交換の相手（「〇〇 へ」「〇〇 から」）
+function transferText(l) {
+  if (!l.transferId) return null;
+  const name = l.counterKind === "team"
+    ? (S.teams.has(l.counterId) ? teamName(l.counterId) : "相手チーム")
+    : memberName(l.counterId);
+  return l.delta < 0 ? `${name} へ` : `${name} から`;
+}
+
+// 交換は2件で1組なので、取り消すときは両方まとめて消す
+function cancelLog(l) {
+  const target = l.kind === "team" ? teamName(l.target) : memberName(l.target);
+  if (l.transferId) {
+    const pair = merged(S.logSrc).filter((x) => x.transferId === l.transferId);
+    if (!confirm(`ポイント交換（${target} ${transferText(l)} ${Math.abs(l.delta)}pt）を取り消しますか？\n渡した側・受け取った側の両方が取り消されます。`)) return;
+    const b = writeBatch(db);
+    pair.forEach((x) => b.delete(doc(db, "pointLogs", x.id)));
+    fire(b.commit(), "交換を取り消しました");
+    return;
+  }
+  if (confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) fire(deleteDoc(doc(db, "pointLogs", l.id)), "取り消しました");
+}
+
+// 「〇〇の功績」。スパイが本当のチームに入れた分は、参加者には名前を出さない
+function contributorText(l, admin) {
+  if (!l.contributor) return null;
+  if (l.contributorHidden && !admin) return null;
+  return `${memberName(l.contributor)}の功績${admin && l.contributorHidden ? "（スパイ→本当のチーム）" : ""}`;
+}
+
 function logCell(l, { showTarget = true, admin = false } = {}) {
   const target = l.kind === "team" ? teamName(l.target) : memberName(l.target);
   const vis = l.visibility === "team" && l.kind === "user" ? `チーム内のみ（${teamName(l.teamId)}）` : VIS_LABEL[l.visibility];
   return h("div", { class: "cell log" },
     h("div", { class: "cell-main" },
-      h("div", null, showTarget ? h("span", { class: "log-target" }, target) : null, l.reason || "（理由なし）"),
-      h("div", { class: "cell-sub" }, `${fmtDate(l.createdAt)} · ${vis}`),
+      h("div", null,
+        showTarget ? h("span", { class: "log-target" }, target) : null,
+        l.transferId ? h("span", { class: "transfer" }, icon("arrows"), transferText(l)) : null,
+        l.reason || (l.transferId ? "" : "（理由なし）")),
+      h("div", { class: "cell-sub" }, [contributorText(l, admin), fmtDate(l.createdAt), vis].filter(Boolean).join(" · ")),
     ),
     h("div", { class: `delta ${l.delta >= 0 ? "plus" : "minus"}` }, signed(l.delta)),
-    admin ? h("button", {
-      class: "icon-btn", "aria-label": "取り消す", title: "取り消す",
-      onclick: () => { if (confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) fire(deleteDoc(doc(db, "pointLogs", l.id)), "取り消しました"); },
-    }, icon("xmark")) : null,
+    admin ? h("button", { class: "icon-btn", "aria-label": "取り消す", title: "取り消す", onclick: () => cancelLog(l) }, icon("xmark")) : null,
   );
 }
 
@@ -596,16 +712,17 @@ function pointNotice(l) {
     h("div", { class: "pn-delta" }, signed(l.delta), h("small", null, "pt")),
     h("div", { class: "pn-main" },
       h("div", { class: "pn-who" }, team ? dot(team.color) : null, who),
-      h("div", { class: "pn-reason" }, l.reason || "（理由なし）"),
-      h("div", { class: "pn-meta" }, `${fmtDate(l.createdAt)} · ${scope}`)),
+      l.transferId ? h("div", { class: "pn-transfer" }, icon("arrows"), "ポイント交換：", transferText(l)) : null,
+      l.reason || !l.transferId ? h("div", { class: "pn-reason" }, l.reason || "（理由なし）") : null,
+      h("div", { class: "pn-meta" }, [contributorText(l, false), fmtDate(l.createdAt), scope].filter(Boolean).join(" · "))),
   );
 }
 
-function memberHome() {
+function memberHome({ compact = false } = {}) {
   const filter = segmented([{ value: "all", label: "すべて" }, { value: "ann", label: "お知らせ" }, { value: "pt", label: "ポイント" }]);
   filter.addEventListener("change", () => scheduleRender());
   const list = h("div", { class: "stack" });
-  const el = h("div", null, largeTitle("お知らせ"), h("div", { class: "seg-wrap" }, filter), list);
+  const el = h("div", null, sectionTitle("お知らせ", compact), h("div", { class: "seg-wrap" }, filter), list);
   return {
     el,
     update() {
@@ -621,9 +738,9 @@ function memberHome() {
   };
 }
 
-function memberTeam() {
+function memberTeam({ compact = false } = {}) {
   const body = h("div");
-  const el = h("div", null, largeTitle("チーム"), body);
+  const el = h("div", null, sectionTitle("チーム", compact), body);
   return {
     el,
     update() {
@@ -633,10 +750,15 @@ function memberTeam() {
         return;
       }
       const uid = S.user.uid;
-      const mine = sets.map((s) => ({ set: s, team: S.teams.get(teamOfIn(uid, s.id)) }));
+      const mine = sets.map((s) => ({ set: s, team: S.teams.get(teamOfIn(uid, s.id)), real: S.teams.get(trueTeamOf(uid, s.id)) }));
+      const isSpy = mine.some((x) => x.real);
       body.replaceChildren(
-        group("あなたのチーム", mine.map(({ set, team }) =>
-          cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"))),
+        group("あなたのチーム", mine.flatMap(({ set, team, real }) => [
+          cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"),
+          real ? h("div", { class: "cell spy-secret" },
+            h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), "スパイ")),
+            h("div", { class: "cell-detail" }, "本当は ", h("span", { class: "team-label strong" }, dot(real.color), real.name))) : null,
+        ]), isSpy ? "スパイであることと本当のチームは、あなたにしか表示されていません。" : null),
         ...sets.map((s) => group(s.name, teamsInSet(s.id).map((t) => {
           const ms = membersOfTeam(t.id);
           const isMine = ms.some((m) => m.id === uid);
@@ -651,11 +773,11 @@ function memberTeam() {
   };
 }
 
-function memberPoints() {
+function memberPoints({ compact = false } = {}) {
   const body = h("div");
   const rankSel = h("select", { class: "inline-select", "aria-label": "ランキングの種類" });
   rankSel.addEventListener("change", () => scheduleRender());
-  const el = h("div", null, largeTitle("ポイント"), body);
+  const el = h("div", null, sectionTitle("ポイント", compact), body);
   return {
     el,
     update() {
@@ -666,12 +788,13 @@ function memberPoints() {
       const myTeams = myTeamIds(uid).map((id) => S.teams.get(id)).filter(Boolean)
         .sort((a, b) => byOrder(S.sets.get(a.setId) ?? {}, S.sets.get(b.setId) ?? {}));
 
-      const parts = [
+      const parts = compact ? [] : [
         statCard("あなた", sum(mine), [["全員に公開", byVis(mine, "public")], ["チーム内", byVis(mine, "team")], ["本人のみ", byVis(mine, "private")]]),
       ];
-      for (const t of myTeams) {
+      for (const t of compact ? [] : myTeams) {
         const tl = logs.filter((l) => l.kind === "team" && l.target === t.id);
-        parts.push(statCard(teamName(t.id), sum(tl), [["全員に公開", byVis(tl, "public")], ["チーム内のみ", byVis(tl, "team")]], t.color));
+        const secret = trueTeamOf(uid, t.setId) === t.id;
+        parts.push(statCard(`${teamName(t.id)}${secret ? "（本当のチーム）" : ""}`, sum(tl), [["全員に公開", byVis(tl, "public")], ["チーム内のみ", byVis(tl, "team")]], t.color));
       }
       parts.push(group("あなたの履歴", mine.length ? mine.map((l) => logCell(l, { showTarget: false })) : none()));
       const teamLogs = logs.filter((l) => l.kind === "team" && myTeams.some((t) => t.id === l.target));
@@ -684,6 +807,31 @@ function memberPoints() {
         : teamsInSet(rankSel.value).map((t) => ({ label: t.name, color: t.color, value: sum(pub.filter((l) => l.kind === "team" && l.target === t.id)), highlight: myTeams.some((x) => x.id === t.id) }));
       parts.push(group("ランキング", [field("表示", rankSel), ...[rankingCells(rows)].flat()], "「全員に公開」のポイントだけで集計しています。"));
       body.replaceChildren(...parts);
+    },
+  };
+}
+
+// 所持ポイントと、所属チームごとのチームポイントを小さなタイルで並べる
+function memberSummary() {
+  const el = h("div", { class: "summary" });
+  return {
+    el,
+    update() {
+      const uid = S.user.uid;
+      const logs = merged(S.logSrc);
+      const tile = (label, value, color, sub) => h("div", { class: "tile", style: color ? `--c:${color}` : null },
+        h("div", { class: "tile-label" }, color ? dot(color) : null, label),
+        h("div", { class: "tile-value" }, value, h("small", null, "pt")),
+        sub ? h("div", { class: "tile-sub" }, sub) : null);
+      const teams = sortedSets().flatMap((s) => [
+        { t: S.teams.get(teamOfIn(uid, s.id)), secret: false },
+        { t: S.teams.get(trueTeamOf(uid, s.id)), secret: true },
+      ]).filter((x) => x.t);
+      el.replaceChildren(
+        tile("あなた", sum(logs.filter((l) => l.kind === "user" && l.target === uid))),
+        ...teams.map(({ t, secret }) => tile(t.name, sum(logs.filter((l) => l.kind === "team" && l.target === t.id)), t.color,
+          secret ? "本当のチーム（あなただけ）" : S.sets.get(t.setId)?.name)),
+      );
     },
   };
 }
@@ -737,6 +885,7 @@ function adminAnnouncements() {
   const target = h("select", { "aria-label": "宛先" });
   const targetCell = field("宛先", target);
   const pinned = toggle();
+  const ack = toggle();
   const fileInput = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
   const preview = h("div", { class: "thumbs" });
   const images = [];
@@ -778,18 +927,20 @@ function adminAnnouncements() {
         target: scope.value === "all" ? null : target.value,
         images: [...images],
         pinned: pinned.checked,
+        ack: ack.checked,
         createdAt: serverTimestamp(),
         author: emailToId(S.user.email),
       }), "投稿しました");
       title.value = body.value = "";
       pinned.checked = false;
+      ack.checked = false;
       images.length = 0;
       renderPreview();
     },
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
       h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned)],
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned), field("見ましたボタン", ack)],
       "「チーム」宛ては、そのチーム表を発表するまで届きません。"),
     btn,
   );
@@ -909,8 +1060,12 @@ function adminMembers({ withTitle = true } = {}) {
         return { el, nm, sub };
       }, (row, m) => {
         row.nm.sync(m.name);
-        const teams = sortedSets().map((s) => S.teams.get(teamOfIn(m.id, s.id))).filter(Boolean);
-        row.sub.replaceChildren(m.loginId, ...teams.flatMap((t) => [" · ", h("span", { class: "team-label" }, dot(t.color), t.name)]));
+        setKids(row.sub, m.loginId, ...sortedSets().flatMap((s) => {
+          const t = S.teams.get(teamOfIn(m.id, s.id));
+          const real = S.teams.get(trueTeamOf(m.id, s.id));
+          if (!t) return [];
+          return [" · ", h("span", { class: "team-label" }, dot(t.color), t.name), real ? h("span", { class: "spy-tag" }, icon("spy"), `本当は${real.name}`) : null];
+        }));
       });
     },
   };
@@ -932,6 +1087,15 @@ function adminTeams() {
   const teamGroup = h("section", { class: "group" }, h("div", { class: "group-header" }, "チーム"), teamBody);
   const assignBody = h("div", { class: "group-body" });
   const assignEmpty = emptyState("people", "まだ参加者がいません");
+  // スパイ
+  const spyWho = h("select", { "aria-label": "スパイにする人" });
+  const spyCover = h("select", { "aria-label": "参加先のチーム" });
+  const spyTrue = h("select", { "aria-label": "本当のチーム" });
+  const spyList = h("div", { class: "group-body" });
+  // スパイにする人を選んだら、参加先にはその人の今のチームを入れておく
+  spyWho.addEventListener("change", () => { spyCover.value = teamOfIn(spyWho.value, setId) ?? ""; });
+  const spyListGroup = h("section", { class: "group" }, h("div", { class: "group-header" }, "登録中のスパイ"), spyList,
+    h("div", { class: "group-footer" }, "本当のチームは、本人と管理者にしか見えません。"));
 
   publish.addEventListener("change", () => {
     const next = publish.checked;
@@ -956,7 +1120,7 @@ function adminTeams() {
     const teams = teamsInSet(setId);
     const ms = sortedMembers();
     if (!teams.length || !ms.length) return toast("チームと参加者を先に作ってください", true);
-    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます。このチーム表の今の振り分けは上書きされます。`)) return;
+    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます。このチーム表の今の振り分けとスパイ登録は上書きされます。`)) return;
     const shuffled = [...ms];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
@@ -967,7 +1131,7 @@ function adminTeams() {
     membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(doc(db, "memberships", m.id)));
     shuffled.forEach((m, i) => {
       const teamId = teams[i % teams.length].id;
-      b.set(doc(db, "memberships", `${teamId}_${m.id}`), { teamId, uid: m.id, setId, published });
+      b.set(doc(db, "memberships", `${teamId}_${m.id}`), { teamId, uid: m.id, setId, published, hidden: false });
     });
     fire(b.commit(), "振り分けました");
   }
@@ -998,6 +1162,23 @@ function adminTeams() {
       h("button", { class: "text-btn", onclick: () => randomAssign() }, icon("shuffle"), "ランダム")),
     assignEmpty,
     h("section", { class: "group" }, assignBody),
+    h("form", {
+      onsubmit: (e) => {
+        e.preventDefault();
+        if (!spyWho.value || !spyCover.value || !spyTrue.value) return toast("スパイ・参加先・本当のチームを選んでください", true);
+        if (spyCover.value === spyTrue.value) return toast("参加先と本当のチームが同じです", true);
+        const nm = memberName(spyWho.value);
+        fire(setSpy(spyWho.value, setId, spyCover.value, spyTrue.value),
+          `${nm} を ${S.teams.get(spyCover.value)?.name} へのスパイとして登録しました（本当は ${S.teams.get(spyTrue.value)?.name}）`);
+        spyWho.value = "";
+      },
+    }, group("スパイ", [
+      field("スパイ", spyWho),
+      field("参加先", spyCover),
+      field("本当のチーム", spyTrue),
+      h("button", { class: "cell cell-button", type: "submit" }, "スパイを登録"),
+    ], "他の参加者には、参加先チームの普通のメンバーとして表示されます。本人には本当のチームも表示されます。")),
+    spyListGroup,
     group(null, h("button", {
       class: "cell cell-button destructive",
       onclick: () => {
@@ -1072,6 +1253,21 @@ function adminTeams() {
       });
 
       const ms = sortedMembers();
+      // スパイ
+      fillSelect(spyWho, ms.map((m) => ({ value: m.id, label: m.name })), "選択");
+      fillSelect(spyCover, teams.map((t) => ({ value: t.id, label: t.name })), "選択");
+      fillSelect(spyTrue, teams.map((t) => ({ value: t.id, label: t.name })), "選択");
+      const spies = ms.filter((m) => trueTeamOf(m.id, setId));
+      spyListGroup.hidden = spies.length === 0;
+      spyList.replaceChildren(...spies.map((m) => {
+        const cover = S.teams.get(teamOfIn(m.id, setId));
+        const real = S.teams.get(trueTeamOf(m.id, setId));
+        return h("div", { class: "cell" },
+          h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), m.name),
+            h("div", { class: "cell-sub" }, "参加先 ", h("span", { class: "team-label" }, dot(cover?.color), cover?.name ?? "未所属"),
+              " → 本当は ", h("span", { class: "team-label" }, dot(real?.color), real?.name))),
+          h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`${m.name} のスパイ登録を解除しますか？（参加先チームの普通のメンバーになります）`)) fire(clearSpy(m.id, setId), "解除しました"); } }, "解除"));
+      }));
       assignEmpty.hidden = ms.length > 0;
       assignBody.parentElement.hidden = ms.length === 0;
       const options = teams.map((t) => ({ value: t.id, label: t.name }));
@@ -1082,7 +1278,9 @@ function adminTeams() {
         return { el: h("div", { class: "cell" }, label, sel), label, sel };
       }, (row, m) => {
         const teamId = teamOfIn(m.id, setId);
-        row.label.replaceChildren(dot(S.teams.get(teamId)?.color), m.name);
+        const real = trueTeamOf(m.id, setId);
+        setKids(row.label, dot(S.teams.get(teamId)?.color), m.name,
+          real ? h("span", { class: "spy-tag" }, icon("spy"), `本当は${S.teams.get(real)?.name ?? ""}`) : null);
         if (document.activeElement !== row.sel || row.sel.dataset.set !== setId) {
           row.sel.dataset.set = setId;
           row.sel.blur();
@@ -1099,6 +1297,12 @@ function adminPoints() {
   const target = h("select", { "aria-label": "対象" });
   const delta = h("input", { type: "number", step: "any", value: "1", required: true, inputmode: "decimal", class: "delta-input" });
   const reason = h("input", { type: "text", maxlength: "200", placeholder: "ビーチフラッグ1位" });
+  const contributor = h("select", { "aria-label": "誰の功績か" });
+  const contributorCell = field("誰の功績", contributor);
+  const spyDest = segmented([]);
+  const spyDestCell = h("div", { class: "cell spy-dest" });
+  const spyDestHelp = h("div", { class: "cell-sub" });
+  spyDestCell.append(h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), "スパイの功績です。どちらに加算しますか？"), spyDest, spyDestHelp));
   const visibility = segmented([]);
   const visSet = h("select", { "aria-label": "どのチーム表のチーム内か" });
   const visSetCell = field("チーム表", visSet);
@@ -1112,9 +1316,32 @@ function adminPoints() {
     private: "本人だけに見えます。",
   };
 
+  // 選んだ功績者がこのチームに潜入中のスパイなら、本当のチームを返す
+  const spyTrueTeam = () => {
+    const t = S.teams.get(target.value);
+    if (kind.value !== "team" || !t || !contributor.value) return null;
+    return trueTeamOf(contributor.value, t.setId);
+  };
   const refreshForm = () => {
     if (kind.value === "team") fillSelect(target, teamOptions(), "選択");
     else fillSelect(target, sortedMembers().map((m) => ({ value: m.id, label: m.name })), "選択");
+    contributorCell.hidden = kind.value !== "team" || !target.value;
+    if (!contributorCell.hidden) {
+      fillSelect(contributor, membersOfTeam(target.value).map((m) => ({
+        value: m.id, label: trueTeamOf(m.id, S.teams.get(target.value)?.setId) ? `${m.name}（スパイ）` : m.name,
+      })), "チーム全体");
+    }
+    const real = spyTrueTeam();
+    spyDestCell.hidden = !real;
+    if (real) {
+      const cover = S.teams.get(target.value);
+      const prev = spyDest.value;
+      spyDest.setOptions([{ value: "cover", label: `参加先（${cover.name}）` }, { value: "true", label: `本当（${S.teams.get(real)?.name}）` }]);
+      if (prev) spyDest.value = prev;
+      spyDestHelp.textContent = spyDest.value === "true"
+        ? `${S.teams.get(real)?.name} に加算します。参加者には功績者の名前を出しません（スパイだと気づかれないように）。`
+        : `${cover.name} に加算します。`;
+    }
     visSetCell.hidden = !(kind.value === "user" && visibility.value === "team");
     fillSelect(visSet, sortedSets().map((s) => ({ value: s.id, label: s.name })));
     visFooter.textContent = VIS_HELP[visibility.value] ?? "";
@@ -1125,7 +1352,10 @@ function adminPoints() {
       : [{ value: "public", label: "全員" }, { value: "team", label: "チーム内" }, { value: "private", label: "本人のみ" }]);
   };
   refreshVis();
-  kind.addEventListener("change", () => { target.value = ""; refreshVis(); refreshForm(); });
+  kind.addEventListener("change", () => { target.value = ""; contributor.value = ""; refreshVis(); refreshForm(); });
+  target.addEventListener("change", () => { contributor.value = ""; refreshForm(); });
+  contributor.addEventListener("change", () => { spyDest.value = "cover"; refreshForm(); });
+  spyDest.addEventListener("change", refreshForm);
   visibility.addEventListener("change", refreshForm);
 
   const quick = h("div", { class: "quick" }, [1, 3, 5, 10, -1, -5].map((n) =>
@@ -1138,33 +1368,120 @@ function adminPoints() {
       const d = Number(delta.value);
       if (!Number.isFinite(d) || d === 0) return toast("0 以外の数値を入れてください", true);
       let teamId = null;
-      if (kind.value === "team") teamId = target.value;
+      let finalTarget = target.value;
+      const who = kind.value === "team" ? contributor.value || null : null;
+      const real = spyTrueTeam();
+      const toTrue = !!real && spyDest.value === "true";
+      if (toTrue) finalTarget = real;
+      if (kind.value === "team") teamId = finalTarget;
       else if (visibility.value === "team") {
         teamId = teamOfIn(target.value, visSet.value);
         if (!teamId) return toast(`この人は「${S.sets.get(visSet.value)?.name ?? "そのチーム表"}」でチームに入っていません`, true);
       }
       fire(addDoc(collection(db, "pointLogs"), {
         kind: kind.value,
-        target: target.value,
+        target: finalTarget,
         teamId,
         visibility: visibility.value,
         delta: d,
         reason: reason.value.trim(),
         createdAt: serverTimestamp(),
         author: emailToId(S.user.email),
-      }), `${signed(d)} pt を付けました`);
+        contributor: who,
+        contributorHidden: toTrue,
+      }), `${signed(d)} pt を付けました${toTrue ? `（本当のチーム ${S.teams.get(real)?.name} へ）` : ""}`);
+      contributor.value = "";
       reason.value = "";
     },
   },
-    group("対象", [h("div", { class: "cell" }, kind), field("名前", target)]),
+    group("対象", [h("div", { class: "cell" }, kind), field("名前", target), contributorCell, spyDestCell],
+      "チームに付けるときは、誰の功績かを選べます（選ばなければチーム全体）。"),
     group("点数", [field("ポイント", delta), h("div", { class: "cell" }, quick), field("理由", reason)]),
     group("公開範囲", [h("div", { class: "cell" }, visibility), visSetCell], visFooter),
     h("button", { class: "btn-filled", type: "submit" }, "ポイントを付ける"),
   );
 
+  // ---- ポイント交換（渡す側 −N、受け取る側 +N を1組で記録する）
+  const xKind = segmented([{ value: "user", label: "個人間" }, { value: "team", label: "チーム間" }]);
+  const xFrom = h("select", { "aria-label": "渡す側" });
+  const xTo = h("select", { "aria-label": "受け取る側" });
+  const xAmount = h("input", { type: "number", step: "any", min: "0", value: "1", required: true, inputmode: "decimal", class: "delta-input" });
+  const xReason = h("input", { type: "text", maxlength: "200", placeholder: "食料と交換" });
+  const xVis = segmented([]);
+  const xSet = h("select", { "aria-label": "どのチーム表のチーム内か" });
+  const xSetCell = field("チーム表", xSet);
+  const xFooter = h("span");
+
+  const refreshTransfer = () => {
+    const opts = xKind.value === "team" ? teamOptions() : sortedMembers().map((m) => ({ value: m.id, label: m.name }));
+    fillSelect(xFrom, opts, "選択");
+    fillSelect(xTo, opts, "選択");
+    xSetCell.hidden = !(xKind.value === "user" && xVis.value === "team");
+    fillSelect(xSet, sortedSets().map((s) => ({ value: s.id, label: s.name })));
+    xFooter.textContent = {
+      public: "やり取りが全員に見えます。",
+      team: "それぞれのチームに、自分たちの側の記録だけが見えます。",
+      private: "渡した人・受け取った人の本人だけに見えます。",
+    }[xVis.value] ?? "";
+  };
+  const refreshXVis = () => {
+    xVis.setOptions(xKind.value === "team"
+      ? [{ value: "public", label: "全員" }, { value: "team", label: "チーム内" }]
+      : [{ value: "public", label: "全員" }, { value: "team", label: "チーム内" }, { value: "private", label: "本人のみ" }]);
+  };
+  refreshXVis();
+  xKind.addEventListener("change", () => { xFrom.value = xTo.value = ""; refreshXVis(); refreshTransfer(); });
+  xVis.addEventListener("change", refreshTransfer);
+
+  const transferForm = h("form", {
+    onsubmit: (e) => {
+      e.preventDefault();
+      const kindV = xKind.value;
+      const from = xFrom.value, to = xTo.value;
+      if (!from || !to) return toast("渡す側と受け取る側を選んでください", true);
+      if (from === to) return toast("同じ相手には渡せません", true);
+      const n = Number(xAmount.value);
+      if (!Number.isFinite(n) || n <= 0) return toast("1以上の数値を入れてください", true);
+      if (kindV === "team" && S.teams.get(from)?.setId !== S.teams.get(to)?.setId
+        && !confirm("別々のチーム表のチーム同士です。このまま登録しますか？")) return;
+
+      const vis = xVis.value;
+      const teamIdOf = (id) => {
+        if (kindV === "team") return id;
+        return vis === "team" ? teamOfIn(id, xSet.value) : null;
+      };
+      const fromTeam = teamIdOf(from), toTeam = teamIdOf(to);
+      if (vis === "team" && (!fromTeam || !toTeam)) {
+        return toast(`「${S.sets.get(xSet.value)?.name ?? "そのチーム表"}」でチームに入っていない人がいます`, true);
+      }
+      const name = (id) => (kindV === "team" ? teamName(id) : memberName(id));
+      const balance = sum(merged(S.logSrc).filter((l) => l.kind === kindV && l.target === from));
+      if (balance - n < 0 && !confirm(`${name(from)} の残りは ${balance}pt です。渡すとマイナスになりますが、登録しますか？`)) return;
+
+      const transferId = doc(collection(db, "pointLogs")).id;
+      const base = { kind: kindV, visibility: vis, reason: xReason.value.trim(), createdAt: serverTimestamp(), author: emailToId(S.user.email), transferId, counterKind: kindV };
+      const b = writeBatch(db);
+      b.set(doc(collection(db, "pointLogs")), { ...base, target: from, teamId: fromTeam, delta: -n, counterId: to });
+      b.set(doc(collection(db, "pointLogs")), { ...base, target: to, teamId: toTeam, delta: n, counterId: from });
+      fire(b.commit(), `${name(from)} → ${name(to)} に ${n}pt 移しました`);
+      xReason.value = "";
+    },
+  },
+    group("ポイント交換", [
+      h("div", { class: "cell" }, xKind),
+      field("渡す側", xFrom),
+      field("受け取る側", xTo),
+      field("ポイント", xAmount),
+      field("理由", xReason),
+    ], "渡す側から引いて、受け取る側に同じだけ足します。取り消すと両方まとめて元に戻ります。"),
+    group("交換の公開範囲", [h("div", { class: "cell" }, xVis), xSetCell], xFooter),
+    h("button", { class: "btn-filled", type: "submit" }, icon("arrows"), "交換を登録"),
+  );
+
   const el = h("div", null,
     largeTitle("ポイント"),
     form,
+    transferForm,
     summary,
     h("section", { class: "group" }, h("div", { class: "group-header" }, "履歴"), list),
   );
@@ -1178,6 +1495,7 @@ function adminPoints() {
     el,
     update() {
       refreshForm();
+      refreshTransfer();
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
       const setGroups = sortedSets().map((s) => {
         const teams = teamsInSet(s.id);
@@ -1212,7 +1530,7 @@ const ADMIN_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
   { key: "team", icon: "flag", label: "チーム", view: adminTeams },
   { key: "points", icon: "trophy", label: "ポイント", view: adminPoints },
-  { key: "members", icon: "people", label: "参加者", view: adminMembers, sheet: true },
+  { key: "members", icon: "people", label: "参加者", view: adminMembers },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 
@@ -1307,20 +1625,39 @@ function openSheet(tab) {
 function closeSheet() {
   if (!S.sheet && !document.querySelector(".sheet-backdrop")) return;
   S.sheet = null;
+  sheetKey = null;
   document.querySelector(".sheet-backdrop")?.remove();
   scheduleRender();
 }
 
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet) closeSheet(); });
 
+// 小窓（PC の参加者・設定、スマホ参加者の設定）を描く
+let sheetKey = null;
+function paintSheet() {
+  if (!S.sheet) { sheetKey = null; return; }
+  if (sheetKey !== S.sheet.key || !document.querySelector(".sheet-backdrop")) {
+    document.querySelector(".sheet-backdrop")?.remove();
+    sheetKey = S.sheet.key;
+    const backdrop = h("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) closeSheet(); } },
+      h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": S.sheet.title },
+        h("div", { class: "sheet-head" },
+          h("div", { class: "sheet-title" }, S.sheet.title),
+          h("button", { class: "text-btn", onclick: closeSheet }, "閉じる")),
+        h("div", { class: "sheet-body" }, S.sheet.view.el)));
+    document.body.append(backdrop);
+  }
+  S.sheet.view.update();
+}
+
 function buildDesktopShell(tabs) {
   const panels = tabs.filter((t) => !t.sheet);
   const views = panels.map((t) => t.view());
   const title = h("div", { class: "desk-title" });
   const status = statusBar();
+  const chip = S.isAdmin ? null : meChip();
   const actions = h("div", { class: "desk-actions" },
     tabs.filter((t) => t.sheet).map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
-  const chip = S.isAdmin ? null : meChip();
   const header = h("header", { class: "desk-bar" },
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
     S.isAdmin ? h("span", { class: "badge static" }, "管理者") : null,
@@ -1328,7 +1665,6 @@ function buildDesktopShell(tabs) {
   const grid = h("main", { class: `desk-grid cols-${panels.length}` },
     views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el)));
   const root = h("div", { class: "desk" }, header, grid);
-  let sheetKey = null;
   return {
     root,
     update() {
@@ -1336,22 +1672,58 @@ function buildDesktopShell(tabs) {
       paintStatus(status);
       chip?.paint();
       views.forEach((v) => v.update());
-      if (S.sheet) {
-        if (sheetKey !== S.sheet.key) {
-          document.querySelector(".sheet-backdrop")?.remove();
-          sheetKey = S.sheet.key;
-          const backdrop = h("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) closeSheet(); } },
-            h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": S.sheet.title },
-              h("div", { class: "sheet-head" },
-                h("div", { class: "sheet-title" }, S.sheet.title),
-                h("button", { class: "text-btn", onclick: closeSheet }, "閉じる")),
-              h("div", { class: "sheet-body" }, S.sheet.view.el)));
-          document.body.append(backdrop);
-        }
-        S.sheet.view.update();
-      } else {
-        sheetKey = null;
-      }
+      paintSheet();
+    },
+  };
+}
+
+// 参加者のスマホ：タブを使わず1ページにまとめる。上部のボタンで各セクションへ移動する
+function buildMemberPageShell() {
+  const sections = [
+    { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
+    { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
+    { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
+  ];
+  const summary = memberSummary();
+  const chip = meChip();
+  const navTitle = h("div", { class: "nav-title" });
+  const settingsTab = MEMBER_TABS.find((t) => t.key === "settings");
+  const gear = h("button", { class: "nav-gear", "aria-label": "設定", onclick: () => openSheet(settingsTab) }, icon("gear"));
+  const header = h("header", { class: "navbar" }, gear, navTitle, chip);
+  const title = h("h1", { class: "large-title" });
+  const status = statusBar();
+  const jump = h("nav", { class: "jump", "aria-label": "セクションへ移動" }, h("div", { class: "seg" }, sections.map((sec) =>
+    h("button", {
+      type: "button", "data-jump": sec.key,
+      onclick: () => document.getElementById(`sec-${sec.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    }, sec.label))));
+  const main = h("main", null, sections.map((sec) => h("section", { class: "page-section", id: `sec-${sec.key}` }, sec.view.el)));
+  const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, summary.el, jump, main));
+
+  // スクロール位置に合わせて、上部のボタンの選択状態とナビゲーションバーの表示を変える
+  const onScroll = () => {
+    header.classList.toggle("scrolled", window.scrollY > 44);
+    let current = sections[0].key;
+    for (const sec of sections) {
+      const el = document.getElementById(`sec-${sec.key}`);
+      if (el && el.getBoundingClientRect().top < 160) current = sec.key;
+    }
+    for (const b of jump.querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.jump === current));
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  requestAnimationFrame(onScroll);
+
+  return {
+    root,
+    update() {
+      const t = S.config.title || APP_TITLE;
+      title.textContent = t;
+      navTitle.textContent = t;
+      paintStatus(status);
+      chip.paint();
+      summary.update();
+      sections.forEach((sec) => sec.view.update());
+      paintSheet();
     },
   };
 }
@@ -1375,8 +1747,8 @@ function render() {
   }
   if (!shell) {
     closeSheet();
-    const tabs = S.isAdmin ? ADMIN_TABS : MEMBER_TABS;
-    shell = desktopQuery.matches ? buildDesktopShell(tabs) : buildMobileShell(tabs);
+    if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? ADMIN_TABS : MEMBER_TABS);
+    else shell = S.isAdmin ? buildMobileShell(ADMIN_TABS) : buildMemberPageShell();
     $app.replaceChildren(shell.root);
   }
   document.title = S.config.title || APP_TITLE;

@@ -504,3 +504,102 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .desk-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
 .desk-right .desk-actions { margin-left: 0; }
 .desk-bar .me-chip { font-size: 14px; gap: 12px; }
+
+/* ---------- ポイント交換 ---------- */
+.transfer { display: inline-flex; align-items: center; gap: 3px; color: var(--blue); font-weight: 600; margin-right: 6px; }
+.transfer .icon { width: 16px; height: 16px; }
+.pn-transfer { display: flex; align-items: center; gap: 3px; font-size: 14px; font-weight: 600; color: var(--blue); }
+.pn-transfer .icon { width: 16px; height: 16px; }
+.btn-filled { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.btn-filled .icon { width: 20px; height: 20px; }
+
+/* ---------- 管理者 PC：4列 ---------- */
+.desk-grid.cols-4 { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, .9fr); }
+@media (max-width: 1399px) {
+  .desk-grid.cols-4 .panel { padding: 16px 14px 32px; }
+  .desk-grid.cols-4 .panel .set-bar { margin: 0 -14px 16px; padding: 2px 14px 4px; }
+  .desk-grid.cols-4 .field-label { width: 5.5em; }
+}
+
+/* ---------- 「見ました」 ---------- */
+.ack-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  margin-top: 14px; min-height: 36px; padding: 6px 18px; border-radius: 999px;
+  border: 1px solid var(--blue); background: transparent; color: var(--blue);
+  font-size: 15px; font-weight: 600;
+}
+.ack-btn .icon { width: 18px; height: 18px; }
+.ack-btn .icon svg { stroke-width: 2.4; }
+.ack-btn.done { background: var(--green); border-color: var(--green); color: #fff; }
+.ack-btn:active { opacity: .6; }
+.ack-list { margin-top: 12px; font-size: 14px; }
+.ack-list summary {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer; list-style: none;
+  color: var(--green); font-weight: 600;
+}
+.ack-list summary::-webkit-details-marker { display: none; }
+.ack-list summary .icon { width: 18px; height: 18px; }
+.ack-names { margin-top: 6px; padding: 10px 12px; border-radius: 10px; background: var(--fill); display: grid; gap: 4px; line-height: 1.5; }
+.ack-names b { font-weight: 600; }
+
+/* ---------- 参加者スマホ：1ページ表示 ---------- */
+.shell.single { padding-bottom: env(safe-area-inset-bottom); }
+.shell.single .page { padding-bottom: 48px; }
+.shell.single .navbar { justify-content: center; }
+.shell.single .navbar.scrolled .nav-title { margin: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-gear {
+  position: absolute; left: 6px; bottom: 0; width: 44px; height: 44px; border: none; background: none;
+  color: var(--blue); display: grid; place-items: center;
+}
+.nav-gear .icon { width: 24px; height: 24px; }
+.shell.single .large-title { font-size: 30px; margin-top: 4px; }
+
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.tile { background: var(--cell); border-radius: 14px; padding: 12px 14px; border-top: 3px solid var(--c, var(--blue)); }
+.tile-label { font-size: 13px; font-weight: 600; color: var(--label-2); display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-label .dot { width: 8px; height: 8px; margin-right: 5px; }
+.tile-value { font-family: var(--font-rounded); font-size: 30px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.tile-value small { font-size: 14px; color: var(--label-2); margin-left: 2px; }
+.tile-sub { font-size: 11px; color: var(--label-2); }
+
+.jump {
+  position: sticky; top: calc(44px + env(safe-area-inset-top)); z-index: 15;
+  margin: 0 -16px 8px; padding: 8px 16px;
+  background: var(--bg);
+}
+.jump .seg button { font-size: 14px; min-height: 32px; }
+.page-section { scroll-margin-top: calc(100px + env(safe-area-inset-top)); padding-top: 8px; }
+.section-title { font-size: 22px; font-weight: 700; letter-spacing: -.02em; margin: 12px 4px 12px; }
+@media (max-width: 700px) {
+  .sheet-backdrop { padding: 0; align-items: end; place-items: end stretch; }
+  .sheet { width: 100%; max-height: 92vh; border-radius: 14px 14px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* 調整：移動用タブは下線スタイルにして、お知らせの絞り込みと区別する */
+.jump .seg { background: transparent; padding: 0; border-radius: 0; border-bottom: .5px solid var(--separator); }
+.jump .seg button {
+  border-radius: 0; background: transparent; box-shadow: none; color: var(--label-2);
+  font-size: 15px; font-weight: 600; min-height: 40px; border-bottom: 2.5px solid transparent;
+}
+.jump .seg button[aria-selected=true] { background: transparent; box-shadow: none; color: var(--blue); border-bottom-color: var(--blue); }
+/* チーム表の切り替えは折り返して全部見せる */
+.set-bar { flex-wrap: wrap; overflow: visible; }
+
+/* ---------- スパイ ---------- */
+.spy-name { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+.spy-name .icon { width: 18px; height: 18px; color: #AF52DE; }
+.spy-tag {
+  display: inline-flex; align-items: center; gap: 2px; margin-left: 6px;
+  font-size: 12px; font-weight: 600; color: #AF52DE;
+  background: color-mix(in srgb, #AF52DE 12%, transparent); border-radius: 6px; padding: 1px 6px;
+}
+.spy-tag .icon { width: 13px; height: 13px; }
+.spy-secret { background: color-mix(in srgb, #AF52DE 9%, transparent); }
+.spy-dest .cell-main { gap: 8px; }
+
+/* 調整：1ページ表示では上部バーのタイトルを出さず、右上の所属表示と重ならないようにする */
+.shell.single .nav-title { display: none; }
+.shell.single .navbar .me-chip { max-width: calc(100% - 72px); overflow: hidden; }
+/* 項目名は文字数に合わせて伸ばす（狭い列で折り返さない） */
+.field-label { width: auto; min-width: 5.5em; margin-right: 12px; white-space: nowrap; }
+.desk-grid.cols-4 .field-label { width: auto; min-width: 4.5em; }

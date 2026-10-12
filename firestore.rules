@@ -30,6 +30,14 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/memberships/$(teamId + '_' + request.auth.uid)).data.published == true;
     }
 
+    // 参加者が見てよいお知らせで、かつ「見ました」ボタン付きか
+    function canAck(a) {
+      return a.get('ack', false) == true && (
+           a.scope == 'all'
+        || (a.scope == 'user' && a.target == request.auth.uid)
+        || (a.scope == 'team' && inPublishedTeam(a.target)));
+    }
+
     function validAnnouncement(d) {
       return d.keys().hasAll(['title', 'body', 'scope', 'target', 'images', 'pinned', 'createdAt'])
         && d.title is string && d.title.size() <= 100
@@ -73,13 +81,17 @@ service cloud.firestore {
         && (request.resource == null || (request.resource.data.setId is string && request.resource.data.published is bool));
     }
 
+    // hidden == true は「スパイの本当のチーム」。本人と管理者にしか見えない
+    // （参加者は hidden == false の所属と、自分自身の所属だけを読める）
     match /memberships/{id} {
-      allow read: if isAdmin() || (isMember() && resource.data.published == true);
+      allow read: if isAdmin() || (isMember() && resource.data.published == true
+        && (resource.data.hidden == false || resource.data.uid == request.auth.uid));
       allow write: if isAdmin()
         && (request.resource == null || (
           id == request.resource.data.teamId + '_' + request.resource.data.uid
           && request.resource.data.setId is string
-          && request.resource.data.published is bool));
+          && request.resource.data.published is bool
+          && request.resource.data.hidden is bool));
     }
 
     // 旧版（チーム表が1つだけだった頃）のデータ。管理者画面が新形式へ移したあと削除する
@@ -96,6 +108,18 @@ service cloud.firestore {
       ));
       allow create, update: if isAdmin() && validAnnouncement(request.resource.data);
       allow delete: if isAdmin();
+    }
+
+    // 「見ました」の記録。acks/{annId}_{uid}。参加者は自分の分だけ作成・取り消しでき、自分の分だけ読める
+    match /acks/{id} {
+      allow read: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);
+      allow create: if isMember()
+        && request.resource.data.keys().hasOnly(['annId', 'uid', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.annId is string
+        && id == request.resource.data.annId + '_' + request.auth.uid
+        && canAck(get(/databases/$(database)/documents/announcements/$(request.resource.data.annId)).data);
+      allow delete: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);
     }
 
     // visibility: 'public' = 全員 / 'team' = teamId のチームのメンバーだけ / 'private' = target 本人だけ
