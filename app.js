@@ -2038,5 +2038,18 @@ function render() {
 const $app = document.getElementById("app");
 
 if ("serviceWorker" in navigator && !USE_EMULATOR) {
-  navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("SW", e));
+  // 新しい版が公開されたら、切り替わった時点でページを1回だけ読み直す（初回のインストール時は読み直さない）
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloaded) return;
+    reloaded = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" })
+    .then((reg) => {
+      // 開きっぱなしでも新しい版に気づけるよう、画面に戻ってきたときに確認する
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
+    })
+    .catch((e) => console.warn("SW", e));
 }

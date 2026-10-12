@@ -1,6 +1,6 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v8";
+const CACHE = "island-v9";
 const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
@@ -10,7 +10,10 @@ const PRECACHE = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
+  // GitHub Pages はファイルを最大10分ブラウザにキャッシュさせるので、cache: "reload" で必ず取り直す
+  e.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll(PRECACHE.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
@@ -55,7 +58,7 @@ self.addEventListener("fetch", (e) => {
   // 自分のファイルはネット優先（更新を反映するため）。電波が弱くて 4 秒以内に返らなければキャッシュ
   if (url.origin === self.location.origin) {
     e.respondWith(
-      fetchWithTimeout(req, 4000)
+      fetchWithTimeout(new Request(req.url, { cache: "no-cache", credentials: "same-origin" }), 4000)
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();
