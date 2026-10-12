@@ -1,6 +1,7 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v7";
+const CACHE = "island-v8";
+const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
   "./", "./index.html", "./app.js", "./config.js", "./style.css",
@@ -15,7 +16,7 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== TILES).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -31,6 +32,15 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+
+  // 地図の絵と地図ライブラリ：保存済みならそれを使い、なければ取得して保存する
+  if (url.hostname === "tile.openstreetmap.org" || url.href.startsWith("https://cdnjs.cloudflare.com/ajax/libs/leaflet/")) {
+    e.respondWith(caches.open(TILES).then((c) => c.match(req).then((hit) => hit || fetch(req).then((res) => {
+      if (res.ok || res.type === "opaque") c.put(req, res.clone());
+      return res;
+    }))));
+    return;
+  }
 
   // Firebase SDK はバージョン固定なのでキャッシュ優先
   if (url.href.startsWith(SDK)) {

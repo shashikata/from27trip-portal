@@ -351,6 +351,8 @@ const ICONS = {
   note: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
   table: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
+  map: '<path d="M9 4.5 3.5 6.5v13l5.5-2 6 2 5.5-2v-13l-5.5 2-6-2Z"/><path d="M9 4.5v13M15 6.5v13"/>',
+  locate: '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="7.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22"/>',
   arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
 };
 
@@ -842,6 +844,90 @@ function adminSide() {
   return { el: h("div", null, notes.el, h("div", { class: "side-gap" }), members.el), update() { notes.update(); members.update(); } };
 }
 
+// ---------------------------------------------------------------- 地図（現在地）
+// Leaflet（地図ライブラリ）と OpenStreetMap の地図を使う。ライブラリは地図を初めて開いたときに読み込む。
+// 一度表示した地図の絵は sw.js がスマホに保存するので、電波のない島でも前に見た範囲は表示できる。
+
+const LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/";
+const ISLAND_CENTER = [34.335, 136.70]; // 五ヶ所湾あたり（現在地が取れるまでの初期表示。目安の座標）
+let leafletLoading = null;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  leafletLoading ??= new Promise((resolve, reject) => {
+    document.head.append(h("link", { rel: "stylesheet", href: `${LEAFLET}leaflet.min.css` }));
+    const sc = h("script", { src: `${LEAFLET}leaflet.min.js` });
+    sc.onload = () => resolve(window.L);
+    sc.onerror = () => { leafletLoading = null; reject(new Error("地図を読み込めませんでした。電波のある場所で一度開いてください。")); };
+    document.head.append(sc);
+  });
+  return leafletLoading;
+}
+
+const GEO_ERRORS = {
+  1: "位置情報の利用が許可されていません。iPhone は「設定 › プライバシーとセキュリティ › 位置情報サービス › Safari」を「使用中のみ」に、Android は Chrome の位置情報を許可してください。",
+  2: "現在地を取得できませんでした。空が見える場所で少し待ってください。",
+  3: "現在地の取得に時間がかかっています。空が見える場所で少し待ってください。",
+};
+
+function mapView() {
+  const box = h("div", { class: "map-box" });
+  const status = h("div", { class: "map-status" }, "現在地を探しています…");
+  const locateBtn = h("button", { class: "map-locate", "aria-label": "現在地に戻る", title: "現在地に戻る" }, icon("locate"));
+  const el = h("div", { class: "map-view" }, h("div", { class: "map-wrap" }, box, locateBtn), status);
+  let map = null, dot = null, ring = null, watchId = null, last = null, follow = true;
+
+  const show = (pos) => {
+    const { latitude, longitude, accuracy } = pos.coords;
+    last = [latitude, longitude];
+    if (!map) return;
+    if (!dot) {
+      ring = window.L.circle(last, { radius: accuracy, color: "#007AFF", weight: 1, fillOpacity: 0.12 }).addTo(map);
+      dot = window.L.circleMarker(last, { radius: 8, color: "#fff", weight: 3, fillColor: "#007AFF", fillOpacity: 1 }).addTo(map);
+      map.setView(last, 16);
+    } else {
+      dot.setLatLng(last);
+      ring.setLatLng(last).setRadius(accuracy);
+      if (follow) map.panTo(last);
+    }
+    const t = new Date(pos.timestamp);
+    status.textContent = `現在地：誤差 約${Math.round(accuracy)}m ・ ${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}:${String(t.getSeconds()).padStart(2, "0")} 更新`;
+  };
+
+  locateBtn.addEventListener("click", () => {
+    follow = true;
+    if (map && last) map.setView(last, Math.max(map.getZoom(), 16));
+  });
+
+  let started = false;
+  return {
+    el,
+    update() {
+      if (started) { map?.invalidateSize(); return; }
+      started = true;
+      loadLeaflet().then((L) => {
+        map = L.map(box, { zoomControl: true, attributionControl: true }).setView(ISLAND_CENTER, 13);
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        }).addTo(map);
+        map.on("dragstart", () => { follow = false; });
+        setTimeout(() => map.invalidateSize(), 50);
+        if (!("geolocation" in navigator)) { status.textContent = "この端末では現在地を取得できません。"; return; }
+        watchId = navigator.geolocation.watchPosition(show, (err) => { status.textContent = GEO_ERRORS[err.code] ?? err.message; },
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+        if (last) show({ coords: { latitude: last[0], longitude: last[1], accuracy: 30 }, timestamp: Date.now() });
+      }).catch((e) => { status.textContent = e.message; });
+    },
+    // 小窓を閉じたら位置の取得を止める（電池のため）
+    destroy() {
+      if (watchId != null) navigator.geolocation.clearWatch(watchId);
+      map?.remove();
+    },
+  };
+}
+
+const mapAllowed = () => S.isAdmin || !!S.config.mapEnabled;
+
 // ---------------------------------------------------------------- 画面：ログイン
 
 function loginView() {
@@ -1032,10 +1118,14 @@ function settingsView({ withTitle = true } = {}) {
       if (!S.isAdmin || built) return;
       built = true;
       const titleInput = h("input", { type: "text", value: S.config.title ?? APP_TITLE });
+      const mapSwitch = toggle(!!S.config.mapEnabled);
+      mapSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { mapEnabled: mapSwitch.checked }),
+        mapSwitch.checked ? "参加者に地図を表示しました" : "参加者の地図を非表示にしました"));
       adminBox.replaceChildren(group("企画", [
         field("タイトル", titleInput),
         h("button", { class: "cell cell-button", onclick: () => fire(updateDoc(doc(db, "config", "app"), { title: titleInput.value.trim() || APP_TITLE }), "保存しました") }, "タイトルを保存"),
-      ]));
+        field("参加者に地図を表示", mapSwitch),
+      ], "地図（現在地表示）は管理者には常に表示されます。"));
     },
   };
 }
@@ -1696,6 +1786,7 @@ const MEMBER_TABS = [
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
+  { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 const ADMIN_TABS = [
@@ -1705,6 +1796,7 @@ const ADMIN_TABS = [
   { key: "side", icon: "note", label: "表・メモ", view: adminSide, desktopOnly: true },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
+  { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 
@@ -1765,7 +1857,7 @@ function buildMobileShell(allTabs) {
       },
     }, icon(t.icon), h("span", null, t.label))));
   const chip = S.isAdmin ? null : meChip();
-  const gears = sheetTabs.map((t) => h("button", { class: "nav-gear", "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon)));
+  const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
   const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : chip);
   const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
@@ -1802,6 +1894,7 @@ function openSheet(tab) {
 
 function closeSheet() {
   if (!S.sheet && !document.querySelector(".sheet-backdrop")) return;
+  S.sheet?.view.destroy?.();
   S.sheet = null;
   sheetKey = null;
   document.querySelector(".sheet-backdrop")?.remove();
@@ -1813,12 +1906,13 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet)
 // 小窓（PC の参加者・設定、スマホ参加者の設定）を描く
 let sheetKey = null;
 function paintSheet() {
+  if (S.sheet?.key === "map" && !mapAllowed()) closeSheet();
   if (!S.sheet) { sheetKey = null; return; }
   if (sheetKey !== S.sheet.key || !document.querySelector(".sheet-backdrop")) {
     document.querySelector(".sheet-backdrop")?.remove();
     sheetKey = S.sheet.key;
     const backdrop = h("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === backdrop) closeSheet(); } },
-      h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": S.sheet.title },
+      h("div", { class: `sheet sheet-${S.sheet.key}`, role: "dialog", "aria-modal": "true", "aria-label": S.sheet.title },
         h("div", { class: "sheet-head" },
           h("div", { class: "sheet-title" }, S.sheet.title),
           h("button", { class: "text-btn", onclick: closeSheet }, "閉じる")),
@@ -1866,8 +1960,8 @@ function buildMemberPageShell() {
   const summary = memberSummary();
   const chip = meChip();
   const navTitle = h("div", { class: "nav-title" });
-  const settingsTab = MEMBER_TABS.find((t) => t.key === "settings");
-  const gear = h("button", { class: "nav-gear", "aria-label": "設定", onclick: () => openSheet(settingsTab) }, icon("gear"));
+  const gear = h("div", { class: "nav-left" }, MEMBER_TABS.filter((t) => t.sheet).map((t) =>
+    h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const title = h("h1", { class: "large-title" });
   const status = statusBar();
@@ -1909,6 +2003,10 @@ function buildMemberPageShell() {
   };
 }
 
+function paintMapButtons() {
+  for (const b of document.querySelectorAll("[data-sheet=map]")) b.hidden = !mapAllowed();
+}
+
 function render() {
   if (!S.authReady) return;
   if (!S.user) {
@@ -1934,6 +2032,7 @@ function render() {
   }
   document.title = S.config.title || APP_TITLE;
   shell.update();
+  paintMapButtons();
 }
 
 const $app = document.getElementById("app");

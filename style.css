@@ -647,3 +647,19 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .fold > summary .icon { width: 18px; height: 18px; color: var(--label-2); transition: transform .2s; }
 .fold[open] > summary .icon { transform: rotate(90deg); }
 .pill.reset { color: var(--label-2); }
+
+/* ---------- 地図 ---------- */
+.nav-left { position: absolute; left: 4px; bottom: 0; display: flex; }
+.nav-left .nav-gear { position: static; }
+.sheet-map { width: min(960px, 100%); }
+.sheet-map .sheet-body { padding: 12px; }
+.map-wrap { position: relative; }
+.map-box { height: min(68vh, 680px); border-radius: 12px; overflow: hidden; background: var(--fill); }
+.map-locate {
+  position: absolute; right: 12px; bottom: 28px; z-index: 500;
+  width: 44px; height: 44px; border: none; border-radius: 12px; display: grid; place-items: center;
+  background: var(--cell); color: var(--blue); box-shadow: 0 2px 10px rgba(0, 0, 0, .2);
+}
+.map-locate .icon { width: 24px; height: 24px; }
+.map-status { font-size: 13px; color: var(--label-2); margin: 10px 4px 0; line-height: 1.5; }
+@media (max-width: 700px) { .map-box { height: 64vh; } }
