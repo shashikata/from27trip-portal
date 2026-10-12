@@ -60,6 +60,7 @@ const S = {
   memberships: new Map(),
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
+  locations: new Map(),      // 参加者の現在地 locations/{uid}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
@@ -129,6 +130,7 @@ function startAdmin() {
   listen("logs", collection(db, "pointLogs"), (s) => { S.logSrc.all = toMap(s); });
   listen("acks", collection(db, "acks"), (s) => { S.acks = toMap(s); });
   listen("notes", collection(db, "notes"), (s) => { S.notes = toMap(s); });
+  listen("locations", collection(db, "locations"), (s) => { S.locations = toMap(s); });
 }
 
 // 旧版（チーム表が1つだけ）で作ったチームと振り分けを「チーム表1」に移す
@@ -172,7 +174,12 @@ function startMemberData(uid) {
   const ann = collection(db, "announcements");
   const logs = collection(db, "pointLogs");
   const published = (name) => query(collection(db, name), where("published", "==", true));
-  listen("config", doc(db, "config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
+  listen("config", doc(db, "config", "app"), (s) => {
+    if (s?.exists()) S.config = { ...S.config, ...s.data() };
+    if (S.config.locAll) listen("locations", collection(db, "locations"), (x) => { if (x) S.locations = toMap(x); });
+    else { unlisten("locations"); S.locations = new Map(); }
+    syncLocationSharing();
+  });
   listen("members", collection(db, "members"), (s) => { if (s) S.members = toMap(s); });
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
@@ -213,10 +220,11 @@ onAuthStateChanged(auth, (user) => {
   Object.assign(S, {
     authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), me: undefined,
     config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home", sheet: null,
   });
   shell = null;
+  syncLocationSharing(); // ログアウトしたら位置の取得を止める
   if (user) (S.isAdmin ? startAdmin() : startMember(user.uid));
   scheduleRender();
 });
@@ -844,6 +852,49 @@ function adminSide() {
   return { el: h("div", null, notes.el, h("div", { class: "side-gap" }), members.el), update() { notes.update(); members.update(); } };
 }
 
+// ---------------------------------------------------------------- 位置の共有（参加者）
+// 管理者が「参加者の位置を共有」をオンにしている間、アプリを開いていれば現在地を送る。
+// 送るのは 30 秒に1回、または 20m 以上動いたとき（電池と通信量のため）。
+
+const LOC = { watchId: null, lastSent: null, lastSentAt: 0, myPos: null, error: null };
+
+function distanceM(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad, dLng = (b[1] - a[1]) * rad;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+function syncLocationSharing() {
+  const uid = S.user?.uid;
+  const on = !!(uid && !S.isAdmin && S.me && S.config.locShare && "geolocation" in navigator);
+  if (on && LOC.watchId == null) {
+    LOC.watchId = navigator.geolocation.watchPosition((pos) => {
+      const p = [pos.coords.latitude, pos.coords.longitude];
+      LOC.myPos = p; LOC.error = null;
+      const now = Date.now();
+      if (LOC.lastSent && now - LOC.lastSentAt < 30000 && distanceM(LOC.lastSent, p) < 20) return;
+      LOC.lastSent = p; LOC.lastSentAt = now;
+      setDoc(doc(db, "locations", uid), { lat: p[0], lng: p[1], acc: Math.round(pos.coords.accuracy), at: serverTimestamp() })
+        .catch((e) => console.warn("location", e));
+      scheduleRender();
+    }, (err) => { LOC.error = err.code; scheduleRender(); }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  } else if (!on && LOC.watchId != null) {
+    navigator.geolocation.clearWatch(LOC.watchId);
+    LOC.watchId = null; LOC.lastSent = null;
+    // 共有をやめたら、自分の位置データを消す
+    if (uid && !S.isAdmin) deleteDoc(doc(db, "locations", uid)).catch(() => {});
+  }
+}
+
+const agoText = (x) => {
+  const ms = Date.now() - ts(x);
+  if (!ts(x)) return "送信中…";
+  if (ms < 60000) return "たった今";
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}分前`;
+  return `${Math.floor(ms / 3600000)}時間前`;
+};
+
 // ---------------------------------------------------------------- 地図（現在地）
 // Leaflet（地図ライブラリ）と OpenStreetMap の地図を使う。ライブラリは地図を初めて開いたときに読み込む。
 // 一度表示した地図の絵は sw.js がスマホに保存するので、電波のない島でも前に見た範囲は表示できる。
@@ -875,6 +926,38 @@ function mapView() {
   const locateBtn = h("button", { class: "map-locate", "aria-label": "現在地に戻る", title: "現在地に戻る" }, icon("locate"));
   const el = h("div", { class: "map-view" }, h("div", { class: "map-wrap" }, box, locateBtn), status);
   let map = null, dot = null, ring = null, watchId = null, last = null, follow = true;
+  const others = new Map(); // uid -> marker
+  const people = h("div", { class: "map-people" });
+  el.append(people);
+
+  // 他の人の位置（管理者は全員、参加者は設定でオンのときだけ届く）
+  const paintOthers = () => {
+    const me = S.user?.uid;
+    const locs = [...S.locations.values()].filter((l) => l.id !== me && S.members.has(l.id));
+    if (map) {
+      const alive = new Set();
+      for (const l of locs) {
+        alive.add(l.id);
+        const stale = Date.now() - ts(l.at) > 5 * 60000;
+        const name = memberName(l.id);
+        const iconEl = window.L.divIcon({ className: "", html: `<div class="pin${stale ? " stale" : ""}"><span></span><b></b></div>`, iconSize: [0, 0] });
+        let mk = others.get(l.id);
+        if (!mk) { mk = window.L.marker([l.lat, l.lng], { icon: iconEl, keyboard: false }).addTo(map); others.set(l.id, mk); }
+        else mk.setLatLng([l.lat, l.lng]).setIcon(iconEl);
+        const node = mk.getElement()?.querySelector(".pin b");
+        if (node) node.textContent = name;
+      }
+      for (const [id, mk] of others) if (!alive.has(id)) { mk.remove(); others.delete(id); }
+    }
+    people.hidden = !locs.length;
+    people.replaceChildren(...locs.sort((a, b) => byNatural(memberName(a.id), memberName(b.id))).map((l) => {
+      const stale = Date.now() - ts(l.at) > 5 * 60000;
+      return h("button", {
+        class: `person${stale ? " stale" : ""}`,
+        onclick: () => { follow = false; map?.setView([l.lat, l.lng], Math.max(map.getZoom(), 17)); },
+      }, h("span", { class: "person-dot" }), memberName(l.id), h("small", null, agoText(l.at)));
+    }));
+  };
 
   const show = (pos) => {
     const { latitude, longitude, accuracy } = pos.coords;
@@ -902,6 +985,7 @@ function mapView() {
   return {
     el,
     update() {
+      paintOthers();
       if (started) { map?.invalidateSize(); return; }
       started = true;
       loadLeaflet().then((L) => {
@@ -912,9 +996,14 @@ function mapView() {
         }).addTo(map);
         map.on("dragstart", () => { follow = false; });
         setTimeout(() => map.invalidateSize(), 50);
+        paintOthers();
         if (!("geolocation" in navigator)) { status.textContent = "この端末では現在地を取得できません。"; return; }
-        watchId = navigator.geolocation.watchPosition(show, (err) => { status.textContent = GEO_ERRORS[err.code] ?? err.message; },
-          { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+        const onErr = (err) => { if (!dot) status.textContent = GEO_ERRORS[err.code] ?? err.message; };
+        // 共有用にすでに取れている位置があれば、まずそれを出す
+        if (LOC.myPos) show({ coords: { latitude: LOC.myPos[0], longitude: LOC.myPos[1], accuracy: 30 }, timestamp: Date.now() });
+        // 開いた直後に1回取りに行き、その後は動きに合わせて更新する
+        navigator.geolocation.getCurrentPosition(show, onErr, { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+        watchId = navigator.geolocation.watchPosition(show, onErr, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
         if (last) show({ coords: { latitude: last[0], longitude: last[1], accuracy: 30 }, timestamp: Date.now() });
       }).catch((e) => { status.textContent = e.message; });
     },
@@ -1119,13 +1208,21 @@ function settingsView({ withTitle = true } = {}) {
       built = true;
       const titleInput = h("input", { type: "text", value: S.config.title ?? APP_TITLE });
       const mapSwitch = toggle(!!S.config.mapEnabled);
+      const locSwitch = toggle(!!S.config.locShare);
+      const locAllSwitch = toggle(!!S.config.locAll);
+      locSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { locShare: locSwitch.checked }),
+        locSwitch.checked ? "位置の共有をオンにしました" : "位置の共有をオフにしました"));
+      locAllSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { locAll: locAllSwitch.checked }),
+        locAllSwitch.checked ? "参加者同士でも位置が見えるようにしました" : "位置は管理者だけが見られるようにしました"));
       mapSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { mapEnabled: mapSwitch.checked }),
         mapSwitch.checked ? "参加者に地図を表示しました" : "参加者の地図を非表示にしました"));
       adminBox.replaceChildren(group("企画", [
         field("タイトル", titleInput),
         h("button", { class: "cell cell-button", onclick: () => fire(updateDoc(doc(db, "config", "app"), { title: titleInput.value.trim() || APP_TITLE }), "保存しました") }, "タイトルを保存"),
         field("参加者に地図を表示", mapSwitch),
-      ], "地図（現在地表示）は管理者には常に表示されます。"));
+        field("参加者の位置を共有", locSwitch),
+        field("参加者同士でも見られる", locAllSwitch),
+      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が30秒ごとに管理者へ届きます。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"));
     },
   };
 }
@@ -1820,6 +1917,7 @@ function meChip() {
     const teams = sortedSets().map((s) => S.teams.get(teamOfIn(uid, s.id))).filter(Boolean);
     const points = sum(merged(S.logSrc).filter((l) => l.kind === "user" && l.target === uid));
     el.replaceChildren(
+      ...(S.config.locShare ? [h("span", { class: `me-loc${LOC.error ? " err" : ""}`, title: LOC.error ? "位置を取得できていません" : "位置を共有中" }, icon("locate"))] : []),
       ...teams.map((t) => h("span", { class: "me-team", title: teamName(t.id) }, dot(t.color), t.name)),
       h("span", { class: "me-points" }, points, h("small", null, "pt")),
     );

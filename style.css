@@ -663,3 +663,29 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .map-locate .icon { width: 24px; height: 24px; }
 .map-status { font-size: 13px; color: var(--label-2); margin: 10px 4px 0; line-height: 1.5; }
 @media (max-width: 700px) { .map-box { height: 64vh; } }
+
+/* ---------- 位置の共有 ---------- */
+.pin { position: relative; transform: translate(-50%, -50%); }
+.pin span {
+  display: block; width: 16px; height: 16px; border-radius: 50%;
+  background: #FF9500; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+}
+.pin b {
+  position: absolute; left: 50%; top: 20px; transform: translateX(-50%);
+  white-space: nowrap; font-size: 12px; font-weight: 700; color: #1c1c1e;
+  background: rgba(255, 255, 255, .92); padding: 1px 6px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
+  font-family: var(--font);
+}
+.pin.stale span { background: #8E8E93; }
+.pin.stale b { color: #8E8E93; }
+.map-people { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 2px 0; }
+.person {
+  display: inline-flex; align-items: center; gap: 5px; border: none; background: var(--cell);
+  border-radius: 999px; padding: 5px 12px; font-size: 14px; font-weight: 600;
+}
+.person small { font-weight: 400; color: var(--label-2); font-size: 12px; }
+.person-dot { width: 9px; height: 9px; border-radius: 50%; background: #FF9500; }
+.person.stale .person-dot { background: #8E8E93; }
+.me-loc { display: inline-flex; color: var(--green); }
+.me-loc .icon { width: 16px; height: 16px; }
+.me-loc.err { color: var(--red); }

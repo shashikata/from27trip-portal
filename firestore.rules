@@ -116,6 +116,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // 参加者の現在地。locations/{uid}。本人だけが書けて、管理者（と、設定でオンなら参加者全員）が読める
+    match /locations/{uid} {
+      allow read: if isAdmin()
+        || (isMember() && get(/databases/$(database)/documents/config/app).data.get('locAll', false) == true);
+      allow write: if isAdmin() || (isMember() && request.auth.uid == uid);
+    }
+
     // 「見ました」の記録。acks/{annId}_{uid}。参加者は自分の分だけ作成・取り消しでき、自分の分だけ読める
     match /acks/{id} {
       allow read: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);

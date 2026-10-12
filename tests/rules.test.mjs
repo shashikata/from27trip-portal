@@ -205,6 +205,15 @@ await test("表・メモ：非公開は読めない", () => assertFails(getDoc(d
 await test("表・メモ：参加者は書けない", () => assertFails(setDoc(doc(alice(), "notes/x"), { title: "x", shared: true })));
 await test("表・メモ：管理者は書ける", () => assertSucceeds(setDoc(doc(admin(), "notes/x"), { title: "x", type: "memo", body: "", shared: false })));
 
+// ----- 位置の共有
+const loc = (db, uid) => setDoc(doc(db, `locations/${uid}`), { lat: 34.3, lng: 136.7, acc: 10, at: serverTimestamp() });
+await test("位置：自分の位置を送れる", () => assertSucceeds(loc(alice(), "alice")));
+await test("位置：他人の位置は書けない", () => assertFails(loc(alice(), "bob")));
+await test("位置：管理者は読める", () => assertSucceeds(getDocs(collection(admin(), "locations"))));
+await test("位置：設定オフなら参加者は他人の位置を読めない", () => assertFails(getDocs(collection(alice(), "locations"))));
+await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "config/app"), { title: "t", locAll: true }));
+await test("位置：設定オンなら参加者も読める", () => assertSucceeds(getDocs(collection(bob(), "locations"))));
+
 // ----- 発表の切り替え：表2を発表すると alice は X 宛てを読めるようになる
 await env.withSecurityRulesDisabled(async (ctx) => {
   const db = ctx.firestore();
