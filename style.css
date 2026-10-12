@@ -689,3 +689,23 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .me-loc { display: inline-flex; color: var(--green); }
 .me-loc .icon { width: 16px; height: 16px; }
 .me-loc.err { color: var(--red); }
+
+/* ---------- 旅行（プロファイル）の切り替え ---------- */
+.profile-switch { position: relative; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.profile-switch .profile-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-switch .profile-chev { display: none; width: 16px; height: 16px; transform: rotate(90deg); color: var(--blue); flex: none; }
+.profile-switch.multi .profile-chev { display: inline-flex; }
+.profile-switch.multi { cursor: pointer; }
+/* 透明なプルダウンを重ねて、押すと端末標準の選択画面が開くようにする */
+.profile-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; }
+.profile-switch.big .profile-chev { width: 22px; height: 22px; }
+.profile-switch.app-name { font-size: 13px; font-weight: 600; color: var(--label-2); }
+.profile-switch.desk-title { font-size: 17px; font-weight: 600; }
+.profile-row { justify-content: space-between; color: var(--label); }
+.profile-row .icon { width: 18px; height: 18px; color: var(--label-3); }
+.profile-row.current { font-weight: 600; }
+.profile-cur { display: inline-flex; align-items: center; gap: 3px; color: var(--blue); font-size: 14px; }
+.profile-cur .icon { color: var(--blue); }
+.profile-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.small-note { font-size: 13px; }
+.cred .small-note { flex: none; max-width: 55%; text-align: right; line-height: 1.35; }

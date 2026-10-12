@@ -1,10 +1,17 @@
 rules_version = '2';
 
-// アクセス制御の本体。画面側（app.js）で隠すだけでは、通信を覗けば中身が見えてしまう。
-// 「誰が何を読めるか」はすべてここで判定する。
+// 汎用のルール（機能を追加しても書き直さなくてよい形）
 //
-// チーム表（teamSets）は複数持てる。発表はチーム表ごとで、発表すると
-// そのチーム表の teams / memberships の published が true になる（管理者画面がまとめて書き換える）。
+//   管理者    : すべて読み書きできる
+//   参加者    : 自分が参加している旅行（プロファイル）のデータを読める
+//               書けるのは uid 欄が自分になっているドキュメントだけ（「見ました」・位置など）
+//   未登録の人: 何もできない
+//
+// データの置き場所
+//   1つ目の旅行（七日島）     : ルート直下（/announcements, /teams, /members …）
+//   2つ目以降の旅行           : /profiles/{pid}/announcements … のようにプロファイルの下
+//   旅行の一覧                : /profiles/{pid}（root は1つ目の旅行を表す）
+//   アカウントの一覧          : /accounts/{loginId}（旅行をまたいでアカウントを使い回すため）
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -18,132 +25,47 @@ service cloud.firestore {
         && request.auth.token.email in ['admin1@island.example.com', 'admin2@island.example.com'];
     }
 
-    // 管理者が members/{uid} を作った人だけが参加者（勝手にアカウントを作っても何も読めない）
-    function isMember() {
+    function rootMember() {
       return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
     }
 
-    // 自分が teamId のチームに所属していて、そのチーム表が発表済みか
-    // （所属は memberships/{teamId}_{uid} というIDのドキュメントで表す）
-    function inPublishedTeam(teamId) {
-      return teamId is string
-        && get(/databases/$(database)/documents/memberships/$(teamId + '_' + request.auth.uid)).data.published == true;
+    function profileMember(pid) {
+      return signedIn() && exists(/databases/$(database)/documents/profiles/$(pid)/members/$(request.auth.uid));
     }
 
-    // 参加者が見てよいお知らせで、かつ「見ました」ボタン付きか
-    function canAck(a) {
-      return a.get('ack', false) == true && (
-           a.scope == 'all'
-        || (a.scope == 'user' && a.target == request.auth.uid)
-        || (a.scope == 'team' && inPublishedTeam(a.target)));
+    // 書き込もうとしている（または消そうとしている）データの uid 欄が自分か
+    function ownsNew() {
+      return request.resource.data.get('uid', '') == request.auth.uid;
+    }
+    function ownsOld() {
+      return resource.data.get('uid', '') == request.auth.uid;
     }
 
-    function validAnnouncement(d) {
-      return d.keys().hasAll(['title', 'body', 'scope', 'target', 'images', 'pinned', 'createdAt'])
-        && d.title is string && d.title.size() <= 100
-        && d.body is string && d.body.size() <= 5000
-        && d.scope in ['all', 'team', 'user']
-        && (d.scope == 'all' || d.target is string)
-        && d.images is list && d.images.size() <= 3
-        && d.pinned is bool;
-    }
-
-    function validPointLog(d) {
-      return d.keys().hasAll(['kind', 'target', 'teamId', 'visibility', 'delta', 'reason', 'createdAt'])
-        && d.kind in ['user', 'team']
-        && d.target is string
-        && d.delta is number
-        && d.reason is string && d.reason.size() <= 200
-        && d.visibility in ['public', 'team', 'private']
-        && (d.visibility != 'private' || d.kind == 'user')
-        && (d.visibility != 'team' || d.teamId is string);
-    }
-
-    match /config/{id} {
-      allow read: if isAdmin() || isMember();
+    // 旅行の一覧：ログインしていれば読める（どの旅行に入っているかを調べるため）
+    match /profiles/{pid} {
+      allow read: if signedIn();
       allow write: if isAdmin();
     }
 
-    match /members/{uid} {
-      allow read: if isAdmin() || isMember() || (signedIn() && request.auth.uid == uid);
-      allow write: if isAdmin();
+    // 2つ目以降の旅行のデータ
+    match /profiles/{pid}/{coll}/{docId} {
+      allow read: if isAdmin() || profileMember(pid)
+        || (coll == 'members' && signedIn() && docId == request.auth.uid);
+      allow create, update: if isAdmin() || (profileMember(pid) && ownsNew());
+      allow delete: if isAdmin() || (profileMember(pid) && ownsOld());
     }
 
-    // チーム表・チーム・所属は、そのチーム表が発表されるまで参加者には見えない
-    match /teamSets/{setId} {
-      allow read: if isAdmin() || (isMember() && resource.data.published == true);
-      allow write: if isAdmin();
+    // 1つ目の旅行のデータ（ルート直下）
+    match /{coll}/{docId} {
+      allow read: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || rootMember()
+        || (coll == 'members' && signedIn() && docId == request.auth.uid));
+      allow create, update: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || (rootMember() && ownsNew()));
+      allow delete: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || (rootMember() && ownsOld()));
     }
 
-    match /teams/{teamId} {
-      allow read: if isAdmin() || (isMember() && resource.data.published == true);
-      allow write: if isAdmin()
-        && (request.resource == null || (request.resource.data.setId is string && request.resource.data.published is bool));
-    }
-
-    // hidden == true は「スパイの本当のチーム」。本人と管理者にしか見えない
-    // （参加者は hidden == false の所属と、自分自身の所属だけを読める）
-    match /memberships/{id} {
-      allow read: if isAdmin() || (isMember() && resource.data.published == true
-        && (resource.data.hidden == false || resource.data.uid == request.auth.uid));
-      allow write: if isAdmin()
-        && (request.resource == null || (
-          id == request.resource.data.teamId + '_' + request.resource.data.uid
-          && request.resource.data.setId is string
-          && request.resource.data.published is bool
-          && request.resource.data.hidden is bool));
-    }
-
-    // 旧版（チーム表が1つだけだった頃）のデータ。管理者画面が新形式へ移したあと削除する
-    match /assignments/{uid} {
+    // アカウントの一覧（管理者だけ）
+    match /accounts/{loginId} {
       allow read, write: if isAdmin();
-    }
-
-    // scope: 'all' = 全員 / 'team' = target のチームのメンバーだけ / 'user' = target 本人だけ
-    match /announcements/{id} {
-      allow read: if isAdmin() || (isMember() && (
-           resource.data.scope == 'all'
-        || (resource.data.scope == 'user' && resource.data.target == request.auth.uid)
-        || (resource.data.scope == 'team' && inPublishedTeam(resource.data.target))
-      ));
-      allow create, update: if isAdmin() && validAnnouncement(request.resource.data);
-      allow delete: if isAdmin();
-    }
-
-    // 表・メモ（ポイントの決め方、リーグ戦の表など）。shared == true のものだけ参加者に見える
-    match /notes/{id} {
-      allow read: if isAdmin() || (isMember() && resource.data.shared == true);
-      allow write: if isAdmin();
-    }
-
-    // 参加者の現在地。locations/{uid}。本人だけが書けて、管理者（と、設定でオンなら参加者全員）が読める
-    match /locations/{uid} {
-      allow read: if isAdmin()
-        || (isMember() && get(/databases/$(database)/documents/config/app).data.get('locAll', false) == true);
-      allow write: if isAdmin() || (isMember() && request.auth.uid == uid);
-    }
-
-    // 「見ました」の記録。acks/{annId}_{uid}。参加者は自分の分だけ作成・取り消しでき、自分の分だけ読める
-    match /acks/{id} {
-      allow read: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);
-      allow create: if isMember()
-        && request.resource.data.keys().hasOnly(['annId', 'uid', 'at'])
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.annId is string
-        && id == request.resource.data.annId + '_' + request.auth.uid
-        && canAck(get(/databases/$(database)/documents/announcements/$(request.resource.data.annId)).data);
-      allow delete: if isAdmin() || (isMember() && resource.data.uid == request.auth.uid);
-    }
-
-    // visibility: 'public' = 全員 / 'team' = teamId のチームのメンバーだけ / 'private' = target 本人だけ
-    match /pointLogs/{id} {
-      allow read: if isAdmin() || (isMember() && (
-           resource.data.visibility == 'public'
-        || (resource.data.visibility == 'private' && resource.data.target == request.auth.uid)
-        || (resource.data.visibility == 'team' && inPublishedTeam(resource.data.teamId))
-      ));
-      allow create, update: if isAdmin() && validPointLog(request.resource.data);
-      allow delete: if isAdmin();
     }
   }
 }

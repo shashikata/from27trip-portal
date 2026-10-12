@@ -35,6 +35,13 @@ function getSecondaryAuth() {
   return secondaryAuth;
 }
 
+// ---------------------------------------------------------------- データの置き場所（旅行＝プロファイルごと）
+// 1つ目の旅行（pid = "root"）はルート直下、2つ目以降は profiles/{pid}/ の下に同じ形で置く
+const ROOT = "root";
+const base = () => (S.pid && S.pid !== ROOT ? ["profiles", S.pid] : []);
+const C = (name) => collection(db, ...base(), name);
+const D = (name, ...ids) => doc(db, ...base(), name, ...ids);
+
 const idToEmail = (id) => (id.includes("@") ? id : `${id}@${EMAIL_DOMAIN}`).toLowerCase();
 const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
 const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").toLowerCase());
@@ -50,6 +57,9 @@ const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").
 
 const S = {
   authReady: false,
+  pid: null,                 // 開いている旅行（プロファイル）。null = 参加者が選ぶ前
+  profiles: new Map(),       // 管理者：旅行の一覧 profiles/{pid}
+  myProfiles: [],            // 参加者：自分が入っている旅行 [{ id, name }]
   user: null,
   isAdmin: false,
   me: undefined,             // members/{uid}（undefined = 読み込み中, null = 存在しない）
@@ -117,30 +127,49 @@ const merged = (src) => {
 // ---------------------------------------------------------------- データ購読
 
 function startAdmin() {
-  getDoc(doc(db, "config", "app"))
-    .then((d) => { if (!d.exists()) return setDoc(doc(db, "config", "app"), { title: APP_TITLE }); })
-    .then(migrateLegacyTeams)
+  const pid = S.pid;
+  getDoc(D("config", "app"))
+    .then(async (d) => {
+      const reg = await getDoc(doc(db, "profiles", pid)).catch(() => null);
+      if (!d.exists()) await setDoc(D("config", "app"), { title: reg?.data()?.name ?? APP_TITLE });
+      // 1つ目の旅行（ルート）を旅行の一覧に登録しておく
+      if (pid === ROOT && !reg?.exists()) await setDoc(doc(db, "profiles", ROOT), { name: d.data()?.title ?? APP_TITLE, order: 0 });
+    })
+    .then(() => (pid === ROOT ? migrateLegacyTeams() : null))
+    .then(backfillAccounts)
     .catch((e) => console.warn(e));
-  listen("config", doc(db, "config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
-  listen("members", collection(db, "members"), (s) => { S.members = toMap(s); });
-  listen("sets", collection(db, "teamSets"), (s) => { S.sets = toMap(s); });
-  listen("teams", collection(db, "teams"), (s) => { S.teams = toMap(s); });
-  listen("memberships", collection(db, "memberships"), (s) => { S.memberships = toMap(s); });
-  listen("ann", collection(db, "announcements"), (s) => { S.annSrc.all = toMap(s); });
-  listen("logs", collection(db, "pointLogs"), (s) => { S.logSrc.all = toMap(s); });
-  listen("acks", collection(db, "acks"), (s) => { S.acks = toMap(s); });
-  listen("notes", collection(db, "notes"), (s) => { S.notes = toMap(s); });
-  listen("locations", collection(db, "locations"), (s) => { S.locations = toMap(s); });
+  listen("config", D("config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
+  listen("members", C("members"), (s) => { S.members = toMap(s); });
+  listen("sets", C("teamSets"), (s) => { S.sets = toMap(s); });
+  listen("teams", C("teams"), (s) => { S.teams = toMap(s); });
+  listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
+  listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
+  listen("logs", C("pointLogs"), (s) => { S.logSrc.all = toMap(s); });
+  listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
+  listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
+  listen("locations", C("locations"), (s) => { S.locations = toMap(s); });
+}
+
+// アカウント一覧（accounts/{loginId} → uid）が無い古いアカウントを登録する。
+// 旅行をまたいで同じ ID を使い回すときに、ID から uid を引くために使う
+async function backfillAccounts() {
+  const [rootMembers, accounts] = await Promise.all([getDocs(collection(db, "members")), getDocs(collection(db, "accounts"))]);
+  const known = new Set(accounts.docs.map((d) => d.id));
+  const missing = rootMembers.docs.filter((d) => d.data().loginId && !known.has(d.data().loginId));
+  if (!missing.length) return;
+  const b = writeBatch(db);
+  missing.forEach((d) => b.set(doc(db, "accounts", d.data().loginId), { uid: d.id, name: d.data().name ?? d.data().loginId }));
+  await b.commit();
 }
 
 // 旧版（チーム表が1つだけ）で作ったチームと振り分けを「チーム表1」に移す
 async function migrateLegacyTeams() {
   const [asg, teamsSnap, cfg] = await Promise.all([
-    getDocs(collection(db, "assignments")),
-    getDocs(collection(db, "teams")),
-    getDoc(doc(db, "config", "app")),
+    getDocs(C("assignments")),
+    getDocs(C("teams")),
+    getDoc(D("config", "app")),
   ]);
-  const memSnap = await getDocs(collection(db, "memberships"));
+  const memSnap = await getDocs(C("memberships"));
   const noHidden = memSnap.docs.filter((d) => typeof d.data().hidden !== "boolean");
   if (noHidden.length) {
     const b0 = writeBatch(db);
@@ -150,46 +179,46 @@ async function migrateLegacyTeams() {
   const legacy = teamsSnap.docs.filter((d) => !d.data().setId);
   if (!legacy.length && asg.empty) return;
   const published = !!cfg.data()?.teamsPublished;
-  const setRef = doc(collection(db, "teamSets"));
+  const setRef = doc(C("teamSets"));
   const legacyIds = new Set(legacy.map((d) => d.id));
   const b = writeBatch(db);
   if (legacy.length) b.set(setRef, { name: "チーム表1", order: Date.now(), published });
   legacy.forEach((t) => b.update(t.ref, { setId: setRef.id, published }));
   asg.forEach((a) => {
     const teamId = a.data().teamId;
-    if (legacyIds.has(teamId)) b.set(doc(db, "memberships", `${teamId}_${a.id}`), { teamId, uid: a.id, setId: setRef.id, published, hidden: false });
+    if (legacyIds.has(teamId)) b.set(D("memberships", `${teamId}_${a.id}`), { teamId, uid: a.id, setId: setRef.id, published, hidden: false });
     b.delete(a.ref);
   });
   await b.commit();
 }
 
 function startMember(uid) {
-  listen("me", doc(db, "members", uid), (s, err) => {
+  listen("me", D("members", uid), (s, err) => {
     S.me = err ? null : (s.exists() ? s.data() : null);
     if (S.me) startMemberData(uid);
   });
 }
 
 function startMemberData(uid) {
-  const ann = collection(db, "announcements");
-  const logs = collection(db, "pointLogs");
-  const published = (name) => query(collection(db, name), where("published", "==", true));
-  listen("config", doc(db, "config", "app"), (s) => {
+  const ann = C("announcements");
+  const logs = C("pointLogs");
+  const published = (name) => query(C(name), where("published", "==", true));
+  listen("config", D("config", "app"), (s) => {
     if (s?.exists()) S.config = { ...S.config, ...s.data() };
-    if (S.config.locAll) listen("locations", collection(db, "locations"), (x) => { if (x) S.locations = toMap(x); });
+    if (S.config.locAll) listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
     else { unlisten("locations"); S.locations = new Map(); }
     syncLocationSharing();
   });
-  listen("members", collection(db, "members"), (s) => { if (s) S.members = toMap(s); });
+  listen("members", C("members"), (s) => { if (s) S.members = toMap(s); });
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
-  const memRef = collection(db, "memberships");
+  const memRef = C("memberships");
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshTeamListeners(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
-  listen("acks", query(collection(db, "acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
-  listen("notes", query(collection(db, "notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
+  listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
+  listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
   listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
   listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
@@ -207,25 +236,90 @@ function refreshTeamListeners(uid) {
     delete S.logSrc[`team:${teamId}`];
   }
   for (const teamId of now) {
-    listen(`annTeam:${teamId}`, query(collection(db, "announcements"), where("scope", "==", "team"), where("target", "==", teamId)),
+    listen(`annTeam:${teamId}`, query(C("announcements"), where("scope", "==", "team"), where("target", "==", teamId)),
       (s) => { S.annSrc[`team:${teamId}`] = toMap(s); });
-    listen(`logTeam:${teamId}`, query(collection(db, "pointLogs"), where("visibility", "==", "team"), where("teamId", "==", teamId)),
+    listen(`logTeam:${teamId}`, query(C("pointLogs"), where("visibility", "==", "team"), where("teamId", "==", teamId)),
       (s) => { S.logSrc[`team:${teamId}`] = toMap(s); });
   }
   S.teamSubs = now;
 }
 
-onAuthStateChanged(auth, (user) => {
-  unlistenAll();
+// 旅行ごとに持つデータを空に戻す（旅行を切り替えるとき・ログアウトしたとき）
+function resetProfileData() {
   Object.assign(S, {
-    authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), me: undefined,
-    config: { title: APP_TITLE },
+    me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
-    annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home", sheet: null,
+    annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home",
   });
+}
+
+const pidKey = () => `island.pid.${S.user?.uid}`;
+const savedPid = () => { try { return localStorage.getItem(pidKey()); } catch { return null; } };
+const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { /* 保存できなくても動く */ } };
+
+function startProfile() {
+  if (S.isAdmin) {
+    startAdmin();
+    listen("profiles", collection(db, "profiles"), (s) => { if (s) S.profiles = toMap(s); });
+  } else {
+    startMember(S.user.uid);
+  }
+}
+
+// 旅行を切り替える（管理者も参加者も）
+function switchProfile(pid) {
+  if (!pid || pid === S.pid) return;
+  closeSheet();
+  unlistenAll();
+  if (!S.isAdmin && LOC.watchId != null) { navigator.geolocation.clearWatch(LOC.watchId); LOC.watchId = null; LOC.lastSent = null; }
+  resetProfileData();
+  S.pid = pid;
+  savePid(pid);
+  shell = null;
+  startProfile();
+  scheduleRender();
+  window.scrollTo(0, 0);
+}
+
+// 参加者が入っている旅行を調べる（members/{uid} があるかどうか）
+async function resolveMemberProfiles(uid) {
+  const reg = await getDocs(collection(db, "profiles")).catch(() => null);
+  const regDocs = reg?.docs ?? [];
+  const list = [];
+  const rootMem = await getDoc(doc(db, "members", uid)).catch(() => null);
+  if (rootMem?.exists()) list.push({ id: ROOT, name: regDocs.find((d) => d.id === ROOT)?.data().name ?? APP_TITLE, order: 0 });
+  for (const d of regDocs) {
+    if (d.id === ROOT) continue;
+    const m = await getDoc(doc(db, "profiles", d.id, "members", uid)).catch(() => null);
+    if (m?.exists()) list.push({ id: d.id, name: d.data().name ?? "旅行", order: d.data().order ?? 0 });
+  }
+  return list.sort((a, b) => a.order - b.order);
+}
+
+onAuthStateChanged(auth, async (user) => {
+  unlistenAll();
+  resetProfileData();
+  Object.assign(S, { authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), pid: null, profiles: new Map(), myProfiles: [], sheet: null });
   shell = null;
   syncLocationSharing(); // ログアウトしたら位置の取得を止める
-  if (user) (S.isAdmin ? startAdmin() : startMember(user.uid));
+  if (!user) return scheduleRender();
+  if (S.isAdmin) {
+    S.pid = savedPid() || ROOT;
+    startProfile();
+    return scheduleRender();
+  }
+  scheduleRender(); // 「読み込み中」を出す
+  const list = await resolveMemberProfiles(user.uid);
+  if (S.user !== user) return; // 途中でログアウトした
+  S.myProfiles = list;
+  const saved = savedPid();
+  if (list.some((p) => p.id === saved)) S.pid = saved;
+  else if (list.length === 1) S.pid = list[0].id;
+  else if (list.length === 0) {
+    // 電波がなくて調べられないときは、前回開いていた旅行で試す
+    S.pid = saved || ROOT;
+  } else S.pid = null; // 複数あるので選んでもらう
+  if (S.pid) startProfile();
   scheduleRender();
 });
 
@@ -274,9 +368,9 @@ const sum = (logs) => logs.reduce((a, l) => a + (Number(l.delta) || 0), 0);
 
 function setPublished(setId, published) {
   const b = writeBatch(db);
-  b.update(doc(db, "teamSets", setId), { published });
-  teamsInSet(setId).forEach((t) => b.update(doc(db, "teams", t.id), { published }));
-  membershipsOf((m) => m.setId === setId).forEach((m) => b.update(doc(db, "memberships", m.id), { published }));
+  b.update(D("teamSets", setId), { published });
+  teamsInSet(setId).forEach((t) => b.update(D("teams", t.id), { published }));
+  membershipsOf((m) => m.setId === setId).forEach((m) => b.update(D("memberships", m.id), { published }));
   return b.commit();
 }
 
@@ -284,9 +378,9 @@ function setPublished(setId, published) {
 function assignMember(uid, setId, teamId) {
   const b = writeBatch(db);
   membershipsOf((m) => m.uid === uid && m.setId === setId && !m.hidden && m.teamId !== teamId)
-    .forEach((m) => b.delete(doc(db, "memberships", m.id)));
+    .forEach((m) => b.delete(D("memberships", m.id)));
   if (teamId) {
-    b.set(doc(db, "memberships", `${teamId}_${uid}`), { teamId, uid, setId, published: !!S.sets.get(setId)?.published, hidden: false });
+    b.set(D("memberships", `${teamId}_${uid}`), { teamId, uid, setId, published: !!S.sets.get(setId)?.published, hidden: false });
   }
   return b.commit();
 }
@@ -296,23 +390,23 @@ function setSpy(uid, setId, coverTeamId, trueTeamId) {
   const published = !!S.sets.get(setId)?.published;
   const b = writeBatch(db);
   membershipsOf((m) => m.uid === uid && m.setId === setId && m.teamId !== coverTeamId)
-    .forEach((m) => b.delete(doc(db, "memberships", m.id)));
-  b.set(doc(db, "memberships", `${coverTeamId}_${uid}`), { teamId: coverTeamId, uid, setId, published, hidden: false });
-  b.set(doc(db, "memberships", `${trueTeamId}_${uid}`), { teamId: trueTeamId, uid, setId, published, hidden: true });
+    .forEach((m) => b.delete(D("memberships", m.id)));
+  b.set(D("memberships", `${coverTeamId}_${uid}`), { teamId: coverTeamId, uid, setId, published, hidden: false });
+  b.set(D("memberships", `${trueTeamId}_${uid}`), { teamId: trueTeamId, uid, setId, published, hidden: true });
   return b.commit();
 }
 
 function clearSpy(uid, setId) {
   const b = writeBatch(db);
-  membershipsOf((m) => m.uid === uid && m.setId === setId && m.hidden).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+  membershipsOf((m) => m.uid === uid && m.setId === setId && m.hidden).forEach((m) => b.delete(D("memberships", m.id)));
   return b.commit();
 }
 
 function deleteSet(setId) {
   const b = writeBatch(db);
-  b.delete(doc(db, "teamSets", setId));
-  teamsInSet(setId).forEach((t) => b.delete(doc(db, "teams", t.id)));
-  membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+  b.delete(D("teamSets", setId));
+  teamsInSet(setId).forEach((t) => b.delete(D("teams", t.id)));
+  membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(D("memberships", m.id)));
   return b.commit();
 }
 
@@ -619,8 +713,8 @@ function ackBox(a, admin) {
     return h("button", {
       class: `ack-btn${done ? " done" : ""}`, "aria-pressed": String(done),
       onclick: () => fire(done
-        ? deleteDoc(doc(db, "acks", ackId))
-        : setDoc(doc(db, "acks", ackId), { annId: a.id, uid, at: serverTimestamp() })),
+        ? deleteDoc(D("acks", ackId))
+        : setDoc(D("acks", ackId), { annId: a.id, uid, at: serverTimestamp() })),
     }, done ? [icon("check"), "見ました"] : "見ました");
   }
   const audience = ackAudience(a);
@@ -638,8 +732,8 @@ function ackBox(a, admin) {
 function deleteAnnouncement(a) {
   if (!confirm(`「${a.title}」を削除しますか？`)) return;
   const b = writeBatch(db);
-  b.delete(doc(db, "announcements", a.id));
-  [...S.acks.values()].filter((x) => x.annId === a.id).forEach((x) => b.delete(doc(db, "acks", x.id)));
+  b.delete(D("announcements", a.id));
+  [...S.acks.values()].filter((x) => x.annId === a.id).forEach((x) => b.delete(D("acks", x.id)));
   fire(b.commit(), "削除しました");
 }
 
@@ -660,7 +754,7 @@ function announcementCard(a, { admin = false } = {}) {
       : null,
     ackBox(a, admin),
     admin ? h("div", { class: "ann-actions" },
-      h("button", { class: "text-btn", onclick: () => fire(updateDoc(doc(db, "announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
+      h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
       h("button", { class: "text-btn destructive", onclick: () => deleteAnnouncement(a) }, "削除"),
     ) : null,
   );
@@ -684,11 +778,11 @@ function cancelLog(l) {
     const pair = merged(S.logSrc).filter((x) => x.transferId === l.transferId);
     if (!confirm(`ポイント交換（${target} ${transferText(l)} ${Math.abs(l.delta)}pt）を取り消しますか？\n渡した側・受け取った側の両方が取り消されます。`)) return;
     const b = writeBatch(db);
-    pair.forEach((x) => b.delete(doc(db, "pointLogs", x.id)));
+    pair.forEach((x) => b.delete(D("pointLogs", x.id)));
     fire(b.commit(), "交換を取り消しました");
     return;
   }
-  if (confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) fire(deleteDoc(doc(db, "pointLogs", l.id)), "取り消しました");
+  if (confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) fire(deleteDoc(D("pointLogs", l.id)), "取り消しました");
 }
 
 // 「〇〇の功績」。スパイが本当のチームに入れた分は、参加者には名前を出さない
@@ -768,7 +862,7 @@ function noteEditor(n) {
   const markDirty = () => { dirty = true; saveBtn.disabled = false; el.classList.add("dirty"); };
   title.addEventListener("input", markDirty);
   body.addEventListener("input", markDirty);
-  shared.addEventListener("change", () => fire(updateDoc(doc(db, "notes", n.id), { shared: shared.checked }), shared.checked ? "参加者に公開しました" : "管理者だけにしました"));
+  shared.addEventListener("change", () => fire(updateDoc(D("notes", n.id), { shared: shared.checked }), shared.checked ? "参加者に公開しました" : "管理者だけにしました"));
 
   const paintGrid = () => {
     const width = Math.max(1, ...draft.map((r) => r.length));
@@ -790,7 +884,7 @@ function noteEditor(n) {
     const data = { title: title.value.trim() };
     if (n.type === "table") data.rows = draft.map((r) => ({ c: [...r] }));
     else data.body = body.value;
-    fire(updateDoc(doc(db, "notes", n.id), data), "保存しました");
+    fire(updateDoc(D("notes", n.id), data), "保存しました");
     dirty = false; saveBtn.disabled = true; el.classList.remove("dirty");
   });
 
@@ -801,7 +895,7 @@ function noteEditor(n) {
       h("label", { class: "note-share" }, shared, "参加者に公開"),
       h("div", { class: "note-actions" },
         saveBtn,
-        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${n.title || "無題"}」を削除しますか？`)) fire(deleteDoc(doc(db, "notes", n.id)), "削除しました"); } }, "削除"))),
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${n.title || "無題"}」を削除しますか？`)) fire(deleteDoc(D("notes", n.id)), "削除しました"); } }, "削除"))),
   );
   return {
     el,
@@ -818,7 +912,7 @@ function noteEditor(n) {
 
 function notesView({ admin = false, compact = false, withTitle = true } = {}) {
   const list = h("div", { class: "stack" });
-  const add = (type) => fire(addDoc(collection(db, "notes"), {
+  const add = (type) => fire(addDoc(C("notes"), {
     title: type === "table" ? "新しい表" : "新しいメモ", type, body: "",
     rows: type === "table" ? [{ c: ["", "", ""] }, { c: ["", "", ""] }] : [],
     shared: false, order: Date.now(),
@@ -875,7 +969,7 @@ function syncLocationSharing() {
       const now = Date.now();
       if (LOC.lastSent && now - LOC.lastSentAt < 30000 && distanceM(LOC.lastSent, p) < 20) return;
       LOC.lastSent = p; LOC.lastSentAt = now;
-      setDoc(doc(db, "locations", uid), { lat: p[0], lng: p[1], acc: Math.round(pos.coords.accuracy), at: serverTimestamp() })
+      setDoc(D("locations", uid), { uid, lat: p[0], lng: p[1], acc: Math.round(pos.coords.accuracy), at: serverTimestamp() })
         .catch((e) => console.warn("location", e));
       scheduleRender();
     }, (err) => { LOC.error = err.code; scheduleRender(); }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
@@ -883,7 +977,7 @@ function syncLocationSharing() {
     navigator.geolocation.clearWatch(LOC.watchId);
     LOC.watchId = null; LOC.lastSent = null;
     // 共有をやめたら、自分の位置データを消す
-    if (uid && !S.isAdmin) deleteDoc(doc(db, "locations", uid)).catch(() => {});
+    if (uid && !S.isAdmin) deleteDoc(D("locations", uid)).catch(() => {});
   }
 }
 
@@ -1023,7 +1117,7 @@ function loginView() {
   const id = h("input", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", placeholder: "user01", required: true });
   const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "必須", required: true });
   const btn = h("button", { class: "btn-filled", type: "submit" }, "ログイン");
-  return h("div", { class: "login" },
+  return h("div", { class: "login", "data-view": "login" },
     h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
     h("h1", null, S.config.title || APP_TITLE),
     h("p", { class: "secondary" }, "配られたIDとパスワードでログインしてください。"),
@@ -1175,13 +1269,74 @@ function memberSummary() {
   };
 }
 
+// ---------------------------------------------------------------- 旅行（プロファイル）の管理
+
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations"];
+
+const sortedProfiles = () => [...S.profiles.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const profileName = (pid) => S.profiles.get(pid)?.name ?? S.myProfiles.find((p) => p.id === pid)?.name ?? (pid === S.pid ? S.config.title : "旅行");
+
+// 中身が空の旅行を作って、そこに切り替える
+async function createProfile() {
+  const name = (prompt("新しい旅行の名前（例：2027 夏 沖縄旅行）") ?? "").trim();
+  if (!name) return;
+  const ref = doc(collection(db, "profiles"));
+  const b = writeBatch(db);
+  b.set(ref, { name, order: Date.now(), createdAt: serverTimestamp() });
+  b.set(doc(db, "profiles", ref.id, "config", "app"), { title: name });
+  await b.commit();
+  toast(`「${name}」を作りました`);
+  switchProfile(ref.id);
+}
+
+// 旅行の中身をすべて消す（1つ目の旅行＝ルートは消せない）
+async function deleteProfile(pid) {
+  if (pid === ROOT) return toast("1つ目の旅行は削除できません", true);
+  const name = profileName(pid);
+  if (!confirm(`「${name}」を削除しますか？\nお知らせ・チーム・ポイント・参加者の登録など、この旅行のデータがすべて消えます。元に戻せません。`)) return;
+  if ((prompt(`確認のため、旅行の名前「${name}」を入力してください`) ?? "").trim() !== name) return toast("名前が一致しないので中止しました", true);
+  for (const c of PROFILE_COLLECTIONS) {
+    const snap = await getDocs(collection(db, "profiles", pid, c));
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const b = writeBatch(db);
+      snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+      await b.commit();
+    }
+  }
+  await deleteDoc(doc(db, "profiles", pid));
+  toast(`「${name}」を削除しました`);
+  if (S.pid === pid) switchProfile(ROOT);
+}
+
+// 旅行の切り替え一覧（設定の中に出す）
+function profilesGroup() {
+  const body = h("div");
+  return {
+    el: body,
+    update() {
+      const list = S.isAdmin ? sortedProfiles() : S.myProfiles;
+      if (!S.isAdmin && list.length < 2) return body.replaceChildren();
+      setKids(body, group(S.isAdmin ? "旅行（プロファイル）" : "旅行を切り替える", [
+        ...list.map((p) => h("button", {
+          class: `cell cell-button profile-row${p.id === S.pid ? " current" : ""}`,
+          "data-profile": p.id,
+          onclick: () => switchProfile(p.id),
+        }, h("span", { class: "profile-name" }, p.name), p.id === S.pid ? h("span", { class: "profile-cur" }, icon("check"), "表示中") : null)),
+        S.isAdmin ? h("button", { class: "cell cell-button", onclick: () => guard(null, createProfile) }, icon("plus"), "新しい旅行を作る") : null,
+      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。" : null));
+    },
+  };
+}
+
 function settingsView({ withTitle = true } = {}) {
   const cur = h("input", { type: "password", autocomplete: "current-password", placeholder: "必須", required: true });
   const next = h("input", { type: "password", autocomplete: "new-password", minlength: "6", placeholder: "6文字以上", required: true });
   const btn = h("button", { class: "cell cell-button", type: "submit" }, "パスワードを変更");
   const adminBox = h("div");
+  const profiles = profilesGroup();
   const el = h("div", null,
     withTitle ? largeTitle("設定") : null,
+    profiles.el,
     group(null, [
       cell("ID", emailToId(S.user.email)),
       cell("名前", S.isAdmin ? "管理者" : S.me?.name ?? ""),
@@ -1204,25 +1359,34 @@ function settingsView({ withTitle = true } = {}) {
   return {
     el,
     update() {
+      profiles.update();
       if (!S.isAdmin || built) return;
       built = true;
       const titleInput = h("input", { type: "text", value: S.config.title ?? APP_TITLE });
       const mapSwitch = toggle(!!S.config.mapEnabled);
       const locSwitch = toggle(!!S.config.locShare);
       const locAllSwitch = toggle(!!S.config.locAll);
-      locSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { locShare: locSwitch.checked }),
+      locSwitch.addEventListener("change", () => fire(updateDoc(D("config", "app"), { locShare: locSwitch.checked }),
         locSwitch.checked ? "位置の共有をオンにしました" : "位置の共有をオフにしました"));
-      locAllSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { locAll: locAllSwitch.checked }),
+      locAllSwitch.addEventListener("change", () => fire(updateDoc(D("config", "app"), { locAll: locAllSwitch.checked }),
         locAllSwitch.checked ? "参加者同士でも位置が見えるようにしました" : "位置は管理者だけが見られるようにしました"));
-      mapSwitch.addEventListener("change", () => fire(updateDoc(doc(db, "config", "app"), { mapEnabled: mapSwitch.checked }),
+      mapSwitch.addEventListener("change", () => fire(updateDoc(D("config", "app"), { mapEnabled: mapSwitch.checked }),
         mapSwitch.checked ? "参加者に地図を表示しました" : "参加者の地図を非表示にしました"));
-      adminBox.replaceChildren(group("企画", [
+      setKids(adminBox, group("企画", [
         field("タイトル", titleInput),
-        h("button", { class: "cell cell-button", onclick: () => fire(updateDoc(doc(db, "config", "app"), { title: titleInput.value.trim() || APP_TITLE }), "保存しました") }, "タイトルを保存"),
+        h("button", {
+          class: "cell cell-button",
+          onclick: () => {
+            const title = titleInput.value.trim() || APP_TITLE;
+            fire(updateDoc(D("config", "app"), { title }), "保存しました");
+            fire(setDoc(doc(db, "profiles", S.pid), { name: title }, { merge: true }));
+          },
+        }, "タイトルを保存"),
         field("参加者に地図を表示", mapSwitch),
         field("参加者の位置を共有", locSwitch),
         field("参加者同士でも見られる", locAllSwitch),
-      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が30秒ごとに管理者へ届きます。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"));
+      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が30秒ごとに管理者へ届きます。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"),
+        S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
   };
 }
@@ -1271,7 +1435,7 @@ function adminAnnouncements() {
     onsubmit: (e) => {
       e.preventDefault();
       if (scope.value !== "all" && !target.value) return toast("宛先を選んでください", true);
-      fire(addDoc(collection(db, "announcements"), {
+      fire(addDoc(C("announcements"), {
         title: title.value.trim(),
         body: body.value.trim(),
         scope: scope.value,
@@ -1323,10 +1487,21 @@ function adminMembers({ withTitle = true } = {}) {
     h("div", { class: "group-footer" }, "名前を書き換えたら「保存」を押してください。"));
   const created = [];
 
+  // 別の旅行ですでに作った ID なら、新しく作らずにこの旅行へ追加する（パスワードは前と同じ）
   async function createAccount(loginId, displayName, password) {
+    const acc = await getDoc(doc(db, "accounts", loginId));
+    if (acc.exists()) {
+      // まとめて作成（名前が ID のまま）のときは、前の旅行で付けた名前を引き継ぐ
+      const name = displayName === loginId && acc.data().name ? acc.data().name : displayName;
+      await setDoc(D("members", acc.data().uid), { loginId, name, createdAt: serverTimestamp() });
+      created.push({ loginId, name, password: null });
+      renderResult();
+      return;
+    }
     const a2 = getSecondaryAuth();
     const cred = await createUserWithEmailAndPassword(a2, idToEmail(loginId), password);
-    await setDoc(doc(db, "members", cred.user.uid), { loginId, name: displayName, createdAt: serverTimestamp() });
+    await setDoc(doc(db, "accounts", loginId), { uid: cred.user.uid, name: displayName });
+    await setDoc(D("members", cred.user.uid), { loginId, name: displayName, createdAt: serverTimestamp() });
     await signOut(a2);
     created.push({ loginId, name: displayName, password });
     renderResult();
@@ -1334,14 +1509,14 @@ function adminMembers({ withTitle = true } = {}) {
 
   function renderResult() {
     if (!created.length) return result.replaceChildren();
-    const text = created.map((c) => `${c.name}\tID: ${c.loginId}\tパスワード: ${c.password}`).join("\n");
+    const text = created.map((c) => `${c.name}\tID: ${c.loginId}\tパスワード: ${c.password ?? "（前と同じ）"}`).join("\n");
     result.replaceChildren(group("作成したアカウント", [
       ...created.map((c) => h("div", { class: "cell cred" },
         h("div", { class: "cell-main" }, c.name, h("div", { class: "cell-sub" }, c.loginId)),
-        h("div", { class: "mono" }, c.password))),
+        c.password ? h("div", { class: "mono" }, c.password) : h("div", { class: "secondary small-note" }, "既存のID（パスワードは前と同じ）"))),
       h("button", { class: "cell cell-button", onclick: () => navigator.clipboard.writeText(text).then(() => toast("コピーしました")) }, icon("copy"), "すべてコピー"),
       h("button", { class: "cell cell-button secondary-btn", onclick: () => { if (confirm("パスワードを保存しましたか？表示を消します。")) { created.length = 0; renderResult(); } } }, "表示を消す"),
-    ], h("span", { class: "warn" }, "パスワードはこの画面でしか表示されません。必ずコピーして保存してください。")));
+    ], h("span", { class: "warn" }, "パスワードはこの画面でしか表示されません。必ずコピーして保存してください。別の旅行で作ったIDは、そのまま追加されます（パスワードは前と同じ）。")));
   }
 
   const el = h("div", null,
@@ -1364,7 +1539,7 @@ function adminMembers({ withTitle = true } = {}) {
         });
       },
     }, group("まとめて作成", [field("IDの頭", prefix), field("開始番号", from), field("終了番号", to), bulkBtn],
-      "例：user・1・16 で user01〜user16 を作成します。名前はあとで変更できます。")),
+      "例：user・1・16 で user01〜user16 を作成します。名前はあとで変更できます。別の旅行で作ったIDは、新しく作らずにこの旅行へ追加します。")),
     result,
     h("form", {
       onsubmit: (e) => {
@@ -1394,7 +1569,12 @@ function adminMembers({ withTitle = true } = {}) {
           h("div", { class: "cell-main" }, nm, sub),
           h("button", {
             class: "text-btn",
-            onclick: () => { fire(updateDoc(doc(db, "members", m.id), { name: nm.value.trim() || m.loginId }), "保存しました"); nm.saved(); },
+            onclick: () => {
+              const name = nm.value.trim() || m.loginId;
+              fire(updateDoc(D("members", m.id), { name }), "保存しました");
+              fire(setDoc(doc(db, "accounts", m.loginId), { uid: m.id, name }, { merge: true }));
+              nm.saved();
+            },
           }, "保存"),
           h("button", {
             class: "text-btn destructive",
@@ -1402,8 +1582,8 @@ function adminMembers({ withTitle = true } = {}) {
               const cur = S.members.get(m.id);
               if (!confirm(`${cur?.name}（${m.loginId}）を削除しますか？\nこの人は何も見られなくなります。`)) return;
               const b = writeBatch(db);
-              b.delete(doc(db, "members", m.id));
-              membershipsOf((x) => x.uid === m.id).forEach((x) => b.delete(doc(db, "memberships", x.id)));
+              b.delete(D("members", m.id));
+              membershipsOf((x) => x.uid === m.id).forEach((x) => b.delete(D("memberships", x.id)));
               fire(b.commit(), "削除しました");
             },
           }, "削除"),
@@ -1460,7 +1640,7 @@ function adminTeams() {
 
   function addSet() {
     const n = S.sets.size + 1;
-    const ref = doc(collection(db, "teamSets"));
+    const ref = doc(C("teamSets"));
     fire(setDoc(ref, { name: `チーム表${n}`, order: Date.now(), published: false }), `チーム表${n} を追加しました`);
     setId = justCreated = ref.id;
     setName.force(`チーム表${n}`);
@@ -1479,10 +1659,10 @@ function adminTeams() {
     }
     const published = !!S.sets.get(setId)?.published;
     const b = writeBatch(db);
-    membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+    membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(D("memberships", m.id)));
     shuffled.forEach((m, i) => {
       const teamId = teams[i % teams.length].id;
-      b.set(doc(db, "memberships", `${teamId}_${m.id}`), { teamId, uid: m.id, setId, published, hidden: false });
+      b.set(D("memberships", `${teamId}_${m.id}`), { teamId, uid: m.id, setId, published, hidden: false });
     });
     fire(b.commit(), "振り分けました");
   }
@@ -1492,14 +1672,14 @@ function adminTeams() {
       field("名前", setName),
       h("button", {
         class: "cell cell-button",
-        onclick: () => { fire(updateDoc(doc(db, "teamSets", setId), { name: setName.value.trim() || "チーム表" }), "保存しました"); setName.saved(); },
+        onclick: () => { fire(updateDoc(D("teamSets", setId), { name: setName.value.trim() || "チーム表" }), "保存しました"); setName.saved(); },
       }, "名前を保存"),
       field("参加者に発表", publish),
     ], publishFooter),
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
-        fire(addDoc(collection(db, "teams"), {
+        fire(addDoc(C("teams"), {
           setId, name: name.value.trim(), color: color.value, order: Date.now(), published: !!S.sets.get(setId)?.published,
         }), "作成しました");
         name.value = "";
@@ -1582,7 +1762,7 @@ function adminTeams() {
           h("div", { class: "cell-main" }, nm, count),
           h("button", {
             class: "text-btn",
-            onclick: () => { fire(updateDoc(doc(db, "teams", t.id), { name: nm.value.trim() || t.name }), "保存しました"); nm.saved(); },
+            onclick: () => { fire(updateDoc(D("teams", t.id), { name: nm.value.trim() || t.name }), "保存しました"); nm.saved(); },
           }, "保存"),
           h("button", {
             class: "text-btn destructive",
@@ -1590,8 +1770,8 @@ function adminTeams() {
               const cur = S.teams.get(t.id);
               if (!confirm(`チーム「${cur?.name}」を削除しますか？所属メンバーは未所属になります。`)) return;
               const b = writeBatch(db);
-              b.delete(doc(db, "teams", t.id));
-              membershipsOf((m) => m.teamId === t.id).forEach((m) => b.delete(doc(db, "memberships", m.id)));
+              b.delete(D("teams", t.id));
+              membershipsOf((m) => m.teamId === t.id).forEach((m) => b.delete(D("memberships", m.id)));
               fire(b.commit(), "削除しました");
             },
           }, "削除"),
@@ -1729,7 +1909,7 @@ function adminPoints() {
         teamId = teamOfIn(target.value, visSet.value);
         if (!teamId) return toast(`この人は「${S.sets.get(visSet.value)?.name ?? "そのチーム表"}」でチームに入っていません`, true);
       }
-      fire(addDoc(collection(db, "pointLogs"), {
+      fire(addDoc(C("pointLogs"), {
         kind: kind.value,
         target: finalTarget,
         teamId,
@@ -1812,11 +1992,11 @@ function adminPoints() {
       const balance = sum(merged(S.logSrc).filter((l) => l.kind === kindV && l.target === from));
       if (balance - n < 0 && !confirm(`${name(from)} の残りは ${balance}pt です。渡すとマイナスになりますが、登録しますか？`)) return;
 
-      const transferId = doc(collection(db, "pointLogs")).id;
+      const transferId = doc(C("pointLogs")).id;
       const base = { kind: kindV, visibility: vis, reason: xReason.value.trim(), createdAt: serverTimestamp(), author: emailToId(S.user.email), transferId, counterKind: kindV };
       const b = writeBatch(db);
-      b.set(doc(collection(db, "pointLogs")), { ...base, target: from, teamId: fromTeam, delta: -n, counterId: to });
-      b.set(doc(collection(db, "pointLogs")), { ...base, target: to, teamId: toTeam, delta: n, counterId: from });
+      b.set(doc(C("pointLogs")), { ...base, target: from, teamId: fromTeam, delta: -n, counterId: to });
+      b.set(doc(C("pointLogs")), { ...base, target: to, teamId: toTeam, delta: n, counterId: from });
       fire(b.commit(), `${name(from)} → ${name(to)} に ${n}pt 移しました`);
       xReason.value = "";
       xAmount.value = "";
@@ -1925,6 +2105,41 @@ function meChip() {
   return el;
 }
 
+// 上部の旅行名。押すと旅行を切り替えられる（管理者は「新しい旅行を作る」も）
+function profileSwitcher(cls = "") {
+  const text = h("span", { class: "profile-text" });
+  const sel = h("select", { class: "profile-select", "aria-label": "旅行を切り替える" });
+  sel.addEventListener("change", () => {
+    if (sel.value === "__new") { sel.value = S.pid; guard(null, createProfile); return; }
+    switchProfile(sel.value);
+  });
+  const wrap = h("div", { class: `profile-switch ${cls}` }, text, icon("chevron", "profile-chev"), sel);
+  wrap.paint = () => {
+    const list = S.isAdmin ? sortedProfiles() : S.myProfiles;
+    const multi = S.isAdmin || list.length > 1;
+    text.textContent = S.config.title || APP_TITLE;
+    wrap.classList.toggle("multi", multi);
+    sel.hidden = !multi;
+    if (!multi || document.activeElement === sel) return;
+    fillSelect(sel, [...list.map((p) => ({ value: p.id, label: p.name })), ...(S.isAdmin ? [{ value: "__new", label: "＋ 新しい旅行を作る…" }] : [])]);
+    if ([...sel.options].some((o) => o.value === S.pid)) sel.value = S.pid;
+  };
+  return wrap;
+}
+
+// 参加者が複数の旅行に入っているときの選択画面
+function profilePicker() {
+  return h("div", { class: "login", "data-view": "picker" },
+    h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
+    h("h1", null, "どの旅行を開きますか？"),
+    h("p", { class: "secondary" }, "あとから設定で切り替えられます。"),
+    h("div", { class: "group-body" }, S.myProfiles.map((p) =>
+      h("button", { class: "cell cell-button profile-row", "data-profile": p.id, onclick: () => { S.pid = null; switchProfile(p.id); } },
+        h("span", { class: "profile-name" }, p.name), icon("chevron")))),
+    h("button", { class: "text-btn", style: "margin: 20px auto 0", onclick: () => signOut(auth) }, "ログアウト"),
+  );
+}
+
 function statusBar() {
   return h("div", { class: "status", hidden: true });
 }
@@ -1943,7 +2158,7 @@ function buildMobileShell(allTabs) {
   const tabs = allTabs.filter((t) => !t.sheet && !t.desktopOnly);
   const sheetTabs = allTabs.filter((t) => t.sheet);
   const navTitle = h("div", { class: "nav-title" });
-  const appName = h("div", { class: "app-name" });
+  const appName = profileSwitcher("app-name");
   const status = statusBar();
   const main = h("main");
   const nav = h("nav", { class: "tabbar" }, tabs.map((t) =>
@@ -1964,7 +2179,7 @@ function buildMobileShell(allTabs) {
   return {
     root,
     update() {
-      appName.textContent = S.config.title || APP_TITLE;
+      appName.paint();
       paintStatus(status);
       chip?.paint();
       const tab = tabs.find((t) => t.key === S.tab) ?? tabs[0];
@@ -2023,7 +2238,7 @@ function paintSheet() {
 function buildDesktopShell(tabs) {
   const panels = tabs.filter((t) => !t.sheet && !t.mobileOnly);
   const views = panels.map((t) => t.view());
-  const title = h("div", { class: "desk-title" });
+  const title = profileSwitcher("desk-title");
   const status = statusBar();
   const chip = S.isAdmin ? null : meChip();
   const actions = h("div", { class: "desk-actions" },
@@ -2038,7 +2253,7 @@ function buildDesktopShell(tabs) {
   return {
     root,
     update() {
-      title.textContent = S.config.title || APP_TITLE;
+      title.paint();
       paintStatus(status);
       chip?.paint();
       views.forEach((v) => v.update());
@@ -2061,7 +2276,8 @@ function buildMemberPageShell() {
   const gear = h("div", { class: "nav-left" }, MEMBER_TABS.filter((t) => t.sheet).map((t) =>
     h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
-  const title = h("h1", { class: "large-title" });
+  const switcher = profileSwitcher("big");
+  const title = h("h1", { class: "large-title" }, switcher);
   const status = statusBar();
   const jump = h("nav", { class: "jump", "aria-label": "セクションへ移動" }, h("div", { class: "seg" }, sections.map((sec) =>
     h("button", {
@@ -2090,7 +2306,7 @@ function buildMemberPageShell() {
     root,
     update() {
       const t = S.config.title || APP_TITLE;
-      title.textContent = t;
+      switcher.paint();
       navTitle.textContent = t;
       paintStatus(status);
       chip.paint();
@@ -2110,10 +2326,15 @@ function render() {
   if (!S.user) {
     shell = null;
     closeSheet();
-    if (!document.querySelector(".login")) $app.replaceChildren(loginView());
+    if (!document.querySelector("[data-view=login]")) $app.replaceChildren(loginView());
     return;
   }
   if (!S.isAdmin) {
+    if (!S.pid) {
+      shell = null;
+      if (S.myProfiles.length > 1) { if (!document.querySelector("[data-view=picker]")) $app.replaceChildren(profilePicker()); return; }
+      return $app.replaceChildren(h("div", { class: "splash" }, h("div", { class: "spinner" })));
+    }
     if (S.me === undefined) return $app.replaceChildren(h("div", { class: "splash" }, h("div", { class: "spinner" })));
     if (S.me === null) {
       shell = null;
