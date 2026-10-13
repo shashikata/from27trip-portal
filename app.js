@@ -7,7 +7,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  writeBatch, serverTimestamp, arrayUnion,
+  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR } from "./config.js";
 
@@ -77,14 +77,33 @@ const S = {
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
+  stats: null,               // ポイントの合計 stats/points（参加者は履歴を全部は読まず、合計はここから出す）
+  feedRaw: {},               // 参加者：最近のお知らせ・ポイント（自分に関係するものだけ annSrc / logSrc に入れる）
+  annLimit: 50,              // 参加者が読み込むお知らせの件数（「過去の分を読み込む」で増える）
+  logLimit: 150,             // 参加者が読み込むポイント履歴の件数
   meta: {},                  // クエリごとの fromCache / hasPendingWrites
-  teamSubs: new Set(),       // 参加者：購読中の自チームID
   tab: "home",
   sheet: null,               // PC 版で開いている小窓 { key, title, view }
 };
 
 const subs = new Map();
+let DATA_VER = 0; // データが変わるたびに増える（計算結果の使い回しに使う）
+
+// データが変わるまで計算結果を使い回す
+function memo(fn) {
+  let ver = -1, val;
+  return (...args) => {
+    if (args.length) return fn(...args);
+    if (ver !== DATA_VER) { val = fn(); ver = DATA_VER; }
+    return val;
+  };
+}
 if (USE_EMULATOR) window.__S = S; // テスト用
+
+// 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
+//   loc  : 位置（地図だけ）
+//   quiz : クイズの進行・解答（クイズの画面だけ）
+const RENDER_KIND = { locations: "loc", live: "quiz", quizAnswers: "quiz" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -92,12 +111,20 @@ function listen(key, ref, onData) {
     ref,
     { includeMetadataChanges: true },
     (snap) => {
-      S.meta[key] = { cache: snap.metadata.fromCache, pending: snap.metadata.hasPendingWrites };
+      const meta = { cache: snap.metadata.fromCache, pending: snap.metadata.hasPendingWrites };
+      const prev = S.meta[key];
+      S.meta[key] = meta;
+      // 中身も通信状態も変わっていない通知（メタデータだけの通知）は描き直さない
+      const changed = typeof snap.docChanges === "function" ? snap.docChanges({ includeMetadataChanges: false }).length > 0 : true;
+      const metaChanged = !prev || prev.cache !== meta.cache || prev.pending !== meta.pending;
+      if (!changed && !metaChanged && prev) return;
+      DATA_VER++;
       onData(snap);
-      scheduleRender();
+      scheduleRender(metaChanged ? "all" : RENDER_KIND[key] ?? "all");
     },
     (err) => {
       console.warn(`[${key}]`, err.code, err.message);
+      DATA_VER++;
       onData(null, err);
       scheduleRender();
     },
@@ -109,6 +136,7 @@ function unlisten(key) {
   subs.get(key)?.();
   subs.delete(key);
   delete S.meta[key];
+  DATA_VER++;
 }
 
 function unlistenAll() {
@@ -121,10 +149,15 @@ const toMap = (snap) => {
   return m;
 };
 
+const mergedCache = new WeakMap();
 const merged = (src) => {
+  const hit = mergedCache.get(src);
+  if (hit && hit.ver === DATA_VER) return [...hit.list];
   const m = new Map();
   for (const part of Object.values(src)) for (const [k, v] of part) m.set(k, v);
-  return [...m.values()];
+  const list = [...m.values()];
+  mergedCache.set(src, { ver: DATA_VER, list });
+  return [...list];
 };
 
 // ---------------------------------------------------------------- データ購読
@@ -146,10 +179,10 @@ function startAdmin() {
   listen("teams", C("teams"), (s) => { S.teams = toMap(s); });
   listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
-  listen("logs", C("pointLogs"), (s) => { S.logSrc.all = toMap(s); });
+  listen("logs", C("pointLogs"), (s) => { S.logSrc.all = toMap(s); scheduleStatsHeal(); });
+  listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; scheduleStatsHeal(); });
   listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
-  listen("locations", C("locations"), (s) => { S.locations = toMap(s); });
   listen("quizzes", C("quizzes"), (s) => { S.quizzes = toMap(s); });
   listenLiveQuiz();
 }
@@ -219,8 +252,6 @@ function startMemberData(uid) {
   const published = (name) => query(C(name), where("published", "==", true));
   listen("config", D("config", "app"), (s) => {
     if (s?.exists()) S.config = { ...S.config, ...s.data() };
-    if (S.config.locAll) listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
-    else { unlisten("locations"); S.locations = new Map(); }
     syncLocationSharing();
   });
   listen("members", C("members"), (s) => { if (s) S.members = toMap(s); });
@@ -228,43 +259,107 @@ function startMemberData(uid) {
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
   const memRef = C("memberships");
-  const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshTeamListeners(uid); };
+  const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
   listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
-  listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
-  listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
-  listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
-  listen("logPrivate", query(logs, where("visibility", "==", "private"), where("target", "==", uid)), (s) => { S.logSrc.priv = toMap(s); });
+  listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; });
+  listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
+  listenRecent(uid);
 }
 
-// 自分が入っている（発表済みの）チームごとに、チーム宛てのお知らせとチーム内ポイントを購読する
-function refreshTeamListeners(uid) {
-  const now = new Set(myTeamIds(uid));
-  for (const teamId of S.teamSubs) {
-    if (now.has(teamId)) continue;
-    unlisten(`annTeam:${teamId}`);
-    unlisten(`logTeam:${teamId}`);
-    delete S.annSrc[`team:${teamId}`];
-    delete S.logSrc[`team:${teamId}`];
+// 参加者：お知らせとポイント履歴は「新しい順に N 件」だけ受け取る。
+// 全件を受け取ると、アプリを開くたび（30分以上あくと）に全件分の読み取りが発生し、無料枠（5万回/日）を圧迫するため。
+// 合計ポイントは stats/points から出すので、古い履歴を読まなくても正しい。
+function listenRecent(uid) {
+  listen("annRecent", query(C("announcements"), orderBy("createdAt", "desc"), limit(S.annLimit)), (s) => { S.feedRaw.ann = toMap(s); refreshFeed(uid); });
+  listen("logRecent", query(C("pointLogs"), orderBy("createdAt", "desc"), limit(S.logLimit)), (s) => { S.feedRaw.log = toMap(s); refreshFeed(uid); });
+}
+
+// 過去の分も読み込む（参加者）
+function loadOlder() {
+  const uid = S.user.uid;
+  S.annLimit += 50;
+  S.logLimit += 150;
+  unlisten("annRecent");
+  unlisten("logRecent");
+  listenRecent(uid);
+}
+const mayHaveOlder = () => !S.isAdmin && ((S.feedRaw.ann?.size ?? 0) >= S.annLimit || (S.feedRaw.log?.size ?? 0) >= S.logLimit);
+
+// 受け取ったお知らせ・ポイントのうち、自分が見てよいものだけを残す（宛先・公開範囲は画面側で判定する）
+function refreshFeed(uid) {
+  const teams = new Set(myTeamIds(uid));
+  const annOk = (a) => a.scope === "all" || (a.scope === "user" && a.target === uid) || (a.scope === "team" && teams.has(a.target));
+  const logOk = (l) => l.visibility === "public" || (l.visibility === "private" && l.target === uid) || (l.visibility === "team" && teams.has(l.teamId));
+  const keep = (m, ok) => new Map([...(m ?? [])].filter(([, v]) => ok(v)));
+  S.annSrc = { pinned: keep(S.feedRaw.pinned, annOk), recent: keep(S.feedRaw.ann, annOk) };
+  S.logSrc = { recent: keep(S.feedRaw.log, logOk) };
+  DATA_VER++;
+}
+
+// ---- ポイントの合計（stats/points）
+//   { u: { uid: { public, team, private } }, t: { teamId: { public, team } } }
+// ポイントを付ける・取り消すときに、同じ書き込み（バッチ）で増減させる。
+// さらに、全履歴を持っている管理者の端末が「履歴から計算した合計」と食い違っていないかを確かめ、ずれていれば直す。
+
+function statsOf(logs, sign = 1) {
+  const acc = {};
+  for (const l of logs) {
+    const d = sign * (Number(l.delta) || 0);
+    if (!d || !l.target || !l.visibility) continue;
+    const k = l.kind === "team" ? "t" : "u";
+    const e = ((acc[k] ??= {})[l.target] ??= {});
+    e[l.visibility] = (e[l.visibility] ?? 0) + d;
   }
-  for (const teamId of now) {
-    listen(`annTeam:${teamId}`, query(C("announcements"), where("scope", "==", "team"), where("target", "==", teamId)),
-      (s) => { S.annSrc[`team:${teamId}`] = toMap(s); });
-    listen(`logTeam:${teamId}`, query(C("pointLogs"), where("visibility", "==", "team"), where("teamId", "==", teamId)),
-      (s) => { S.logSrc[`team:${teamId}`] = toMap(s); });
+  return acc;
+}
+
+// バッチに「合計の増減」を追加する
+function addStats(b, logs, sign = 1) {
+  const acc = statsOf(logs, sign);
+  if (!Object.keys(acc).length) return;
+  const patch = {};
+  for (const k in acc) for (const id in acc[k]) for (const v in acc[k][id]) ((patch[k] ??= {})[id] ??= {})[v] = increment(acc[k][id][v]);
+  b.set(D("stats", "points"), patch, { merge: true });
+}
+
+const statsKey = (st) => JSON.stringify(["u", "t"].flatMap((k) => Object.entries(st?.[k] ?? {}).flatMap(([id, e]) =>
+  Object.entries(e ?? {}).filter(([, n]) => Number(n)).map(([v, n]) => `${k}.${id}.${v}=${Number(n)}`))).sort());
+
+let healTimer = null;
+function scheduleStatsHeal() {
+  clearTimeout(healTimer);
+  healTimer = setTimeout(healStats, 2500);
+}
+function healStats() {
+  if (!S.isAdmin) return;
+  const a = S.meta.logs, b = S.meta.stats;
+  // サーバーから届いた最新の状態どうしで、送信中の変更がないときだけ比べる
+  if (!a || !b || a.cache || a.pending || b.cache || b.pending) return;
+  const want = statsOf(merged(S.logSrc));
+  if (statsKey(want) === statsKey(S.stats)) return;
+  setDoc(D("stats", "points"), want).catch((e) => console.warn("stats", e));
+}
+
+// 合計ポイント。参加者は stats から、管理者は手元の全履歴から計算する（stats がまだ無い旅行でも動くように）
+function ptTotal(kind, id, vis) {
+  if (!S.isAdmin && S.stats) {
+    const e = S.stats[kind === "team" ? "t" : "u"]?.[id] ?? {};
+    return vis ? Number(e[vis]) || 0 : Object.values(e).reduce((x, n) => x + (Number(n) || 0), 0);
   }
-  S.teamSubs = now;
+  return sum(merged(S.logSrc).filter((l) => l.kind === kind && l.target === id && (!vis || l.visibility === vis)));
 }
 
 // 旅行ごとに持つデータを空に戻す（旅行を切り替えるとき・ログアウトしたとき）
 function resetProfileData() {
+  DATA_VER++;
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
-    annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home",
+    annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(),
   });
   QZ.answersKey = null;
@@ -291,6 +386,7 @@ function switchProfile(pid) {
   if (!S.isAdmin && LOC.watchId != null) { navigator.geolocation.clearWatch(LOC.watchId); LOC.watchId = null; LOC.lastSent = null; }
   resetProfileData();
   S.pid = pid;
+  SHOWN.clear();
   savePid(pid);
   shell = null;
   startProfile();
@@ -350,7 +446,8 @@ const setKids = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filte
 
 const byNatural = (a, b) => String(a).localeCompare(String(b), "ja", { numeric: true });
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name);
-const sortedMembers = () => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId));
+const sortedMembersMemo = memo(() => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId)));
+const sortedMembers = () => [...sortedMembersMemo()];
 const sortedSets = () => [...S.sets.values()].sort(byOrder);
 const teamsInSet = (setId) => [...S.teams.values()].filter((t) => t.setId === setId).sort(byOrder);
 const membershipsOf = (pred) => [...S.memberships.values()].filter(pred);
@@ -698,6 +795,20 @@ function cell(main, detail, { cls = "" } = {}) {
   return h("div", { class: `cell ${cls}` }, h("div", { class: "cell-main" }, main), detail != null ? h("div", { class: "cell-detail" }, detail) : null);
 }
 
+// 長い一覧は最初の数十件だけ画面に出し、「さらに表示」で増やす（件数が増えても画面が重くならないように）
+const SHOWN = new Map(); // 一覧ごとの表示件数
+function paged(key, items, step = 30, { older = false } = {}) {
+  const n = SHOWN.get(key) ?? step;
+  const rest = items.length - n;
+  let more = null;
+  if (rest > 0) {
+    more = h("button", { class: "more-btn", onclick: () => { SHOWN.set(key, n + step * 2); scheduleRender(); } }, `さらに表示（残り ${rest} 件）`);
+  } else if (older && mayHaveOlder()) {
+    more = h("button", { class: "more-btn", onclick: () => { SHOWN.set(key, n + step * 2); loadOlder(); } }, "過去の分を読み込む");
+  }
+  return { items: items.slice(0, n), more };
+}
+
 // 左にラベル、右に入力欄を置く行
 function field(label, control) {
   return h("label", { class: "cell field" }, h("span", { class: "field-label" }, label), control);
@@ -799,10 +910,15 @@ function cancelLog(l) {
     if (!confirm(`ポイント交換（${target} ${transferText(l)} ${Math.abs(l.delta)}pt）を取り消しますか？\n渡した側・受け取った側の両方が取り消されます。`)) return;
     const b = writeBatch(db);
     pair.forEach((x) => b.delete(D("pointLogs", x.id)));
+    addStats(b, pair, -1);
     fire(b.commit(), "交換を取り消しました");
     return;
   }
-  if (confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) fire(deleteDoc(D("pointLogs", l.id)), "取り消しました");
+  if (!confirm(`「${target} ${signed(l.delta)}（${l.reason || "理由なし"}）」を取り消しますか？`)) return;
+  const b = writeBatch(db);
+  b.delete(D("pointLogs", l.id));
+  addStats(b, [l], -1);
+  fire(b.commit(), "取り消しました");
 }
 
 // 「〇〇の功績」。スパイが本当のチームに入れた分は、参加者には名前を出さない
@@ -986,7 +1102,8 @@ function adminSide() {
 
 // ---------------------------------------------------------------- 位置の共有（参加者）
 // 管理者が「参加者の位置を共有」をオンにしている間、アプリを開いていれば現在地を送る。
-// 送るのは 30 秒に1回、または 20m 以上動いたとき（電池と通信量のため）。
+// 送るのは 30m 以上動いたとき（ただし 15 秒以上あける）と、止まっていても 2 分に1回。
+// 位置は地図を開いている人にしか届かないが、送る回数が多いと Firebase の無料枠（書き込み 2万回/日）を使い切るため間引く。
 
 const LOC = { watchId: null, lastSent: null, lastSentAt: 0, myPos: null, error: null };
 
@@ -1005,7 +1122,11 @@ function syncLocationSharing() {
       const p = [pos.coords.latitude, pos.coords.longitude];
       LOC.myPos = p; LOC.error = null;
       const now = Date.now();
-      if (LOC.lastSent && now - LOC.lastSentAt < 30000 && distanceM(LOC.lastSent, p) < 20) return;
+      if (LOC.lastSent) {
+        const since = now - LOC.lastSentAt;
+        const moved = distanceM(LOC.lastSent, p) >= 30;
+        if (since < 15000 || (!moved && since < 120000)) return;
+      }
       LOC.lastSent = p; LOC.lastSentAt = now;
       setDoc(D("locations", uid), { uid, lat: p[0], lng: p[1], acc: Math.round(pos.coords.accuracy), at: serverTimestamp() })
         .catch((e) => console.warn("location", e));
@@ -1114,9 +1235,15 @@ function mapView() {
   });
 
   let started = false;
+  // 位置のデータは地図を開いている間だけ受け取る（全員の位置が動くたびに全員へ届くと、読み取り回数が膨らむため）
+  const syncListen = () => {
+    if (S.isAdmin || S.config.locAll) listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
+    else if (subs.has("locations")) { unlisten("locations"); S.locations = new Map(); }
+  };
   return {
     el,
     update() {
+      syncListen();
       paintOthers();
       if (started) { map?.invalidateSize(); return; }
       started = true;
@@ -1143,6 +1270,8 @@ function mapView() {
     destroy() {
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
       map?.remove();
+      unlisten("locations");
+      S.locations = new Map();
     },
   };
 }
@@ -1201,10 +1330,10 @@ function memberHome({ compact = false } = {}) {
       const pts = filter.value === "ann" ? [] : merged(S.logSrc).map((l) => ({ type: "pt", at: ts(l.createdAt) || Date.now(), l }));
       const pinned = anns.filter((x) => x.a.pinned).sort((x, y) => y.at - x.at);
       const rest = [...anns.filter((x) => !x.a.pinned), ...pts].sort((x, y) => y.at - x.at);
-      const items = [...pinned, ...rest];
-      list.replaceChildren(...(items.length
-        ? items.map((x) => (x.type === "ann" ? announcementCard(x.a) : pointNotice(x.l)))
-        : [emptyState("megaphone", "まだありません", "新しいお知らせやポイントが届くとここに表示されます。")]));
+      const page = paged("feed", [...pinned, ...rest], 30, { older: true });
+      setKids(list, page.items.length
+        ? page.items.map((x) => (x.type === "ann" ? announcementCard(x.a) : pointNotice(x.l)))
+        : emptyState("megaphone", "まだありません", "新しいお知らせやポイントが届くとここに表示されます。"), page.more);
     },
   };
 }
@@ -1255,27 +1384,26 @@ function memberPoints({ compact = false } = {}) {
       const uid = S.user.uid;
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
       const mine = logs.filter((l) => l.kind === "user" && l.target === uid);
-      const byVis = (arr, v) => sum(arr.filter((l) => l.visibility === v));
       const myTeams = myTeamIds(uid).map((id) => S.teams.get(id)).filter(Boolean)
         .sort((a, b) => byOrder(S.sets.get(a.setId) ?? {}, S.sets.get(b.setId) ?? {}));
 
       const parts = compact ? [] : [
-        statCard("あなた", sum(mine), [["全員に公開", byVis(mine, "public")], ["チーム内", byVis(mine, "team")], ["本人のみ", byVis(mine, "private")]]),
+        statCard("あなた", ptTotal("user", uid), [["全員に公開", ptTotal("user", uid, "public")], ["チーム内", ptTotal("user", uid, "team")], ["本人のみ", ptTotal("user", uid, "private")]]),
       ];
       for (const t of compact ? [] : myTeams) {
-        const tl = logs.filter((l) => l.kind === "team" && l.target === t.id);
         const secret = trueTeamOf(uid, t.setId) === t.id;
-        parts.push(statCard(`${teamName(t.id)}${secret ? "（本当のチーム）" : ""}`, sum(tl), [["全員に公開", byVis(tl, "public")], ["チーム内のみ", byVis(tl, "team")]], t.color));
+        parts.push(statCard(`${teamName(t.id)}${secret ? "（本当のチーム）" : ""}`, ptTotal("team", t.id), [["全員に公開", ptTotal("team", t.id, "public")], ["チーム内のみ", ptTotal("team", t.id, "team")]], t.color));
       }
-      parts.push(group("あなたの履歴", mine.length ? mine.map((l) => logCell(l, { showTarget: false })) : none()));
+      const myPage = paged("myHist", mine, 20, { older: true });
+      parts.push(group("あなたの履歴", [mine.length ? myPage.items.map((l) => logCell(l, { showTarget: false })) : none(), myPage.more].filter(Boolean)));
       const teamLogs = logs.filter((l) => l.kind === "team" && myTeams.some((t) => t.id === l.target));
-      if (myTeams.length) parts.push(group("チームの履歴", teamLogs.length ? teamLogs.map((l) => logCell(l)) : none()));
+      const teamPage = paged("teamHist", teamLogs, 20, { older: true });
+      if (myTeams.length) parts.push(group("チームの履歴", [teamLogs.length ? teamPage.items.map((l) => logCell(l)) : none(), teamPage.more].filter(Boolean)));
 
       fillSelect(rankSel, [{ value: "user", label: "個人" }, ...sortedSets().map((s) => ({ value: s.id, label: `${s.name}（チーム）` }))]);
-      const pub = logs.filter((l) => l.visibility === "public");
       const rows = rankSel.value === "user" || !S.sets.has(rankSel.value)
-        ? sortedMembers().map((m) => ({ label: m.name, value: sum(pub.filter((l) => l.kind === "user" && l.target === m.id)), highlight: m.id === uid }))
-        : teamsInSet(rankSel.value).map((t) => ({ label: t.name, color: t.color, value: sum(pub.filter((l) => l.kind === "team" && l.target === t.id)), highlight: myTeams.some((x) => x.id === t.id) }));
+        ? sortedMembers().map((m) => ({ label: m.name, value: ptTotal("user", m.id, "public"), highlight: m.id === uid }))
+        : teamsInSet(rankSel.value).map((t) => ({ label: t.name, color: t.color, value: ptTotal("team", t.id, "public"), highlight: myTeams.some((x) => x.id === t.id) }));
       parts.push(group("ランキング", [field("表示", rankSel), ...[rankingCells(rows)].flat()], "「全員に公開」のポイントだけで集計しています。"));
       body.replaceChildren(...parts);
     },
@@ -1289,7 +1417,6 @@ function memberSummary() {
     el,
     update() {
       const uid = S.user.uid;
-      const logs = merged(S.logSrc);
       const tile = (label, value, color, sub) => h("div", { class: "tile", style: color ? `--c:${color}` : null },
         h("div", { class: "tile-label" }, color ? dot(color) : null, label),
         h("div", { class: "tile-value" }, value, h("small", null, "pt")),
@@ -1299,8 +1426,8 @@ function memberSummary() {
         { t: S.teams.get(trueTeamOf(uid, s.id)), secret: true },
       ]).filter((x) => x.t);
       el.replaceChildren(
-        tile("あなた", sum(logs.filter((l) => l.kind === "user" && l.target === uid))),
-        ...teams.map(({ t, secret }) => tile(t.name, sum(logs.filter((l) => l.kind === "team" && l.target === t.id)), t.color,
+        tile("あなた", ptTotal("user", uid)),
+        ...teams.map(({ t, secret }) => tile(t.name, ptTotal("team", t.id), t.color,
           secret ? "本当のチーム（あなただけ）" : S.sets.get(t.setId)?.name)),
       );
     },
@@ -1309,7 +1436,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -1507,8 +1634,8 @@ function adminAnnouncements() {
     el,
     update() {
       refreshTarget();
-      const items = sortAnnouncements(merged(S.annSrc));
-      list.replaceChildren(...(items.length ? items.map((a) => announcementCard(a, { admin: true })) : [emptyState("megaphone", "まだありません")]));
+      const page = paged("adminAnn", sortAnnouncements(merged(S.annSrc)), 20);
+      setKids(list, page.items.length ? page.items.map((a) => announcementCard(a, { admin: true })) : emptyState("megaphone", "まだありません"), page.more);
     },
   };
 }
@@ -1951,7 +2078,7 @@ function adminPoints() {
         teamId = teamOfIn(target.value, visSet.value);
         if (!teamId) return toast(`この人は「${S.sets.get(visSet.value)?.name ?? "そのチーム表"}」でチームに入っていません`, true);
       }
-      fire(addDoc(C("pointLogs"), {
+      const log = {
         kind: kind.value,
         target: finalTarget,
         teamId,
@@ -1962,7 +2089,11 @@ function adminPoints() {
         author: emailToId(S.user.email),
         contributor: who,
         contributorHidden: toTrue,
-      }), `${signed(d)} pt を付けました${toTrue ? `（本当のチーム ${S.teams.get(real)?.name} へ）` : ""}`);
+      };
+      const b = writeBatch(db);
+      b.set(doc(C("pointLogs")), log);
+      addStats(b, [log]);
+      fire(b.commit(), `${signed(d)} pt を付けました${toTrue ? `（本当のチーム ${S.teams.get(real)?.name} へ）` : ""}`);
       contributor.value = "";
       reason.value = "";
       delta.value = "";
@@ -2037,8 +2168,9 @@ function adminPoints() {
       const transferId = doc(C("pointLogs")).id;
       const base = { kind: kindV, visibility: vis, reason: xReason.value.trim(), createdAt: serverTimestamp(), author: emailToId(S.user.email), transferId, counterKind: kindV };
       const b = writeBatch(db);
-      b.set(doc(C("pointLogs")), { ...base, target: from, teamId: fromTeam, delta: -n, counterId: to });
-      b.set(doc(C("pointLogs")), { ...base, target: to, teamId: toTeam, delta: n, counterId: from });
+      const pair = [{ ...base, target: from, teamId: fromTeam, delta: -n, counterId: to }, { ...base, target: to, teamId: toTeam, delta: n, counterId: from }];
+      pair.forEach((x) => b.set(doc(C("pointLogs")), x));
+      addStats(b, pair);
       fire(b.commit(), `${name(from)} → ${name(to)} に ${n}pt 移しました`);
       xReason.value = "";
       xAmount.value = "";
@@ -2089,7 +2221,8 @@ function adminPoints() {
           ? ms.map((m) => totalCell(m.name, logs.filter((l) => l.kind === "user" && l.target === m.id), ["public", "team", "private"]))
           : none("参加者がいません"), "集計は管理者にだけ表示されます。"),
       );
-      list.replaceChildren(...(logs.length ? logs.slice(0, 200).map((l) => logCell(l, { admin: true })) : [none()]));
+      const page = paged("adminLogs", logs, 50);
+      setKids(list, logs.length ? page.items.map((l) => logCell(l, { admin: true })) : none(), page.more);
     },
   };
 }
@@ -2282,10 +2415,12 @@ function quizToPoints(qz) {
   if (!rows.length) return toast("加算するポイントがありません", true);
   if (!confirm(`${rows.length}人の個人ポイントにクイズの得点を加算します（全員に公開）。よろしいですか？`)) return;
   const b = writeBatch(db);
-  rows.forEach((r) => b.set(doc(C("pointLogs")), {
+  const logs = rows.map((r) => ({
     kind: "user", target: r.uid, teamId: null, visibility: "public", delta: r.score,
     reason: `クイズ「${qz.title}」`, createdAt: serverTimestamp(), author: emailToId(S.user.email),
   }));
+  logs.forEach((x) => b.set(doc(C("pointLogs")), x));
+  addStats(b, logs);
   fire(b.commit(), "個人ポイントに加算しました");
 }
 
@@ -2855,10 +2990,17 @@ desktopQuery.addEventListener("change", () => { shell = null; S.sheet = null; sc
 let shell = null;
 let renderQueued = false;
 
-function scheduleRender() {
+let renderKinds = new Set();
+function scheduleRender(kind = "all") {
+  renderKinds.add(kind);
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => { renderQueued = false; render(); });
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    const kinds = renderKinds;
+    renderKinds = new Set();
+    render(kinds);
+  });
 }
 
 // 参加者用：所属チームと所持ポイントを右上に常に表示する
@@ -2867,7 +3009,7 @@ function meChip() {
   el.paint = () => {
     const uid = S.user.uid;
     const teams = sortedSets().map((s) => S.teams.get(teamOfIn(uid, s.id))).filter(Boolean);
-    const points = sum(merged(S.logSrc).filter((l) => l.kind === "user" && l.target === uid));
+    const points = ptTotal("user", uid);
     el.replaceChildren(
       ...(S.config.locShare ? [h("span", { class: `me-loc${LOC.error ? " err" : ""}`, title: LOC.error ? "位置を取得できていません" : "位置を共有中" }, icon("locate"))] : []),
       ...teams.map((t) => h("span", { class: "me-team", title: teamName(t.id) }, dot(t.color), t.name)),
@@ -3093,8 +3235,14 @@ function paintMapButtons() {
   for (const b of document.querySelectorAll("[data-sheet=map]")) b.hidden = !mapAllowed();
 }
 
-function render() {
+function render(kinds) {
   if (!S.authReady) return;
+  // 位置・クイズだけが変わったときは、開いている小窓とクイズの画面だけ描き直す
+  if (kinds && !kinds.has("all") && shell && S.user) {
+    if ((kinds.has("loc") && S.sheet?.key === "map") || (kinds.has("quiz") && S.sheet?.key === "quiz")) S.sheet.view.update();
+    if (kinds.has("quiz")) paintQuizLive();
+    return;
+  }
   if (!S.user) {
     shell = null;
     closeSheet();
@@ -3128,6 +3276,7 @@ function render() {
 }
 
 const $app = document.getElementById("app");
+if (USE_EMULATOR) window.__render = render; // テスト用（描画時間の計測）
 
 if ("serviceWorker" in navigator && !USE_EMULATOR) {
   // 新しい版が公開されたら、切り替わった時点でページを1回だけ読み直す（初回のインストール時は読み直さない）

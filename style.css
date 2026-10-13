@@ -1014,3 +1014,12 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .pr-chip .av { padding: 0 8px; border-radius: 8px; background: rgba(255, 255, 255, .14); color: var(--qz-ink); font-weight: 800; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn-small.ghost { background: rgba(255, 255, 255, .1); color: var(--qz-ink); }
 .op-foot .pr-btn { padding: 10px 16px; font-size: 15px; }
+
+/* ---- 長い一覧の「さらに表示」 ---- */
+.more-btn {
+  display: block; width: 100%; min-height: 44px; margin: 8px 0 0; padding: 10px 16px;
+  border: none; border-radius: var(--radius); background: var(--cell); color: var(--blue);
+  font: 500 15px var(--font); text-align: center; cursor: pointer;
+}
+.group-body > .more-btn { margin: 0; border-radius: 0; border-top: .5px solid var(--separator); }
+.more-btn:active { opacity: .5; }
