@@ -4241,6 +4241,74 @@ const fmtDeadline = (s) => { if (!s) return ""; const d = new Date(s); return `$
 const sortedPolls = () => [...S.polls.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
 const sortedPayments = () => [...S.payments.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
 const payTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.includes(m.id)) : sortedMembers());
+const pollTargets = payTargets; // アンケートも同じ形（targets: [uid] | null(=全員)）
+const isTarget = (x, uid) => !x.targets || x.targets.includes(uid);
+
+// アカウントにチェックを付けて対象者を選ぶ欄。選んだ状態は手元に持つので、描き直してもチェックは消えない
+function memberChecks(initial) {
+  const sel = new Set(initial ?? []);
+  const list = h("div", { class: "pick-list" });
+  const count = h("span", { class: "secondary" });
+  const paint = () => {
+    const ms = sortedMembers();
+    count.textContent = `${ms.filter((m) => sel.has(m.id)).length} / ${ms.length}人`;
+    setKids(list, ms.map((m) => {
+      const cb = h("input", { type: "checkbox", checked: sel.has(m.id) });
+      cb.addEventListener("change", () => { if (cb.checked) sel.add(m.id); else sel.delete(m.id); paint(); });
+      return h("label", { class: "pick" }, cb, m.name);
+    }));
+  };
+  const tools = h("div", { class: "pick-tools" }, count,
+    h("button", { type: "button", class: "text-btn", onclick: () => { sortedMembers().forEach((m) => sel.add(m.id)); paint(); } }, "全員にチェック"),
+    h("button", { type: "button", class: "text-btn", onclick: () => { sel.clear(); paint(); } }, "全部外す"));
+  paint();
+  return { el: h("div", { class: "member-checks" }, tools, list), value: () => [...sel], refresh: paint, set: (ids) => { sel.clear(); (ids ?? []).forEach((x) => sel.add(x)); paint(); } };
+}
+
+// 対象者：「全員（あとから増えた人も）」か「選ぶ」
+function targetPicker(initial = null) {
+  const mode = segmented([{ value: "all", label: "全員" }, { value: "pick", label: "アカウントから選ぶ" }], initial ? "pick" : "all");
+  const checks = memberChecks(initial ?? sortedMembers().map((m) => m.id));
+  const paint = () => { checks.el.hidden = mode.value !== "pick"; checks.refresh(); };
+  mode.addEventListener("change", paint);
+  paint();
+  return {
+    el: h("div", { class: "target-picker" }, mode, checks.el),
+    value: () => (mode.value === "pick" ? checks.value() : null),
+    refresh: paint,
+    reset: () => { mode.value = "all"; checks.set(sortedMembers().map((m) => m.id)); paint(); },
+  };
+}
+
+// 作ったあとで対象者を変える欄（集金・アンケート共通）。
+// 一度作った欄は使い回す（描き直しのたびに作り直すと、開いた欄が閉じたり付けたチェックが消えたりするため）
+const targetEditors = new Map();
+function targetEditor(item, coll) {
+  const key = `${coll}:${item.id}`;
+  const cached = targetEditors.get(key);
+  if (cached) { cached.label.textContent = cached.labelText(item); cached.picker.refresh(); return cached.el; }
+  const picker = targetPicker(item.targets ?? null);
+  const save = () => {
+    const v = picker.value();
+    if (v && !v.length) return toast("1人以上選んでください", true);
+    fire(updateDoc(D(coll, item.id), { targets: v }), v ? `対象を ${v.length}人にしました` : "対象を全員にしました");
+  };
+  const labelText = (it) => `対象者を変える・追加する（いま：${it.targets ? `${it.targets.length}人` : "全員"}）`;
+  const el = fold(labelText(item),
+    h("div", { class: "target-edit" }, picker.el, h("div", { class: "poll-actions" }, h("button", { class: "btn-small", type: "button", onclick: save }, "対象者を保存")),
+      h("div", { class: "cell-sub" }, coll === "payments" ? "外した人の入金記録は消えずに残ります（もう一度入れると元に戻ります）。" : "外した人の回答は消えずに残ります（集計には入りません）。")));
+  const label = el.querySelector("summary span");
+  targetEditors.set(key, { el, label, labelText, picker });
+  return el;
+}
+
+// 開いた折りたたみ欄を、描き直しても開いたままにする
+const openFolds = new Set();
+function keptFold(key, title, content, defaultOpen = false) {
+  const el = fold(title, content, openFolds.has(key) || defaultOpen);
+  el.addEventListener("toggle", () => { if (el.open) openFolds.add(key); else openFolds.delete(key); });
+  return el;
+}
 const recordOf = (p, uid) => ({ status: "unpaid", ...(p.records?.[uid] ?? {}) });
 const amountOf = (p, uid) => Number(p.records?.[uid]?.amount ?? p.amount) || 0;
 // 1件の集金の合計（免除の人は数えない）
@@ -4264,7 +4332,7 @@ const reportOf = (p, uid) => S.payReports.get(`${p.id}_${uid}`) ?? null;
 const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
   .filter((x) => x.rep && recordOf(x.p, x.m.id).status === "unpaid");
 const reportLine = (rep) => [rep.method, rep.at ? fmtDate(rep.at) : "送信中…", rep.note].filter(Boolean).join(" ・ ");
-const myUnanswered = (uid) => sortedPolls().filter((p) => pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
+const myUnanswered = (uid) => sortedPolls().filter((p) => isTarget(p, uid) && pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
 
 // ---- 管理者
 function adminMoney({ withTitle = true } = {}) {
@@ -4273,55 +4341,68 @@ function adminMoney({ withTitle = true } = {}) {
   const body = h("div");
 
   // 新しいアンケート
-  const q = h("input", { type: "text", placeholder: "例：8/10 のBBQに参加しますか？" });
+  const q = h("input", { type: "text", class: "plain", placeholder: "例：8/10 のBBQに参加しますか？" });
   const opts = h("input", { type: "text", value: "参加 / 不参加 / 未定" });
   const deadline = h("input", { type: "datetime-local" });
   const showRes = toggle(true), allowCom = toggle(true);
+  const pollWho = targetPicker(null);
   const pollForm = h("form", { onsubmit: (e) => {
     e.preventDefault();
     const options = opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean);
     if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
-    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, createdAt: serverTimestamp() }), "アンケートを作りました");
-    q.value = ""; deadline.value = "";
+    const targets = pollWho.value();
+    if (targets && !targets.length) return toast("対象を1人以上選んでください", true);
+    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, targets, createdAt: serverTimestamp() }), "アンケートを作りました");
+    q.value = ""; deadline.value = ""; pollWho.reset();
   } },
     group("新しいアンケート", [h("div", { class: "cell" }, q), field("選択肢（/ で区切る）", opts), field("締切（なしでもOK）", deadline),
       field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom)]),
+    group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el)], "「全員」は、あとから追加した参加者も自動で対象になります。"),
     h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
 
   // 新しい集金
-  const title = h("input", { type: "text", placeholder: "例：フェリー代" });
+  const title = h("input", { type: "text", class: "plain", placeholder: "例：フェリー代" });
   const amount = h("input", { type: "number", min: "0", inputmode: "numeric", placeholder: "3000" });
   const due = h("input", { type: "date" });
-  const note = h("textarea", { rows: "2", placeholder: "振込先・渡し方など（参加者に表示されます）" });
+  const note = h("textarea", { rows: "2", class: "plain", placeholder: "振込先・渡し方など（参加者に表示されます）" });
   const who = h("select", { class: "inline-select" });
+  const payChecks = memberChecks([]);
+  const payChecksCell = h("div", { class: "cell", hidden: true }, payChecks.el);
+  who.addEventListener("change", () => {
+    // アンケートの回答を選んだら、その回答をした人にチェックを付けた状態にする（そこから足したり外したりできる）
+    if (who.value.startsWith("poll:")) {
+      const [, pid, opt] = who.value.split(":");
+      payChecks.set([...S.votes.values()].filter((v) => v.pollId === pid && v.choice === opt).map((v) => v.uid));
+    } else if (who.value === "pick") payChecks.set([]);
+    payChecksCell.hidden = who.value === "all";
+  });
   const payForm = h("form", { onsubmit: (e) => {
     e.preventDefault();
     if (!title.value.trim()) return toast("名前を入れてください", true);
     let targets = null;
-    if (who.value.startsWith("poll:")) {
-      const [, pid, opt] = who.value.split(":");
-      targets = [...S.votes.values()].filter((v) => v.pollId === pid && v.choice === opt).map((v) => v.uid);
-      if (!targets.length) return toast("その回答をした人がいません", true);
+    if (who.value !== "all") {
+      targets = payChecks.value();
+      if (!targets.length) return toast("対象を1人以上選んでください", true);
     }
     fire(addDoc(C("payments"), { title: title.value.trim(), amount: Math.max(0, Number(amount.value) || 0), due: due.value || null, note: note.value.trim(), targets, records: {}, createdAt: serverTimestamp() }), "集金を作りました");
-    title.value = ""; amount.value = ""; note.value = "";
+    title.value = ""; amount.value = ""; note.value = ""; who.value = "all"; payChecksCell.hidden = true;
   } },
-    group("新しい集金", [h("div", { class: "cell" }, title), field("1人あたり（円）", amount), field("期限", due), h("div", { class: "cell" }, note), field("対象", who)],
-      "対象に「アンケートの回答」を選ぶと、その回答をした人だけが対象になります（作った時点の回答で決まります）。"),
+    group("新しい集金", [h("div", { class: "cell" }, title), field("1人あたり（円）", amount), field("期限", due), h("div", { class: "cell" }, note), field("対象", who), payChecksCell],
+      "「アカウントから選ぶ」でチェックした人だけが対象になります。「アンケートの回答」を選ぶと、その回答をした人にチェックが付いた状態になり、そこから足したり外したりできます。対象はあとからでも変えられます。"),
     h("button", { class: "btn-filled", type: "submit" }, "集金を作る"));
 
   const el = h("div", null, withTitle ? largeTitle("出欠・集金") : null, h("div", { class: "seg-wrap" }, tab), body);
   redrawOnLeave(el);
 
   function pollCard(p) {
-    const votes = [...S.votes.values()].filter((v) => v.pollId === p.id);
-    const ms = sortedMembers();
+    const ms = pollTargets(p);
+    const votes = [...S.votes.values()].filter((v) => v.pollId === p.id && isTarget(p, v.uid));
     const none = ms.filter((m) => !votes.some((v) => v.uid === m.id));
     const setVote = (uid, choice) => fire(choice
       ? setDoc(D("votes", `${p.id}_${uid}`), { uid, pollId: p.id, choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), byAdmin: true })
       : deleteDoc(D("votes", `${p.id}_${uid}`)));
     return h("article", { class: "card poll-card" },
-      h("div", { class: "poll-head" }, h("b", null, p.question),
+      h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
       h("div", { class: "poll-bars" }, p.options.map((o) => {
         const vs = votes.filter((v) => v.choice === o);
@@ -4331,11 +4412,12 @@ function adminMoney({ withTitle = true } = {}) {
           vs.length ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
       })),
       none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
-      fold("回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
+      keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
         sel.addEventListener("change", () => setVote(m.id, sel.value));
         return field(m.name, sel);
       }))),
+      targetEditor(p, "polls"),
       h("div", { class: "poll-actions" },
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
@@ -4355,7 +4437,7 @@ function adminMoney({ withTitle = true } = {}) {
     const ms = payTargets(p).filter((m) => !onlyUnpaid || recordOf(p, m.id).status === "unpaid");
     const setRec = (uid, patch) => fire(updateDoc(D("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
     return h("article", { class: "card pay-card" },
-      h("div", { class: "poll-head" }, h("b", null, p.title), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
+      h("div", { class: "poll-head" }, h("b", null, p.title, h("small", { class: "target-count" }, p.targets ? `対象 ${p.targets.length}人` : "対象 全員")), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
       p.note ? h("div", { class: "cell-sub pay-note" }, p.note) : null,
       h("div", { class: "pay-progress" },
         h("div", { class: "poll-track big" }, h("div", { style: `width:${t.expect ? (t.got / t.expect) * 100 : 0}%` })),
@@ -4380,6 +4462,7 @@ function adminMoney({ withTitle = true } = {}) {
               r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
+      targetEditor(p, "payments"),
       h("div", { class: "poll-actions" },
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
@@ -4403,9 +4486,10 @@ function adminMoney({ withTitle = true } = {}) {
       if (typingIn(el)) return;
       if (tab.value === "polls") {
         const ps = sortedPolls();
-        setKids(body, fold("＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
+        setKids(body, keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
       } else {
-        const opts2 = [{ value: "all", label: "全員" }, ...sortedPolls().flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
+        if (!payChecksCell.hidden) payChecks.refresh();
+        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
         const ps = sortedPayments();
         const pend = pendingReports();
@@ -4414,7 +4498,7 @@ function adminMoney({ withTitle = true } = {}) {
             rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null),
           h("button", { class: "btn-small", onclick: () => fire(updateDoc(D("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
           "参加者が「送金しました」を押したものです。入金を確かめてから「入金済みにする」を押してください。") : null;
-        setKids(body, fold("＋ 新しい集金", payForm, !ps.length), ps.length ? [pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
+        setKids(body, keptFold("newPay", "＋ 新しい集金", payForm, !ps.length), ps.length ? [pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
       }
     },
   };
@@ -4471,8 +4555,8 @@ function memberMoney({ compact = false } = {}) {
     update() {
       if (typingIn(el)) return;
       const uid = S.user.uid;
-      const polls = sortedPolls();
-      const pays = sortedPayments().filter((p) => !p.targets || p.targets.includes(uid));
+      const polls = sortedPolls().filter((p) => isTarget(p, uid));
+      const pays = sortedPayments().filter((p) => isTarget(p, uid));
       const pollEl = (p) => {
         const mine = S.votes.get(`${p.id}_${uid}`);
         const open = pollOpen(p);
