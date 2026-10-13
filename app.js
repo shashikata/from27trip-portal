@@ -265,7 +265,21 @@ async function migrateLegacyTeams() {
 function startMember(uid) {
   listen("me", D("members", uid), (s, err) => {
     S.me = err ? null : (s.exists() ? s.data() : null);
+    S.meErr = err ? err.code ?? "error" : null;
     if (S.me) startMemberData(uid);
+    // この旅行に登録がないときは、入っている旅行をもう一度調べて、あればそちらへ切り替える
+    // （前回開いていた旅行から外された・最初の確認が通信の失敗で空だった、などのとき）
+    else if (!err && s && !s.metadata.fromCache && !QZ.meRetried?.has(`${uid}:${S.pid}`)) {
+      (QZ.meRetried ??= new Set()).add(`${uid}:${S.pid}`);
+      const pid = S.pid;
+      resolveMemberProfiles(uid).then((list) => {
+        if (S.user?.uid !== uid || S.pid !== pid || S.me) return;
+        S.myProfiles = list;
+        const other = list.filter((x) => x.id !== pid);
+        if (other.length === 1) switchProfile(other[0].id);
+        else if (other.length > 1) { S.pid = null; shell = null; scheduleRender(); }
+      });
+    }
   });
 }
 
@@ -415,6 +429,8 @@ function startProfile() {
 }
 
 // 旅行を切り替える（管理者も参加者も）
+if (USE_EMULATOR) window.__switch = (pid) => switchProfile(pid); // テスト用
+if (USE_EMULATOR) window.__switch = (pid) => switchProfile(pid); // テスト用
 function switchProfile(pid) {
   if (!pid || pid === S.pid) return;
   closeSheet();
@@ -5879,8 +5895,12 @@ function render(kinds) {
     if (S.me === null) {
       shell = null;
       return $app.replaceChildren(h("div", { class: "login" },
-        emptyState("lock", "このアカウントは使えません", "管理者に確認してください。"),
-        h("button", { class: "btn-filled", onclick: () => signOut(auth) }, "ログアウト")));
+        emptyState("lock", "このアカウントは使えません",
+          S.meErr
+            ? `ID「${emailToId(S.user.email)}」の登録を確認できませんでした（${S.meErr === "unavailable" ? "電波がありません" : S.meErr}）。電波のある所で「もう一度試す」を押してください。`
+            : `ID「${emailToId(S.user.email)}」は、どの旅行の参加者にも登録されていません（参加者から削除された可能性があります）。管理者に確認してください。`),
+        h("button", { class: "btn-filled", onclick: () => location.reload() }, "もう一度試す"),
+        h("button", { class: "btn-filled ghost-btn", onclick: () => signOut(auth) }, "ログアウト（別のIDで入る）")));
     }
   }
   if (!shell) {

@@ -1567,3 +1567,4 @@ input.cl-title { padding: 2px 0; }
 .desk-paytop .pay-top { max-width: 1800px; margin: 0 auto 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; align-items: start; }
 .desk-paytop .pay-top > * { margin: 0; }
 .desk-paytop .pay-top > .stack { display: contents; }
+.btn-filled.ghost-btn { background: var(--fill); color: var(--blue); margin-top: -20px; }
