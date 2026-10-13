@@ -128,12 +128,11 @@ const merged = (src) => {
 
 function startAdmin() {
   const pid = S.pid;
+  ensureRootProfile().catch((e) => console.warn(e));
   getDoc(D("config", "app"))
     .then(async (d) => {
       const reg = await getDoc(doc(db, "profiles", pid)).catch(() => null);
       if (!d.exists()) await setDoc(D("config", "app"), { title: reg?.data()?.name ?? APP_TITLE });
-      // 1つ目の旅行（ルート）を旅行の一覧に登録しておく
-      if (pid === ROOT && !reg?.exists()) await setDoc(doc(db, "profiles", ROOT), { name: d.data()?.title ?? APP_TITLE, order: 0 });
     })
     .then(() => (pid === ROOT ? migrateLegacyTeams() : null))
     .then(backfillAccounts)
@@ -148,6 +147,16 @@ function startAdmin() {
   listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
   listen("locations", C("locations"), (s) => { S.locations = toMap(s); });
+}
+
+// 1つ目の旅行（ルート直下のデータ）を、旅行の一覧に必ず登録しておく。
+// どの旅行を開いているときでも確認する（以前は七日島を開いたときだけだったため、
+// ルートが一覧に載らず、切り替えられなくなることがあった）
+async function ensureRootProfile() {
+  const reg = await getDoc(doc(db, "profiles", ROOT));
+  if (reg.exists()) return;
+  const cfg = await getDoc(doc(db, "config", "app")).catch(() => null);
+  await setDoc(doc(db, "profiles", ROOT), { name: cfg?.data()?.title ?? APP_TITLE, order: 0 });
 }
 
 // アカウント一覧（accounts/{loginId} → uid）が無い古いアカウントを登録する。
@@ -1292,7 +1301,11 @@ function memberSummary() {
 
 const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations"];
 
-const sortedProfiles = () => [...S.profiles.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const sortedProfiles = () => {
+  const list = [...S.profiles.values()];
+  if (!S.profiles.has(ROOT)) list.push({ id: ROOT, name: APP_TITLE, order: 0 });
+  return list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+};
 const profileName = (pid) => S.profiles.get(pid)?.name ?? S.myProfiles.find((p) => p.id === pid)?.name ?? (pid === S.pid ? S.config.title : "旅行");
 
 // 中身が空の旅行を作って、そこに切り替える
