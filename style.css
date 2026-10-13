@@ -1580,3 +1580,27 @@ input.cl-title { padding: 2px 0; }
 .side-view .large-title { display: none; }
 .side-view { max-width: 920px; }
 @media (max-width: 1399px) { .desk-grid.admin-wide .side-default { grid-template-columns: minmax(0, 1fr); gap: 12px; } }
+
+/* ---- 確定前ページ：旅行の割り当て ---- */
+.trip-card { display: grid; gap: 10px; margin-bottom: 12px; }
+.trip-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.trip-head b { font-size: 18px; }
+.trip-names { display: flex; flex-wrap: wrap; gap: 6px; }
+.trip-names span { padding: 4px 10px; border-radius: 999px; font-size: 14px; font-weight: 600; background: var(--fill); }
+.trip-names span.ok { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.trip-card .btn-small { justify-self: end; }
+.trip-row { gap: 10px; }
+.trip-row .inline-select { max-width: 45%; }
+.trip-stat { font-size: 13px; font-weight: 700; color: var(--label-2); min-width: 3em; text-align: center; }
+.trip-stat.ok { color: var(--green); }
+.trip-row { flex-wrap: wrap; }
+.trip-pills { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.trip-pill { border: 1px dashed var(--separator); background: transparent; border-radius: 999px; padding: 5px 11px; font-size: 13px; font-weight: 600; color: var(--label-2); }
+.trip-pill.wait { border-style: solid; border-color: var(--orange); color: var(--orange); background: color-mix(in srgb, var(--orange) 10%, transparent); }
+.trip-pill.ok { border-style: solid; border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.trip-names span.wait { background: color-mix(in srgb, var(--orange) 14%, transparent); color: var(--orange); }
+.trip-row { flex-direction: column; align-items: stretch; }
+.trip-row .cell-main { flex-direction: row; align-items: baseline; gap: 8px; }
+.trip-pills { justify-content: flex-start; }
+.trip-card .btn-small:disabled { background: var(--fill); color: var(--label-2); }
+.trip-row .cell-main { justify-content: flex-start; }

@@ -6,7 +6,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
-  collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
+  collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
   writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
@@ -58,6 +58,34 @@ const base = () => (S.pid && S.pid !== ROOT ? ["profiles", S.pid] : []);
 const C = (name) => collection(db, ...base(), name);
 const D = (name, ...ids) => doc(db, ...base(), name, ...ids);
 
+// ---- 確定前ページ（pid = "lobby"）
+// 旅行が決まる前の人が見るページ。中身は profiles/lobby/ の下に、ほかの旅行と同じ形で置く。
+//   profiles/lobby/members/{uid}  { name, loginId, trips: { pid: true(確定) | false(割り当てただけ) } }
+// 確定前ページの members に入っている人は、確定した旅行だけを開ける（それ以外の旅行の登録は残っていても開かない）。
+// 旅行はいくつでも割り当てられ、確定したあとでも追加・取り消しができる。
+// 確定すると、確定前ページのお知らせ・出欠・集金は旅行のページにも合流して表示される。
+// 合流したものは id の頭に "L:" を付けて同じ一覧（S.polls など）に入れ、書き込むときは確定前ページの場所に戻す。
+const LOBBY = "lobby";
+const inLobby = () => S.pid === LOBBY;
+const isL = (id) => typeof id === "string" && id.startsWith("L:");
+const rawId = (id) => (isL(id) ? id.slice(2) : id);
+const DX = (name, id) => (isL(id) ? doc(db, "profiles", LOBBY, name, id.slice(2)) : D(name, id));
+const CX = (name, id) => (isL(id) ? collection(db, "profiles", LOBBY, name) : C(name));
+const LC = (name) => collection(db, "profiles", LOBBY, name);
+const LD = (name, id) => doc(db, "profiles", LOBBY, name, id);
+const tripsOf = (m) => m?.trips ?? {};
+const confirmedTrips = (m) => Object.keys(tripsOf(m)).filter((k) => tripsOf(m)[k] === true);
+// 確定前ページのデータを合流用に読み込む（id と、ほかのデータを指す欄に "L:" を付ける）
+const toMapL = (snap, refs = []) => {
+  const m = new Map();
+  snap?.forEach((d) => {
+    const v = { ...d.data({ serverTimestamps: "estimate" }), id: `L:${d.id}`, fromLobby: true };
+    for (const f of refs) if (v[f]) v[f] = `L:${v[f]}`;
+    m.set(v.id, v);
+  });
+  return m;
+};
+
 const idToEmail = (id) => (id.includes("@") ? id : `${id}@${EMAIL_DOMAIN}`).toLowerCase();
 const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
 const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").toLowerCase());
@@ -106,6 +134,7 @@ const S = {
   quizSabo: new Map(),       // 妨害の申し込み quizSabo/{id}
   quizBets: new Map(),       // 賭け quizBets/{id}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
+  lobbySrc: {},              // 参加者：旅行の分と、合流した確定前ページの分（S.polls などはこの2つを合わせたもの）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
   stats: null,               // ポイントの合計 stats/points（参加者は履歴を全部は読まず、合計はここから出す）
@@ -279,9 +308,24 @@ async function migrateLegacyTeams() {
 }
 
 function startMember(uid) {
+  let lobbyWas = null; // 確定前ページ：前回受け取った自分の状態（確定した瞬間を見つけるため）
   listen("me", D("members", uid), (s, err) => {
     S.me = err ? null : (s.exists() ? s.data() : null);
     S.meErr = err ? err.code ?? "error" : null;
+    // 確定前ページを開いている間に旅行が確定したら、その旅行のページへ移る
+    if (inLobby() && S.me && s && !s.metadata.fromCache) {
+      const now = confirmedTrips(S.me);
+      const added = lobbyWas ? now.filter((x) => !lobbyWas.includes(x)) : [];
+      if (added.length) {
+        const pid = added[0];
+        resolveMemberProfiles(uid).then((list) => {
+          if (S.user?.uid !== uid || !inLobby()) return;
+          S.myProfiles = list;
+          if (list.some((x) => x.id === pid)) { toast("旅行が確定しました"); switchProfile(pid); }
+        });
+      }
+      lobbyWas = now;
+    }
     if (S.me) startMemberData(uid);
     // この旅行に登録がないときは、入っている旅行をもう一度調べて、あればそちらへ切り替える
     // （前回開いていた旅行から外された・最初の確認が通信の失敗で空だった、などのとき）
@@ -315,14 +359,42 @@ function startMemberData(uid) {
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
-  listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
+  const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [part]: val }; S[key] = new Map([...(S.lobbySrc[key].trip ?? []), ...(S.lobbySrc[key].lobby ?? [])]); };
+  listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
   listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; });
-  listen("polls", C("polls"), (s) => { if (s) S.polls = toMap(s); syncPollTally(); });
-  listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) S.votes = toMap(s); });
-  listen("payments", C("payments"), (s) => { if (s) S.payments = toMap(s); });
-  listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) S.payReports = toMap(s); });
+  listen("polls", C("polls"), (s) => { if (s) mergeSrc("polls", "trip", toMap(s)); syncPollTally(); });
+  listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("votes", "trip", toMap(s)); });
+  listen("payments", C("payments"), (s) => { if (s) mergeSrc("payments", "trip", toMap(s)); });
+  listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("payReports", "trip", toMap(s)); });
+  // 確定した旅行では、確定前ページのお知らせ・出欠・集金も合流して出す（確定前ページに入っていない人は読めないので何も出ない）
+  if (!inLobby()) {
+    // 確定が取り消された・別の旅行に変わったときは、確定前ページへ戻す
+    listen("lobbyMe", LD("members", uid), (s, err) => {
+      if (err || !s?.exists() || s.metadata.fromCache) return;
+      const L = s.data();
+      // 確定した旅行が増えた・減ったら、切り替えの一覧を更新する。今の旅行が外れたら移る
+      const want = confirmedTrips(L).sort().join(",");
+      const have = S.myProfiles.filter((x) => x.id !== LOBBY).map((x) => x.id).sort().join(",");
+      if (want !== have || tripsOf(L)[S.pid] !== true) {
+        resolveMemberProfiles(uid).then((list) => {
+          if (S.user?.uid !== uid) return;
+          S.myProfiles = list;
+          scheduleRender();
+          if (!list.some((x) => x.id === S.pid)) { toast("旅行の割り当てが変わりました"); switchProfile(list[0]?.id ?? LOBBY); }
+        });
+      }
+    });
+    const quiet = (fn) => (s, err) => { if (!err && s) fn(s); };
+    listen("lAnnRecent", query(LC("announcements"), orderBy("createdAt", "desc"), limit(50)), quiet((s) => { S.feedRaw.lobby = toMapL(s); refreshFeed(uid); }));
+    listen("lAnnPinned", query(LC("announcements"), where("pinned", "==", true)), quiet((s) => { S.feedRaw.lobbyPinned = toMapL(s); refreshFeed(uid); }));
+    listen("lAcks", query(LC("acks"), where("uid", "==", uid)), quiet((s) => mergeSrc("acks", "lobby", toMapL(s, ["annId"]))));
+    listen("lPolls", LC("polls"), quiet((s) => { mergeSrc("polls", "lobby", toMapL(s)); syncPollTally(); }));
+    listen("lVotes", query(LC("votes"), where("uid", "==", uid)), quiet((s) => mergeSrc("votes", "lobby", toMapL(s, ["pollId"]))));
+    listen("lPayments", LC("payments"), quiet((s) => mergeSrc("payments", "lobby", toMapL(s))));
+    listen("lPayReports", query(LC("payReports"), where("uid", "==", uid)), quiet((s) => mergeSrc("payReports", "lobby", toMapL(s, ["paymentId"]))));
+  }
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { if (s) S.checklists = toMap(s); });
   // チェックは「自分の分」と「共有の分」だけ受け取る（全員分を受け取ると、項目数×人数分の読み取りになるため）
@@ -360,7 +432,7 @@ function refreshFeed(uid) {
   const annOk = (a) => a.scope === "all" || (a.scope === "user" && a.target === uid) || (a.scope === "team" && teams.has(a.target));
   const logOk = (l) => l.visibility === "public" || (l.visibility === "private" && l.target === uid) || (l.visibility === "team" && teams.has(l.teamId));
   const keep = (m, ok) => new Map([...(m ?? [])].filter(([, v]) => ok(v)));
-  S.annSrc = { pinned: keep(S.feedRaw.pinned, annOk), recent: keep(S.feedRaw.ann, annOk) };
+  S.annSrc = { pinned: keep(S.feedRaw.pinned, annOk), recent: keep(S.feedRaw.ann, annOk), lobbyPinned: keep(S.feedRaw.lobbyPinned, annOk), lobby: keep(S.feedRaw.lobby, annOk) };
   S.logSrc = { recent: keep(S.feedRaw.log, logOk) };
   DATA_VER++;
 }
@@ -426,7 +498,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -469,13 +541,21 @@ async function resolveMemberProfiles(uid) {
   const list = [];
   const rootMem = await getDoc(doc(db, "members", uid)).catch(() => null);
   if (rootMem?.exists()) list.push({ id: ROOT, name: regDocs.find((d) => d.id === ROOT)?.data().name ?? APP_TITLE, order: 0 });
+  let lobby = null;
   for (const d of regDocs) {
     if (d.id === ROOT) continue;
     const m = await getDoc(doc(db, "profiles", d.id, "members", uid)).catch(() => null);
-    if (m?.exists()) list.push({ id: d.id, name: d.data().name ?? "旅行", order: d.data().order ?? 0 });
+    if (!m?.exists()) continue;
+    if (d.id === LOBBY) lobby = m.data();
+    else list.push({ id: d.id, name: d.data().name ?? "旅行", order: d.data().order ?? 0 });
   }
-  return list.sort((a, b) => a.order - b.order);
+  list.sort((a, b) => a.order - b.order);
+  // 確定前ページに入っている人は、確定した旅行だけを開ける
+  if (!lobby) return list;
+  const trips = list.filter((x) => tripsOf(lobby)[x.id] === true);
+  return [...trips, { id: LOBBY, name: LOBBY_NAME, order: 1e9, lobby: true }];
 }
+const LOBBY_NAME = "確定前ページ";
 
 // ---- QRコードでログイン
 // 配る用カードのQRコードは「アプリのURL#login=<IDとパスワード>」。開いたらすぐ URL から消して（履歴にも残さない）自動でログインする。
@@ -540,7 +620,10 @@ onAuthStateChanged(auth, async (user) => {
   if (S.user !== user) return; // 途中でログアウトした
   S.myProfiles = list;
   const saved = savedPid();
-  if (list.some((p) => p.id === saved)) S.pid = saved;
+  // 確定した旅行があれば、確定前ページより旅行を先に開く
+  const trips = list.filter((p) => p.id !== LOBBY);
+  if (list.some((p) => p.id === LOBBY)) S.pid = trips.some((p) => p.id === saved) ? saved : trips.length > 1 ? null : trips[0]?.id ?? LOBBY;
+  else if (list.some((p) => p.id === saved)) S.pid = saved;
   else if (list.length === 1) S.pid = list[0].id;
   else if (list.length === 0) {
     // 電波がなくて調べられないときは、前回開いていた旅行で試す
@@ -960,8 +1043,8 @@ function ackBox(a, admin) {
     return h("button", {
       class: `ack-btn${done ? " done" : ""}`, "aria-pressed": String(done),
       onclick: () => fire(done
-        ? deleteDoc(D("acks", ackId))
-        : setDoc(D("acks", ackId), { annId: a.id, uid, at: serverTimestamp() })),
+        ? deleteDoc(DX("acks", ackId))
+        : setDoc(DX("acks", ackId), { annId: rawId(a.id), uid, at: serverTimestamp() })),
     }, done ? [icon("check"), "見ました"] : "見ました");
   }
   const audience = ackAudience(a);
@@ -1522,7 +1605,7 @@ function loginView() {
   const btn = h("button", { class: "btn-filled", type: "submit" }, "ログイン");
   return h("div", { class: "login", "data-view": "login" },
     h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
-    h("h1", null, S.config.title || APP_TITLE),
+    h("h1", null, "旅行ポータル"),
     h("p", { class: "secondary" }, switchTarget ? `参加者アカウント（${switchTarget}）でログインしてください。次からはログインしたまま切り替えられます。` : "配られたIDとパスワードでログインしてください。"),
     h("form", {
       onsubmit: (e) => {
@@ -1559,7 +1642,8 @@ function memberHome({ compact = false } = {}) {
   const filter = segmented([{ value: "all", label: "すべて" }, { value: "ann", label: "お知らせ" }, { value: "pt", label: "ポイント" }]);
   filter.addEventListener("change", () => scheduleRender());
   const list = h("div", { class: "stack" });
-  const el = h("div", null, sectionTitle("お知らせ", compact), h("div", { class: "seg-wrap" }, filter), list);
+  // 確定前ページにはポイントがないので、絞り込みは出さない
+  const el = h("div", null, sectionTitle("お知らせ", compact), inLobby() ? null : h("div", { class: "seg-wrap" }, filter), list);
   return {
     el,
     update() {
@@ -1570,7 +1654,7 @@ function memberHome({ compact = false } = {}) {
       const page = paged("feed", [...pinned, ...rest], 30, { older: true });
       setKids(list, page.items.length
         ? page.items.map((x) => (x.type === "ann" ? announcementCard(x.a) : pointNotice(x.l)))
-        : emptyState("megaphone", "まだありません", "新しいお知らせやポイントが届くとここに表示されます。"), page.more);
+        : emptyState("megaphone", "まだありません", inLobby() ? "新しいお知らせが届くとここに表示されます。" : "新しいお知らせやポイントが届くとここに表示されます。"), page.more);
     },
   };
 }
@@ -1658,15 +1742,15 @@ function memberSummary() {
         h("div", { class: "tile-label" }, color ? dot(color) : null, label),
         h("div", { class: "tile-value" }, value, h("small", null, "pt")),
         sub ? h("div", { class: "tile-sub" }, sub) : null);
-      const teams = sortedSets().flatMap((s) => [
+      const teams = inLobby() ? [] : sortedSets().flatMap((s) => [
         { t: S.teams.get(teamOfIn(uid, s.id)), secret: false },
         { t: S.teams.get(trueTeamOf(uid, s.id)), secret: true },
       ]).filter((x) => x.t);
-      el.replaceChildren(
-        tile("あなた", ptTotal("user", uid)),
+      el.replaceChildren(...[
+        inLobby() ? null : tile("あなた", ptTotal("user", uid)),
         ...teams.map(({ t, secret }) => tile(t.name, ptTotal("team", t.id), t.color,
           secret ? "本当のチーム（あなただけ）" : S.sets.get(t.setId)?.name)),
-      );
+      ].filter(Boolean));
       // やること（未回答のアンケート・未入金）
       const todo = [myUnanswered(uid) ? `未回答のアンケート ${myUnanswered(uid)}件` : null, myUnpaid(uid) ? `未入金 ${yen(myUnpaid(uid))}` : null].filter(Boolean);
       // QR でログインした直後の案内（ホーム画面に追加したアプリは、iPhone ではログイン状態が別になる）
@@ -1705,6 +1789,27 @@ async function createProfile() {
   switchProfile(ref.id);
 }
 
+// 確定前ページを作る：今いる参加者（すべての旅行）を、未割り当て・未確定で入れる。
+// 旅行のデータ（参加者の登録・お知らせ・チーム・ポイント）は消さない。確定すればまた開けるようになる
+async function createLobby() {
+  if (S.profiles.has(LOBBY)) return switchProfile(LOBBY);
+  if (!confirm("確定前ページを作りますか？\n\n今の参加者は全員「未確定」になり、次に開いたときから確定前ページ（お知らせ・出欠・集金・チャット・立て替え）だけが表示されます。\n旅行のデータは消えません。旅行を割り当てて「確定」すると、また旅行のページが開けるようになります。")) return;
+  const people = new Map();
+  const rootSnap = await getDocs(collection(db, "members"));
+  rootSnap.forEach((d) => people.set(d.id, d.data()));
+  for (const p of [...S.profiles.keys()].filter((x) => x !== ROOT && x !== LOBBY)) {
+    const snap = await getDocs(collection(db, "profiles", p, "members"));
+    snap.forEach((d) => { if (!people.has(d.id)) people.set(d.id, d.data()); });
+  }
+  const b = writeBatch(db);
+  b.set(doc(db, "profiles", LOBBY), { name: LOBBY_NAME, order: -1, lobby: true, createdAt: serverTimestamp() });
+  b.set(LD("config", "app"), { title: LOBBY_NAME });
+  for (const [uid, m] of people) b.set(LD("members", uid), { loginId: m.loginId ?? null, name: m.name ?? "", trips: {}, createdAt: serverTimestamp() });
+  await b.commit();
+  toast(`確定前ページを作りました（${people.size}人を未確定で登録）`);
+  switchProfile(LOBBY);
+}
+
 // 旅行の中身をすべて消す（1つ目の旅行＝ルートは消せない）
 async function deleteProfile(pid) {
   if (pid === ROOT) return toast("1つ目の旅行は削除できません", true);
@@ -1739,7 +1844,8 @@ function profilesGroup() {
           onclick: () => switchProfile(p.id),
         }, h("span", { class: "profile-name" }, p.name), p.id === S.pid ? h("span", { class: "profile-cur" }, icon("check"), "表示中") : null)),
         S.isAdmin ? h("button", { class: "cell cell-button", onclick: () => guard(null, createProfile) }, icon("plus"), "新しい旅行を作る") : null,
-      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。" : null));
+        S.isAdmin && !S.profiles.has(LOBBY) ? h("button", { class: "cell cell-button", onclick: () => guard(null, createLobby) }, icon("people"), "確定前ページを作る（今の参加者を全員未確定にする）") : null,
+      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。" : null));
     },
   };
 }
@@ -1821,7 +1927,7 @@ function settingsView({ withTitle = true } = {}) {
 function adminAnnouncements() {
   const title = h("input", { type: "text", maxlength: "100", placeholder: "タイトル", required: true, class: "plain title-input" });
   const body = h("textarea", { rows: "4", placeholder: "本文", class: "plain" });
-  const scope = segmented([{ value: "all", label: "全員" }, { value: "team", label: "チーム" }, { value: "user", label: "個人" }]);
+  const scope = segmented([{ value: "all", label: "全員" }, ...(inLobby() ? [] : [{ value: "team", label: "チーム" }]), { value: "user", label: "個人" }]);
   const target = h("select", { "aria-label": "宛先" });
   const targetCell = field("宛先", target);
   const pinned = toggle();
@@ -2011,7 +2117,9 @@ function adminMembers({ withTitle = true } = {}) {
             class: "text-btn destructive",
             onclick: () => {
               const cur = S.members.get(m.id);
-              if (!confirm(`${cur?.name}（${m.loginId}）を削除しますか？\nこの人は何も見られなくなります。`)) return;
+              if (!confirm(inLobby()
+                ? `${cur?.name}（${m.loginId}）を確定前ページから外しますか？\n旅行に登録がある場合は、その旅行が（確定しなくても）開けるようになります。`
+                : `${cur?.name}（${m.loginId}）を削除しますか？\nこの人は何も見られなくなります。`)) return;
               const b = writeBatch(db);
               b.delete(D("members", m.id));
               membershipsOf((x) => x.uid === m.id).forEach((x) => b.delete(D("memberships", x.id)));
@@ -4927,7 +5035,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
       return h("div", { class: "pay-report mine" },
         h("span", { class: "pay-report-badge" }, "送金しましたと報告済み"), reportLine(rep),
         rep.image ? h("img", { src: rep.image, alt: "", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null,
-        h("button", { class: "text-btn", onclick: () => { if (confirm("報告を取り消しますか？")) fire(deleteDoc(D("payReports", rep.id)), "取り消しました"); } }, "取り消す"));
+        h("button", { class: "text-btn", onclick: () => { if (confirm("報告を取り消しますか？")) fire(deleteDoc(DX("payReports", rep.id)), "取り消しました"); } }, "取り消す"));
     }
     let f = forms.get(p.id);
     if (!f) {
@@ -4948,7 +5056,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
       }));
       // 電波が弱くても待たせない（送信予約にして、電波が戻ったら自動で送られる）
       send.addEventListener("click", () => {
-        fire(setDoc(D("payReports", `${p.id}_${uid}`), { uid, paymentId: p.id, method: method.value, note: note.value.trim(), image: f.image, at: serverTimestamp() }),
+        fire(setDoc(DX("payReports", `${p.id}_${uid}`), { uid, paymentId: rawId(p.id), method: method.value, note: note.value.trim(), image: f.image, at: serverTimestamp() }),
           "送金を報告しました。管理者の確認を待ってください");
         f.open = false; f.image = null; note.value = ""; paintPreview();
         scheduleRender();
@@ -4980,9 +5088,9 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         if (!com) { com = editableInput({ placeholder: "ひとこと（任意）", maxlength: "60" }); drafts.set(p.id, com); }
         com.sync(mine?.comment ?? "");
         const rank = isRankPoll(p);
-        const vote = (choice) => fire(setDoc(D("votes", `${p.id}_${uid}`), rank
-          ? { uid, pollId: p.id, choice: choice[0], order: choice, comment: com.value.trim(), at: serverTimestamp() }
-          : { uid, pollId: p.id, choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
+        const vote = (choice) => fire(setDoc(DX("votes", `${p.id}_${uid}`), rank
+          ? { uid, pollId: rawId(p.id), choice: choice[0], order: choice, comment: com.value.trim(), at: serverTimestamp() }
+          : { uid, pollId: rawId(p.id), choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
         const tally = S.pollTally.get(p.id) ?? [];
         const res = !p.showResults ? null : rank ? rankPollResult(p, tally, false)
           : h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, tally.filter((v) => v.choice === o).length))));
@@ -5024,7 +5132,7 @@ function syncPollTally() {
   if (S.isAdmin) return;
   const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
   for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
-  for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }))); });
+  for (const id of want) listen(`tally:${id}`, query(CX("votes", id), where("pollId", "==", rawId(id))), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }))); });
 }
 
 // ---------------------------------------------------------------- チェックリスト（持ち物・片付けなど）
@@ -5612,6 +5720,76 @@ async function printCredentials(rows, mode) {
 // PC（幅 1100px 以上）：お知らせ・チーム・ポイントを横に並べた1画面のダッシュボード。参加者と設定は小窓で開く
 
 // sheet: 小窓で開く / desktopOnly: PC の列だけ / mobileOnly: スマホのタブだけ
+// ---- 確定前ページ：旅行の割り当てと確定（管理者）
+const tripMemberRef = (pid, uid) => (pid === ROOT ? doc(db, "members", uid) : doc(db, "profiles", pid, "members", uid));
+async function confirmTrip(pid) {
+  const ms = sortedMembers().filter((m) => tripsOf(m)[pid] === false);
+  if (!ms.length) return;
+  if (!confirm(`「${profileName(pid)}」を確定しますか？\n${ms.map((m) => m.name).join("・")}（${ms.length}人）が、この旅行のページを開けるようになります（開いている人はすぐ切り替わります）。`)) return;
+  for (let i = 0; i < ms.length; i += 200) {
+    const b = writeBatch(db);
+    for (const m of ms.slice(i, i + 200)) {
+      // 旅行の参加者に登録（すでに登録がある人は、名前などはそのまま）
+      b.set(tripMemberRef(pid, m.id), { loginId: m.loginId ?? null, name: m.name ?? "" }, { merge: true });
+      b.update(D("members", m.id), { [`trips.${pid}`]: true });
+    }
+    await b.commit();
+  }
+  toast(`「${profileName(pid)}」を確定しました（${ms.length}人）`);
+}
+function lobbyAssign({ withTitle = true } = {}) {
+  const body = h("div");
+  const el = h("div", null, withTitle ? largeTitle("旅行の割り当て") : null, body);
+  // 割り当てる／外す（確定済みを外すと、その旅行のページが開けなくなる。旅行側の登録やデータは残る）
+  const toggleTrip = (m, pid) => {
+    const st = tripsOf(m)[pid];
+    if (st === true && !confirm(`${m.name} の「${profileName(pid)}」の割り当てを外しますか？\n確定済みなので、この旅行のページが開けなくなります（旅行のデータや参加者の登録は残ります）。`)) return;
+    fire(updateDoc(D("members", m.id), { [`trips.${pid}`]: st === undefined ? false : deleteField() }));
+  };
+  return {
+    el,
+    update() {
+      const trips = sortedProfiles().filter((p) => p.id !== LOBBY);
+      const ms = sortedMembers();
+      const tripCard = (t) => {
+        const as = ms.filter((m) => tripsOf(m)[t.id] !== undefined);
+        const wait = as.filter((m) => tripsOf(m)[t.id] === false);
+        return h("article", { class: "card trip-card" },
+          h("div", { class: "trip-head" }, h("b", null, t.name), h("span", { class: "secondary" }, `${as.length}人（確定 ${as.length - wait.length}・未確定 ${wait.length}）`)),
+          as.length ? h("div", { class: "trip-names" }, as.map((m) => h("span", { class: tripsOf(m)[t.id] ? "ok" : "wait" }, m.name))) : h("div", { class: "cell-sub" }, "まだ誰も割り当てていません"),
+          h("button", { class: "btn-small", disabled: !wait.length, onclick: () => guard(null, () => confirmTrip(t.id)) }, wait.length ? `確定する（${wait.length}人）` : as.length ? "全員確定済み" : "確定する"));
+      };
+      const none = ms.filter((m) => !Object.keys(tripsOf(m)).length);
+      setKids(body,
+        trips.length ? trips.map(tripCard) : emptyState("flag", "旅行がありません", "「設定」→「新しい旅行を作る」で作れます。"),
+        group(`未割り当て（${none.length}人）`, none.length ? cell(h("span", { class: "secondary" }, none.map((m) => m.name).join("・"))) : cell("全員割り当て済みです")),
+        group("一人ずつ割り当てる", ms.length ? ms.map((m) => h("div", { class: "cell trip-row" },
+          h("div", { class: "cell-main" }, h("b", null, m.name), h("div", { class: "cell-sub" }, m.loginId ?? "")),
+          h("div", { class: "trip-pills" }, trips.map((t) => {
+            const st = tripsOf(m)[t.id];
+            return h("button", { class: `trip-pill${st === true ? " ok" : st === false ? " wait" : ""}`, title: st === true ? "確定済み（押すと外す）" : st === false ? "割り当て済み・未確定（押すと外す）" : "押すと割り当て", onclick: () => toggleTrip(m, t.id) },
+              st === true ? "✓ " : st === false ? "● " : "＋ ", t.name);
+          })))) : cell("参加者がいません（「参加者」から追加できます）"),
+        "旅行の名前を押すと割り当て（●）、もう一度押すと外します。割り当てただけでは変わらず、旅行ごとの「確定する」を押すと、その旅行に割り当てた未確定の人が一斉に旅行のページを開けるようになります（✓）。旅行はいくつでも割り当てられ、確定後に追加・取り消しもできます。確定前ページのお知らせ・出欠・集金は、確定後も旅行のページに表示されます。"));
+    },
+  };
+}
+const LOBBY_MEMBER_TABS = [
+  { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
+  { key: "money", icon: "check", label: "出欠・集金", view: memberMoney },
+  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
+  { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
+];
+const LOBBY_ADMIN_TABS = [
+  { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
+  { key: "assign", icon: "flag", label: "旅行の割り当て", view: lobbyAssign },
+  { key: "side", icon: "people", label: "参加者", view: adminMembers, desktopOnly: true },
+  { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
+  { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
+  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
+  { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
+];
+
 const MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
@@ -5627,7 +5805,7 @@ const ADMIN_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
   { key: "team", icon: "flag", label: "チーム", view: adminTeams },
   { key: "points", icon: "trophy", label: "ポイント", view: adminPoints },
-  { key: "side", icon: "note", label: "表・メモ", view: adminSide, desktopOnly: true },
+  { key: "side", icon: "note", label: "表・メモ", backLabel: "表・メモ・参加者", view: adminSide, desktopOnly: true },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
@@ -5816,7 +5994,7 @@ function buildDesktopShell(tabs) {
   const views = panels.map((t) => t.view());
   const title = profileSwitcher("desk-title");
   const status = statusBar();
-  const chip = S.isAdmin ? null : meChip();
+  const chip = S.isAdmin || inLobby() ? null : meChip();
   const actions = h("div", { class: "desk-actions" },
     topTabs.map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
   const header = h("header", { class: "desk-bar" },
@@ -5831,7 +6009,7 @@ function buildDesktopShell(tabs) {
   const paintSide = () => {
     const sec = sections[sideIdx];
     if (sideTab) setKids(sec, h("div", { class: "side-head" }, h("h2", null, sideTab.label),
-      h("button", { class: "text-btn", onclick: () => showInSide(null) }, `${panels[sideIdx].label}・参加者に戻る`)), h("div", { class: "side-view" }, sideView.el));
+      h("button", { class: "text-btn", onclick: () => showInSide(null) }, `${panels[sideIdx].backLabel ?? panels[sideIdx].label}に戻る`)), h("div", { class: "side-view" }, sideView.el));
     else setKids(sec, views[sideIdx].el);
     sec.scrollTop = 0;
     for (const b of actions.querySelectorAll(".desk-btn")) b.classList.toggle("on", b.dataset.sheet === sideTab?.key);
@@ -5845,7 +6023,7 @@ function buildDesktopShell(tabs) {
   }
   deskSideOpen = sideIdx >= 0 ? (t) => { if (!DESK_SIDE_KEYS.has(t.key)) return false; showInSide(t); return true; } : null;
   // 参加者：受付中のアンケートと、期限内・未入金の集金を画面の一番上に出す
-  const payTop = S.isAdmin ? null : memberMoney({ pinned: "only" });
+  const payTop = S.isAdmin || inLobby() ? null : memberMoney({ pinned: "only" });
   const root = h("div", { class: "desk" }, header, payTop ? h("div", { class: "desk-paytop" }, payTop.top) : null, grid);
   return {
     root,
@@ -5863,7 +6041,11 @@ function buildDesktopShell(tabs) {
 
 // 参加者のスマホ：タブを使わず1ページにまとめる。上部のボタンで各セクションへ移動する
 function buildMemberPageShell() {
-  const sections = [
+  const lobby = inLobby();
+  const sections = lobby ? [
+    { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
+    { key: "money", label: "出欠・集金", view: memberMoney({ compact: true, pinned: "split" }) },
+  ] : [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
     { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
@@ -5872,9 +6054,9 @@ function buildMemberPageShell() {
     { key: "checklist", label: "チェック", view: checklistMember({ compact: true }) },
   ];
   const summary = memberSummary();
-  const chip = meChip();
+  const chip = lobby ? null : meChip();
   const navTitle = h("div", { class: "nav-title" });
-  const gear = h("div", { class: "nav-left" }, MEMBER_TABS.filter((t) => t.sheet && !t.desktopOnly).map((t) =>
+  const gear = h("div", { class: "nav-left" }, (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS).filter((t) => t.sheet && !t.desktopOnly).map((t) =>
     h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const switcher = profileSwitcher("big");
@@ -5911,7 +6093,7 @@ function buildMemberPageShell() {
       switcher.paint();
       navTitle.textContent = t;
       paintStatus(status);
-      chip.paint();
+      chip?.paint();
       summary.update();
       sections.forEach((sec) => sec.view.update());
       paintSheet();
@@ -5959,8 +6141,9 @@ function render(kinds) {
   if (!shell) {
     closeSheet();
     deskSideOpen = null;
-    if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? ADMIN_TABS : MEMBER_TABS);
-    else shell = S.isAdmin ? buildMobileShell(ADMIN_TABS) : buildMemberPageShell();
+    const lobby = inLobby();
+    if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? (lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS));
+    else shell = S.isAdmin ? buildMobileShell(lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : buildMemberPageShell();
     $app.replaceChildren(shell.root);
   }
   document.title = S.config.title || APP_TITLE;
