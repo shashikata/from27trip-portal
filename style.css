@@ -1573,3 +1573,10 @@ input.cl-title { padding: 2px 0; }
 .side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 4px 14px; }
 .side-head h2 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; margin: 0; }
 .desk-btn.on { background: color-mix(in srgb, var(--blue) 14%, transparent); font-weight: 700; }
+
+/* 管理者の PC：左2列＋右半分の大きな欄 */
+.desk-grid.admin-wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr); }
+.desk-grid.admin-wide .side-default { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.side-view .large-title { display: none; }
+.side-view { max-width: 920px; }
+@media (max-width: 1399px) { .desk-grid.admin-wide .side-default { grid-template-columns: minmax(0, 1fr); gap: 12px; } }

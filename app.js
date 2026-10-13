@@ -1197,7 +1197,7 @@ function notesView({ admin = false, compact = false, withTitle = true } = {}) {
 function adminSide() {
   const notes = notesView({ admin: true });
   const members = adminMembers({ withTitle: true });
-  return { el: h("div", null, notes.el, h("div", { class: "side-gap" }), members.el), update() { notes.update(); members.update(); } };
+  return { el: h("div", { class: "side-default" }, h("div", null, notes.el), h("div", null, members.el)), update() { notes.update(); members.update(); } };
 }
 
 // ---------------------------------------------------------------- 位置の共有（参加者）
@@ -5742,8 +5742,9 @@ function buildMobileShell(allTabs) {
   };
 }
 
-// 管理者の PC 画面では、上部の「出欠・集金」「チェック」「チャット」「設定」は小窓ではなく一番右の欄に出す（クイズ・地図は小窓のまま）
-const DESK_SIDE_KEYS = new Set(["money", "checklist", "chat", "settings"]);
+// 管理者の PC 画面：左にお知らせ・チーム、右半分は1つの大きな欄（ふだんは表・メモ／参加者）。
+// 上部の「ポイント」「出欠・集金」「チェック」「チャット」「設定」は、小窓ではなく右半分の欄に出す（クイズ・地図は小窓のまま）
+const DESK_SIDE_KEYS = new Set(["points", "money", "checklist", "chat", "settings"]);
 let deskSideOpen = null; // buildDesktopShell が設定する（右の欄に出したら true を返す）
 function openSheet(tab) {
   if (deskSideOpen?.(tab)) return;
@@ -5783,26 +5784,29 @@ function paintSheet() {
 }
 
 function buildDesktopShell(tabs) {
-  const panels = tabs.filter((t) => !t.sheet && !t.mobileOnly);
+  // 管理者は「ポイント」を列に並べず、上部のボタンから右半分の欄に出す
+  const wide = S.isAdmin;
+  const panels = tabs.filter((t) => !t.sheet && !t.mobileOnly && !(wide && t.key === "points"));
+  const topTabs = wide ? [...tabs.filter((t) => t.key === "points"), ...tabs.filter((t) => t.sheet)] : tabs.filter((t) => t.sheet);
   const views = panels.map((t) => t.view());
   const title = profileSwitcher("desk-title");
   const status = statusBar();
   const chip = S.isAdmin ? null : meChip();
   const actions = h("div", { class: "desk-actions" },
-    tabs.filter((t) => t.sheet).map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
+    topTabs.map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
   const header = h("header", { class: "desk-bar" },
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
     S.isAdmin ? h("span", { class: "badge static" }, adminName(S.user.email)) : null,
     status, h("div", { class: "desk-right" }, chip, actions));
   const sections = views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el));
-  const grid = h("main", { class: `desk-grid cols-${panels.length}` }, sections);
+  const grid = h("main", { class: `desk-grid cols-${panels.length}${wide ? " admin-wide" : ""}` }, sections);
   // 管理者：一番右の欄（表・メモ／参加者）を、上部のボタンで選んだ画面に切り替える
   const sideIdx = S.isAdmin ? panels.length - 1 : -1;
   let sideTab = null, sideView = null;
   const paintSide = () => {
     const sec = sections[sideIdx];
     if (sideTab) setKids(sec, h("div", { class: "side-head" }, h("h2", null, sideTab.label),
-      h("button", { class: "text-btn", onclick: () => showInSide(null) }, `${panels[sideIdx].label}に戻る`)), sideView.el);
+      h("button", { class: "text-btn", onclick: () => showInSide(null) }, `${panels[sideIdx].label}・参加者に戻る`)), h("div", { class: "side-view" }, sideView.el));
     else setKids(sec, views[sideIdx].el);
     sec.scrollTop = 0;
     for (const b of actions.querySelectorAll(".desk-btn")) b.classList.toggle("on", b.dataset.sheet === sideTab?.key);
