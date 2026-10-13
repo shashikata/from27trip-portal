@@ -9,11 +9,27 @@ import {
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
   writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR } from "./config.js";
+import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
 
 // ---------------------------------------------------------------- Firebase
 
-const fbApp = initializeApp(firebaseConfig);
+// アカウントの切り替え（config.js の ACCOUNT_SWITCH の組み合わせだけ）。
+// 管理者と参加者で別々の Firebase のインスタンスを使い、それぞれのログイン状態を端末に残しておく。
+// 切り替えは「どちらを使うか」を端末に保存して読み込み直すだけなので、パスワードをアプリが保存することはない
+const SWITCH_KEY = "island.activeAccount"; // "alt" なら参加者側（別インスタンス）
+const SWITCH_FROM_KEY = "island.switchFrom"; // 切り替え元の管理者ID
+const altSession = (() => { try { return localStorage.getItem(SWITCH_KEY) === "alt"; } catch { return false; } })();
+const switchFrom = (() => { try { return localStorage.getItem(SWITCH_FROM_KEY); } catch { return null; } })();
+const switchTarget = altSession && switchFrom ? (ACCOUNT_SWITCH ?? {})[switchFrom] ?? null : null;
+function switchAccount(toAlt, fromId) {
+  try {
+    localStorage.setItem(SWITCH_KEY, toAlt ? "alt" : "main");
+    if (fromId) localStorage.setItem(SWITCH_FROM_KEY, fromId);
+  } catch { return toast("この端末では切り替えられません（保存できません）", true); }
+  location.reload();
+}
+
+const fbApp = altSession ? initializeApp(firebaseConfig, "switch-alt") : initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
 // 一度受信したデータを端末に保存し、電波がなくても表示できるようにする
 const db = initializeFirestore(fbApp, {
@@ -1501,13 +1517,13 @@ const mapAllowed = () => S.isAdmin || !!S.config.mapEnabled;
 // ---------------------------------------------------------------- 画面：ログイン
 
 function loginView() {
-  const id = h("input", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", placeholder: "user01", required: true, value: qrPrefill ?? undefined });
+  const id = h("input", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", placeholder: "user01", required: true, value: qrPrefill ?? switchTarget ?? undefined });
   const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "必須", required: true });
   const btn = h("button", { class: "btn-filled", type: "submit" }, "ログイン");
   return h("div", { class: "login", "data-view": "login" },
     h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
     h("h1", null, S.config.title || APP_TITLE),
-    h("p", { class: "secondary" }, "配られたIDとパスワードでログインしてください。"),
+    h("p", { class: "secondary" }, switchTarget ? `参加者アカウント（${switchTarget}）でログインしてください。次からはログインしたまま切り替えられます。` : "配られたIDとパスワードでログインしてください。"),
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
@@ -1517,6 +1533,7 @@ function loginView() {
       h("div", { class: "group-body" }, field("ID", id), field("パスワード", pw)),
       btn,
     ),
+    altSession ? h("button", { class: "btn-filled ghost-btn", onclick: () => switchAccount(false) }, "管理者アカウントに戻る") : null,
   );
 }
 
@@ -1733,8 +1750,16 @@ function settingsView({ withTitle = true } = {}) {
   const btn = h("button", { class: "cell cell-button", type: "submit" }, "パスワードを変更");
   const adminBox = h("div");
   const profiles = profilesGroup();
+  const myId = emailToId(S.user.email);
+  const target = S.isAdmin && !altSession ? (ACCOUNT_SWITCH ?? {})[myId] : null;
+  const switchBox = target
+    ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId) }, icon("people"), `参加者アカウント（${target}）に切り替える`),
+      "初回だけパスワードを入れてログインします。管理者のログインはそのまま残るので、戻るときは入力不要です。")
+    : altSession ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(false) }, icon("people"), `管理者アカウント（${adminName(idToEmail(switchFrom ?? "admin1"))}）に戻る`))
+    : null;
   const el = h("div", null,
     withTitle ? largeTitle("設定") : null,
+    switchBox,
     profiles.el,
     group(null, [
       cell("ID", emailToId(S.user.email)),

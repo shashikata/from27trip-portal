@@ -21,6 +21,9 @@ export const EMAIL_DOMAIN = "island.example.com";
 // 画面上の名前は順に「管理者1」「管理者2」「管理者3」になる
 export const ADMIN_IDS = ["admin1", "admin2", "admin3"];
 
+// アカウントの切り替え：管理者ID → その人の参加者ID（この組み合わせだけ、設定画面から行き来できる）
+export const ACCOUNT_SWITCH = { admin1: "s0406" };
+
 // ===== ここから下は触らなくてよい =====
 
 export const USE_EMULATOR = ["localhost", "127.0.0.1"].includes(location.hostname);
