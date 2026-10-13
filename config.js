@@ -18,7 +18,8 @@ export const APP_TITLE = "七日島 無人島企画";
 export const EMAIL_DOMAIN = "island.example.com";
 
 // 管理者のログインID。firestore.rules の isAdmin() と必ず一致させること
-export const ADMIN_IDS = ["admin1", "admin2"];
+// 画面上の名前は順に「管理者1」「管理者2」「管理者3」になる
+export const ADMIN_IDS = ["admin1", "admin2", "admin3"];
 
 // ===== ここから下は触らなくてよい =====
 

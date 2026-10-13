@@ -68,6 +68,8 @@ await test("参加者：uid 付きでも入っていない旅行には書けな�
 await test("参加者：旅行を作れない", () => assertFails(setDoc(doc(alice(), "profiles/P3"), { name: "x", uid: "alice" })));
 await test("参加者：自分を勝手に旅行に追加できない", () => assertFails(setDoc(doc(bob(), "profiles/P2/members/bob"), { name: "Bob", uid: "bob" })));
 await test("部外者：uid 付きでも書けない", () => assertFails(setDoc(doc(outsider(), "acks/a1_hacker"), { uid: "hacker" })));
+await test("管理者3：管理者として書ける", () => assertSucceeds(setDoc(doc(as("admin3Uid", "admin3@island.example.com"), "announcements/y"), { title: "y" })));
+await test("偽管理者：admin4 は管理者扱いされない", () => assertFails(setDoc(doc(as("fake4", "admin4@island.example.com"), "announcements/z"), { title: "z" })));
 await test("偽管理者：別ドメインの admin1 は管理者扱いされない", () => assertFails(setDoc(doc(as("fake", "admin1@evil.example.com"), "announcements/x"), { title: "x" })));
 
 // ----- 管理者

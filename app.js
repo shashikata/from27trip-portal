@@ -45,6 +45,8 @@ const D = (name, ...ids) => doc(db, ...base(), name, ...ids);
 const idToEmail = (id) => (id.includes("@") ? id : `${id}@${EMAIL_DOMAIN}`).toLowerCase();
 const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
 const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").toLowerCase());
+// 管理者の表示名（admin1 → 管理者1 …）
+const adminName = (email) => { const i = ADMIN_IDS.indexOf(emailToId(email)); return i >= 0 ? `管理者${i + 1}` : "管理者"; };
 
 // ---------------------------------------------------------------- 状態
 //
@@ -426,7 +428,53 @@ async function resolveMemberProfiles(uid) {
   return list.sort((a, b) => a.order - b.order);
 }
 
+// ---- QRコードでログイン
+// 配る用カードのQRコードは「アプリのURL#login=<IDとパスワード>」。開いたらすぐ URL から消して（履歴にも残さない）自動でログインする。
+// 「#」より後ろはサーバーに送られないので、GitHub のアクセス記録などにも残らない。
+const b64url = (str) => btoa(unescape(encodeURIComponent(str))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64url = (s) => decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_/g, "/"))));
+const qrLoginUrl = (base, loginId, password) => `${base}#login=${b64url(JSON.stringify({ u: loginId, p: password }))}`;
+function takeQrLogin() {
+  const m = location.hash.match(/^#login=([A-Za-z0-9_-]+)$/);
+  if (!m) return null;
+  history.replaceState(null, "", location.pathname + location.search);
+  try {
+    const j = JSON.parse(unb64url(m[1]));
+    return j?.u && j?.p ? { u: String(j.u), p: String(j.p) } : null;
+  } catch { return null; }
+}
+let qrLogin = takeQrLogin();
+// すでにアプリを開いているタブで QR の URL を開いたとき（ページは読み直されず「#」だけ変わる）
+window.addEventListener("hashchange", () => {
+  qrLogin = takeQrLogin();
+  if (qrLogin) handleQrLogin(auth.currentUser);
+});
+let qrPrefill = null; // QR でのログインに失敗したとき、ログイン画面に ID を入れておく
+
+async function handleQrLogin(user) {
+  const q = qrLogin;
+  qrLogin = null;
+  const current = user ? emailToId(user.email) : null;
+  if (current === q.u) return false;
+  if (user && !confirm(`いまは ${current} でログインしています。\nQRコードの ${q.u} でログインし直しますか？`)) return false;
+  try {
+    if (user) await signOut(auth);
+    await signInWithEmailAndPassword(auth, idToEmail(q.u), q.p);
+    try { sessionStorage.setItem("island.qrlogin", "1"); } catch { /* 保存できなくても動く */ }
+    toast(`${q.u} でログインしました`);
+  } catch (e) {
+    qrPrefill = q.u;
+    toast(e?.code === "auth/invalid-credential" || e?.code === "auth/wrong-password"
+      ? "QRコードのパスワードは変更されています。今のパスワードでログインしてください" : errMsg(e), true);
+    // 失敗したときは、ふつうのログイン画面（またはログアウト後の状態）をそのまま出す
+    return !!user;
+  }
+  return true;
+}
+
 onAuthStateChanged(auth, async (user) => {
+  // QRコードから開いたときは、先にそのアカウントでログインする（ログインし直すと、この関数がもう一度呼ばれる）
+  if (qrLogin && await handleQrLogin(user)) return;
   unlistenAll();
   resetProfileData();
   Object.assign(S, { authReady: true, user, isAdmin: !!user && isAdminEmail(user.email), pid: null, profiles: new Map(), myProfiles: [], sheet: null });
@@ -1418,7 +1466,7 @@ const mapAllowed = () => S.isAdmin || !!S.config.mapEnabled;
 // ---------------------------------------------------------------- 画面：ログイン
 
 function loginView() {
-  const id = h("input", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", placeholder: "user01", required: true });
+  const id = h("input", { type: "text", autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: "false", placeholder: "user01", required: true, value: qrPrefill ?? undefined });
   const pw = h("input", { type: "password", autocomplete: "current-password", placeholder: "必須", required: true });
   const btn = h("button", { class: "btn-filled", type: "submit" }, "ログイン");
   return h("div", { class: "login", "data-view": "login" },
@@ -1569,6 +1617,13 @@ function memberSummary() {
       );
       // やること（未回答のアンケート・未入金）
       const todo = [myUnanswered(uid) ? `未回答のアンケート ${myUnanswered(uid)}件` : null, myUnpaid(uid) ? `未入金 ${yen(myUnpaid(uid))}` : null].filter(Boolean);
+      // QR でログインした直後の案内（ホーム画面に追加したアプリは、iPhone ではログイン状態が別になる）
+      let qrNote = false;
+      try { qrNote = sessionStorage.getItem("island.qrlogin") === "1" && !matchMedia("(display-mode: standalone)").matches; } catch { /* なし */ }
+      if (qrNote) el.append(h("div", { class: "info-banner" },
+        h("div", null, h("b", null, "ホーム画面に追加しておくと便利です"),
+          h("div", null, "Safari の共有ボタン →「ホーム画面に追加」。追加したアプリを初めて開いたときだけ、カードの ID とパスワードを入力してください（iPhone はログイン状態が別になるため）。")),
+        h("button", { class: "text-btn", onclick: () => { try { sessionStorage.removeItem("island.qrlogin"); } catch { /* なし */ } scheduleRender(); } }, "閉じる")));
       if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => document.getElementById("sec-money")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
     },
   };
@@ -1648,7 +1703,7 @@ function settingsView({ withTitle = true } = {}) {
     profiles.el,
     group(null, [
       cell("ID", emailToId(S.user.email)),
-      cell("名前", S.isAdmin ? "管理者" : S.me?.name ?? ""),
+      cell("名前", S.isAdmin ? adminName(S.user.email) : S.me?.name ?? ""),
     ]),
     adminBox,
     h("form", {
@@ -4502,8 +4557,9 @@ async function printAllCredentials(mode) {
 async function printCredentials(rows, mode) {
   const url = `${location.origin}${location.pathname}`;
   const qr = await loadQr();
-  let qrSvg = "";
-  if (qr) { const q = qr(0, "M"); q.addData(url); q.make(); qrSvg = q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); }
+  // パスワードが分かる人は「読むだけでログインできる」QR、分からない人（変更済み・記録なし）はURLだけのQR
+  const canAuto = (r) => !!(r.password && !r.changed);
+  const qrSvg = (text) => { if (!qr) return ""; const q = qr(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); };
   const title = S.config.title || APP_TITLE;
   const pwText = (r) => (r.changed ? "本人が変更済み" : r.password ? r.password : r.reused ? "（前の旅行と同じ）" : "");
   const root = h("div", { id: "print-root", class: `print-${mode}` });
@@ -4513,20 +4569,20 @@ async function printCredentials(rows, mode) {
       h("table", null, h("tr", null, h("th", null, "#"), h("th", null, "名前"), h("th", null, "ID"), h("th", null, "パスワード"), h("th", null, "渡した")),
         rows.map((r, i) => h("tr", null, h("td", null, i + 1), h("td", null, r.name), h("td", { class: "mono" }, r.loginId),
           h("td", { class: `mono${r.password && !r.changed ? "" : " muted"}` }, pwText(r) || "記録なし"), h("td", null, "□")))),
-      h("p", { class: "note" }, "この紙は他の人に見せないでください。パスワードを本人が変えた人は「変更済み」と表示されます。"));
+      h("p", { class: "note" }, "この紙は他の人に見せないでください。パスワードを本人が変えた人は「変更済み」と表示されます。配る用カードのQRコードは、読むだけでその人としてログインできるので、カードも本人以外に見せないでください。"));
   } else {
     root.append(...rows.map((r) => h("div", { class: "pcard" },
       h("div", { class: "pcard-main" },
         h("div", { class: "pcard-title" }, title),
-        h("div", { class: "pcard-name" }, `${r.name} さん`),
+        h("div", { class: "pcard-name" }, r.name),
         h("div", { class: "pcard-row" }, h("span", null, "ID"), h("b", { class: "mono" }, r.loginId)),
         h("div", { class: "pcard-row" }, h("span", null, "パスワード"), pwText(r) ? h("b", { class: `mono${r.password && !r.changed ? "" : " muted"}` }, pwText(r)) : h("b", { class: "blank" })),
-        h("ol", { class: "pcard-steps" },
-          h("li", null, "QRコードか下のURLを開く"),
-          h("li", null, "IDとパスワードでログイン"),
-          h("li", null, "共有 →「ホーム画面に追加」")),
+        h("ol", { class: "pcard-steps" }, canAuto(r)
+          ? [h("li", null, "右のQRコードを読むとログイン"), h("li", null, "共有 →「ホーム画面に追加」"), h("li", null, "追加したアプリで1回だけID・パスワード入力")]
+          : [h("li", null, "QRコードか下のURLを開く"), h("li", null, "IDとパスワードでログイン"), h("li", null, "共有 →「ホーム画面に追加」")]),
         h("div", { class: "pcard-url mono" }, url)),
-      qrSvg ? (() => { const box = h("div", { class: "pcard-qr" }); box.innerHTML = qrSvg; return box; })() : null)));
+      qr ? h("div", { class: "pcard-qrbox" }, (() => { const box = h("div", { class: "pcard-qr" }); box.innerHTML = qrSvg(canAuto(r) ? qrLoginUrl(url, r.loginId, r.password) : url); return box; })(),
+        h("div", { class: "pcard-qrcap" }, canAuto(r) ? "読むとログイン" : "ログイン画面")) : null)));
   }
   document.getElementById("print-root")?.remove();
   document.body.append(root);
@@ -4667,7 +4723,7 @@ function buildMobileShell(allTabs) {
     }, icon(t.icon), h("span", null, t.label))));
   const chip = S.isAdmin ? null : meChip();
   const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
-  const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, "管理者") : chip);
+  const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, adminName(S.user.email)) : chip);
   const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
   const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 44);
@@ -4741,7 +4797,7 @@ function buildDesktopShell(tabs) {
     tabs.filter((t) => t.sheet).map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
   const header = h("header", { class: "desk-bar" },
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
-    S.isAdmin ? h("span", { class: "badge static" }, "管理者") : null,
+    S.isAdmin ? h("span", { class: "badge static" }, adminName(S.user.email)) : null,
     status, h("div", { class: "desk-right" }, chip, actions));
   const grid = h("main", { class: `desk-grid cols-${panels.length}` },
     views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el)));

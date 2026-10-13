@@ -22,7 +22,7 @@ service cloud.firestore {
     // 管理者のメールアドレス。config.js の ADMIN_IDS + EMAIL_DOMAIN と一致させる
     function isAdmin() {
       return signedIn()
-        && request.auth.token.email in ['admin1@island.example.com', 'admin2@island.example.com'];
+        && request.auth.token.email in ['admin1@island.example.com', 'admin2@island.example.com', 'admin3@island.example.com'];
     }
 
     function rootMember() {
