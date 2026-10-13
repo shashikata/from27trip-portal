@@ -855,14 +855,14 @@ function noteEditor(n) {
   let draft = null;
   let dirty = false;
   const title = h("input", { type: "text", class: "plain title-input", placeholder: "タイトル", "aria-label": "タイトル" });
-  const shared = toggle();
+  const moveBtn = h("button", { class: "text-btn" });
+  moveBtn.addEventListener("click", () => fire(updateDoc(D("notes", n.id), { shared: !n.shared }), n.shared ? "管理者用に移しました" : "全体公開に移しました"));
   const body = h("textarea", { class: "plain", rows: "4", placeholder: "例：ビーチフラッグ 1位 +10 / 2位 +6 / 3位 +3" });
   const grid = h("div", { class: "table-wrap" });
   const saveBtn = h("button", { class: "text-btn", disabled: true }, "保存");
   const markDirty = () => { dirty = true; saveBtn.disabled = false; el.classList.add("dirty"); };
   title.addEventListener("input", markDirty);
   body.addEventListener("input", markDirty);
-  shared.addEventListener("change", () => fire(updateDoc(D("notes", n.id), { shared: shared.checked }), shared.checked ? "参加者に公開しました" : "管理者だけにしました"));
 
   const paintGrid = () => {
     const width = Math.max(1, ...draft.map((r) => r.length));
@@ -892,7 +892,7 @@ function noteEditor(n) {
     h("div", { class: "note-head" }, icon(n.type === "table" ? "table" : "note"), title),
     n.type === "table" ? [grid, tableTools] : body,
     h("div", { class: "note-foot" },
-      h("label", { class: "note-share" }, shared, "参加者に公開"),
+      moveBtn,
       h("div", { class: "note-actions" },
         saveBtn,
         h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${n.title || "無題"}」を削除しますか？`)) fire(deleteDoc(D("notes", n.id)), "削除しました"); } }, "削除"))),
@@ -901,7 +901,7 @@ function noteEditor(n) {
     el,
     patch(next) {
       n = next;
-      shared.checked = !!n.shared;
+      moveBtn.replaceChildren(icon("arrows"), n.shared ? "管理者用へ移す" : "全体公開へ移す");
       el.classList.toggle("shared", !!n.shared);
       if (dirty) return;
       title.value = n.title ?? "";
@@ -911,31 +911,49 @@ function noteEditor(n) {
 }
 
 function notesView({ admin = false, compact = false, withTitle = true } = {}) {
-  const list = h("div", { class: "stack" });
-  const add = (type) => fire(addDoc(C("notes"), {
+  const add = (type, shared) => fire(addDoc(C("notes"), {
     title: type === "table" ? "新しい表" : "新しいメモ", type, body: "",
     rows: type === "table" ? [{ c: ["", "", ""] }, { c: ["", "", ""] }] : [],
-    shared: false, order: Date.now(),
-  }), type === "table" ? "表を追加しました" : "メモを追加しました");
-  const el = h("div", null,
-    withTitle ? sectionTitle("表・メモ", compact) : null,
-    admin ? h("div", { class: "note-add" },
-      h("button", { class: "pill", onclick: () => add("memo") }, icon("note"), "メモを追加"),
-      h("button", { class: "pill", onclick: () => add("table") }, icon("table"), "表を追加")) : null,
-    list);
+    shared, order: Date.now(),
+  }), `${shared ? "全体公開" : "管理者用"}に${type === "table" ? "表" : "メモ"}を追加しました`);
+
+  // 参加者：全体公開の分だけ
+  if (!admin) {
+    const list = h("div", { class: "stack" });
+    return {
+      el: h("div", null, withTitle ? sectionTitle("表・メモ", compact) : null, list),
+      update() {
+        const notes = sortedNotes().filter((n) => n.shared);
+        list.replaceChildren(...(notes.length ? notes.map(noteDisplay) : [emptyState("note", "まだありません")]));
+      },
+    };
+  }
+
+  // 管理者：全体公開 と 管理者用 の2つの欄
+  const section = (shared) => {
+    const list = h("div", { class: "stack" });
+    const empty = h("p", { class: "note-empty" }, shared ? "参加者全員に表示されます。ルールやリーグ戦の表などに。" : "管理者だけが見られます。採点の内部メモなどに。");
+    const el = h("section", { class: `note-section ${shared ? "public" : "private"}` },
+      h("div", { class: "note-section-head" },
+        h("h3", null, icon(shared ? "people" : "lock"), shared ? "全体公開" : "管理者用"),
+        h("div", { class: "note-add" },
+          h("button", { class: "pill", onclick: () => add("memo", shared) }, icon("note"), "メモ"),
+          h("button", { class: "pill", onclick: () => add("table", shared) }, icon("table"), "表"))),
+      empty, list);
+    return {
+      el,
+      update() {
+        const notes = sortedNotes().filter((n) => !!n.shared === shared);
+        empty.hidden = notes.length > 0;
+        keyedList(list, notes, (n) => noteEditor(n), (row, n) => row.patch(n));
+      },
+    };
+  };
+  const pub = section(true);
+  const priv = section(false);
   return {
-    el,
-    update() {
-      const notes = sortedNotes();
-      if (!notes.length) {
-        list._rows?.clear();
-        list.replaceChildren(emptyState("note", "まだありません", admin ? "ポイントの決め方やリーグ戦の表などを、自由に追加できます。" : null));
-        return;
-      }
-      if (!admin) { list.replaceChildren(...notes.map(noteDisplay)); return; }
-      if (list.querySelector(".empty")) list.replaceChildren();
-      keyedList(list, notes, (n) => noteEditor(n), (row, n) => row.patch(n));
-    },
+    el: h("div", null, withTitle ? sectionTitle("表・メモ", compact) : null, pub.el, priv.el),
+    update() { pub.update(); priv.update(); },
   };
 }
 
