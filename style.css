@@ -1279,3 +1279,50 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .pin-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 .pin-actions .destructive { margin-right: auto; }
 .map-pin-row .cell-main { text-align: left; justify-items: start; min-width: 0; }
+
+/* ---- 出欠・集金 ---- */
+.poll-card, .pay-card { display: grid; gap: 10px; margin-bottom: 14px; }
+.poll-card.todo { box-shadow: inset 0 0 0 2px var(--orange); }
+.poll-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.poll-head b { font-size: 17px; line-height: 1.4; }
+.poll-head .tint { flex: none; font-size: 12px; font-weight: 700; color: var(--blue); }
+.poll-head .tint.closed { color: var(--label-2); }
+.poll-bars { display: grid; gap: 10px; }
+.poll-bar-top { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; }
+.poll-track { height: 8px; border-radius: 999px; background: var(--fill); overflow: hidden; }
+.poll-track > div { height: 100%; border-radius: 999px; background: var(--blue); transition: width .4s; }
+.poll-track.big { height: 12px; }
+.poll-track.big > div { background: var(--green); }
+.poll-names { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 13px; color: var(--label-2); }
+.poll-names small { color: var(--label-3); }
+.poll-none { font-size: 13px; color: var(--red); }
+.poll-none.ok { color: var(--green); }
+.poll-actions { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: flex-end; }
+.poll-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.poll-choice { flex: 1 1 30%; min-height: 48px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; color: var(--label); background: var(--fill); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.poll-choice.on { background: var(--blue); color: #fff; }
+.poll-choice:disabled:not(.on) { opacity: .5; }
+.poll-comment { display: flex; gap: 8px; align-items: center; }
+.poll-comment input { flex: 1; min-width: 0; border: none; border-radius: 10px; padding: 10px 12px; background: var(--fill); font: inherit; color: var(--label); }
+.poll-mini { display: flex; flex-wrap: wrap; gap: 6px; }
+.poll-mini span { padding: 4px 10px; border-radius: 999px; background: var(--fill); font-size: 13px; }
+.poll-mini b { margin-left: 6px; }
+.pay-note { white-space: pre-wrap; }
+.pay-progress { display: grid; gap: 6px; }
+.pay-sum { display: flex; align-items: baseline; gap: 6px; font-size: 15px; }
+.pay-sum b { font-size: 22px; }
+.pay-sum span { margin-left: auto; font-size: 13px; color: var(--label-2); }
+.pay-filter { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.pay-row { flex-wrap: wrap; gap: 8px; }
+.pay-row .cell-main { min-width: 7em; }
+.pay-row .seg { flex: 0 0 auto; min-width: 210px; }
+.pay-amount { width: 84px; text-align: right; border: none; border-radius: 8px; padding: 6px 8px; background: var(--fill); font: inherit; color: var(--label); }
+.pay-row.paid { background: color-mix(in srgb, var(--green) 10%, var(--cell)); }
+.pay-row.exempt { opacity: .6; }
+.owe { color: var(--red); }
+.pay-mine .pay-right { display: grid; justify-items: end; gap: 2px; }
+.pay-badge { font-size: 12px; font-weight: 800; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); }
+.pay-badge.paid { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+.pay-badge.exempt { background: var(--fill); color: var(--label-2); }
+.todo-banner { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; border: none; border-radius: 12px; padding: 12px 14px; font-size: 15px; font-weight: 700; text-align: left; color: #fff; background: var(--orange); }
+.todo-banner .icon:last-child { margin-left: auto; }

@@ -72,6 +72,10 @@ const S = {
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
   mapPins: new Map(),        // 管理者が地図に刺したピン mapPins/{id}
+  polls: new Map(),          // 出欠などのアンケート polls/{id}
+  votes: new Map(),          // 回答 votes/{pollId}_{uid}（参加者は自分の分だけ）
+  pollTally: new Map(),      // 参加者：集計を見せるアンケートの回答（pollId -> [choice]）
+  payments: new Map(),       // 集金 payments/{id}
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
   quizAnswers: new Map(),    // 表示中の問題への解答 quizAnswers/{quizId}_{index}_{uid}
@@ -187,6 +191,9 @@ function startAdmin() {
   listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
   listen("quizzes", C("quizzes"), (s) => { S.quizzes = toMap(s); });
+  listen("polls", C("polls"), (s) => { S.polls = toMap(s); });
+  listen("votes", C("votes"), (s) => { S.votes = toMap(s); });
+  listen("payments", C("payments"), (s) => { S.payments = toMap(s); });
   listenLiveQuiz();
 }
 
@@ -269,6 +276,9 @@ function startMemberData(uid) {
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
   listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; });
+  listen("polls", C("polls"), (s) => { if (s) S.polls = toMap(s); syncPollTally(); });
+  listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) S.votes = toMap(s); });
+  listen("payments", C("payments"), (s) => { if (s) S.payments = toMap(s); });
   listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
   listenRecent(uid);
 }
@@ -364,6 +374,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
+    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), mapPins: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -1553,13 +1564,16 @@ function memberSummary() {
         ...teams.map(({ t, secret }) => tile(t.name, ptTotal("team", t.id), t.color,
           secret ? "本当のチーム（あなただけ）" : S.sets.get(t.setId)?.name)),
       );
+      // やること（未回答のアンケート・未入金）
+      const todo = [myUnanswered(uid) ? `未回答のアンケート ${myUnanswered(uid)}件` : null, myUnpaid(uid) ? `未入金 ${yen(myUnpaid(uid))}` : null].filter(Boolean);
+      if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => document.getElementById("sec-money")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
     },
   };
 }
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -4137,6 +4151,235 @@ setInterval(() => {
   updateQuizTicks();
 }, 200);
 
+// ---------------------------------------------------------------- 出欠（アンケート）と集金
+//
+//   polls/{id}       { question, options: [..], deadline: "YYYY-MM-DDTHH:mm" | null, open, showResults, allowComment, createdAt }
+//   votes/{pollId}_{uid}  { uid, pollId, choice, comment, at, byAdmin }   … 参加者が自分で書く（管理者が代わりに入れることもできる）
+//   payments/{id}    { title, amount, due, note, targets: [uid] | null(=全員), createdAt,
+//                      records: { uid: { status: "paid" | "unpaid" | "exempt", method, amount, at } } }   … 入金済みなどは管理者が付ける
+//
+// 1件のアンケート・集金に参加者全員分がぶら下がるだけなので、件数は少ない（読み取り回数も少ない）。
+
+// 入力中（文字を打っている最中）は描き直さない。描き直すと入力欄が入れ替わって、打った内容やキーボードが消えるため。
+// 入力欄から離れたら描き直す
+const typingIn = (root) => root.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && document.activeElement.type !== "checkbox";
+const redrawOnLeave = (root) => root.addEventListener("focusout", () => setTimeout(() => scheduleRender(), 0));
+const yen = (n) => `¥${(Number(n) || 0).toLocaleString("ja-JP")}`;
+const PAY_METHODS = ["現金", "振込", "PayPay", "その他"];
+const PAY_STATUS = { unpaid: "未入金", paid: "入金済み", exempt: "免除" };
+const pollDeadlinePassed = (p) => !!p.deadline && Date.now() > new Date(p.deadline).getTime();
+const pollOpen = (p) => p.open !== false && !pollDeadlinePassed(p);
+const fmtDeadline = (s) => { if (!s) return ""; const d = new Date(s); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const sortedPolls = () => [...S.polls.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+const sortedPayments = () => [...S.payments.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+const payTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.includes(m.id)) : sortedMembers());
+const recordOf = (p, uid) => ({ status: "unpaid", ...(p.records?.[uid] ?? {}) });
+const amountOf = (p, uid) => Number(p.records?.[uid]?.amount ?? p.amount) || 0;
+// 1件の集金の合計（免除の人は数えない）
+function payTotals(p) {
+  const ms = payTargets(p);
+  let expect = 0, got = 0, paidN = 0, n = 0;
+  for (const m of ms) {
+    const r = recordOf(p, m.id);
+    if (r.status === "exempt") continue;
+    n++;
+    expect += amountOf(p, m.id);
+    if (r.status === "paid") { got += amountOf(p, m.id); paidN++; }
+  }
+  return { expect, got, paidN, n };
+}
+// 自分の未入金の合計
+const myUnpaid = (uid) => sortedPayments().filter((p) => !p.targets || p.targets.includes(uid))
+  .reduce((s, p) => s + (recordOf(p, uid).status === "unpaid" ? amountOf(p, uid) : 0), 0);
+const myUnanswered = (uid) => sortedPolls().filter((p) => pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
+
+// ---- 管理者
+function adminMoney({ withTitle = true } = {}) {
+  const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }], "polls");
+  tab.addEventListener("change", () => scheduleRender());
+  const body = h("div");
+
+  // 新しいアンケート
+  const q = h("input", { type: "text", placeholder: "例：8/10 のBBQに参加しますか？" });
+  const opts = h("input", { type: "text", value: "参加 / 不参加 / 未定" });
+  const deadline = h("input", { type: "datetime-local" });
+  const showRes = toggle(true), allowCom = toggle(true);
+  const pollForm = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const options = opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean);
+    if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
+    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, createdAt: serverTimestamp() }), "アンケートを作りました");
+    q.value = ""; deadline.value = "";
+  } },
+    group("新しいアンケート", [h("div", { class: "cell" }, q), field("選択肢（/ で区切る）", opts), field("締切（なしでもOK）", deadline),
+      field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom)]),
+    h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
+
+  // 新しい集金
+  const title = h("input", { type: "text", placeholder: "例：フェリー代" });
+  const amount = h("input", { type: "number", min: "0", inputmode: "numeric", placeholder: "3000" });
+  const due = h("input", { type: "date" });
+  const note = h("textarea", { rows: "2", placeholder: "振込先・渡し方など（参加者に表示されます）" });
+  const who = h("select", { class: "inline-select" });
+  const payForm = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    if (!title.value.trim()) return toast("名前を入れてください", true);
+    let targets = null;
+    if (who.value.startsWith("poll:")) {
+      const [, pid, opt] = who.value.split(":");
+      targets = [...S.votes.values()].filter((v) => v.pollId === pid && v.choice === opt).map((v) => v.uid);
+      if (!targets.length) return toast("その回答をした人がいません", true);
+    }
+    fire(addDoc(C("payments"), { title: title.value.trim(), amount: Math.max(0, Number(amount.value) || 0), due: due.value || null, note: note.value.trim(), targets, records: {}, createdAt: serverTimestamp() }), "集金を作りました");
+    title.value = ""; amount.value = ""; note.value = "";
+  } },
+    group("新しい集金", [h("div", { class: "cell" }, title), field("1人あたり（円）", amount), field("期限", due), h("div", { class: "cell" }, note), field("対象", who)],
+      "対象に「アンケートの回答」を選ぶと、その回答をした人だけが対象になります（作った時点の回答で決まります）。"),
+    h("button", { class: "btn-filled", type: "submit" }, "集金を作る"));
+
+  const el = h("div", null, withTitle ? largeTitle("出欠・集金") : null, h("div", { class: "seg-wrap" }, tab), body);
+  redrawOnLeave(el);
+
+  function pollCard(p) {
+    const votes = [...S.votes.values()].filter((v) => v.pollId === p.id);
+    const ms = sortedMembers();
+    const none = ms.filter((m) => !votes.some((v) => v.uid === m.id));
+    const setVote = (uid, choice) => fire(choice
+      ? setDoc(D("votes", `${p.id}_${uid}`), { uid, pollId: p.id, choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), byAdmin: true })
+      : deleteDoc(D("votes", `${p.id}_${uid}`)));
+    return h("article", { class: "card poll-card" },
+      h("div", { class: "poll-head" }, h("b", null, p.question),
+        h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
+      h("div", { class: "poll-bars" }, p.options.map((o) => {
+        const vs = votes.filter((v) => v.choice === o);
+        return h("div", { class: "poll-bar" },
+          h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
+          h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (vs.length / ms.length) * 100 : 0}%` })),
+          vs.length ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
+      })),
+      none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
+      fold("回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
+        const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
+        sel.addEventListener("change", () => setVote(m.id, sel.value));
+        return field(m.name, sel);
+      }))),
+      h("div", { class: "poll-actions" },
+        h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
+        h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(`「${p.question}」を削除しますか？回答も消えます。`)) return;
+          const b = writeBatch(db);
+          b.delete(D("polls", p.id));
+          votes.forEach((v) => b.delete(D("votes", v.id)));
+          fire(b.commit(), "削除しました");
+        } }, "削除")));
+  }
+
+  function payCard(p) {
+    const t = payTotals(p);
+    const filterKey = `payfilter:${p.id}`;
+    const onlyUnpaid = SHOWN.get(filterKey) === 1;
+    const ms = payTargets(p).filter((m) => !onlyUnpaid || recordOf(p, m.id).status === "unpaid");
+    const setRec = (uid, patch) => fire(updateDoc(D("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
+    return h("article", { class: "card pay-card" },
+      h("div", { class: "poll-head" }, h("b", null, p.title), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
+      p.note ? h("div", { class: "cell-sub pay-note" }, p.note) : null,
+      h("div", { class: "pay-progress" },
+        h("div", { class: "poll-track big" }, h("div", { style: `width:${t.expect ? (t.got / t.expect) * 100 : 0}%` })),
+        h("div", { class: "pay-sum" }, h("b", null, yen(t.got)), ` / ${yen(t.expect)}`, h("span", null, `${t.paidN} / ${t.n}人 入金済み`))),
+      h("label", { class: "pay-filter" }, (() => { const c = toggle(onlyUnpaid); c.addEventListener("change", () => { SHOWN.set(filterKey, c.checked ? 1 : 0); scheduleRender(); }); return c; })(), "未入金の人だけ表示"),
+      h("div", { class: "group-body" }, ms.length ? ms.map((m) => {
+        const r = recordOf(p, m.id);
+        const st = segmented(Object.entries(PAY_STATUS).map(([value, label]) => ({ value, label })), r.status);
+        st.classList.add(`pay-${r.status}`);
+        st.addEventListener("change", () => setRec(m.id, { status: st.value, at: st.value === "paid" ? serverTimestamp() : null, method: st.value === "paid" ? r.method ?? "現金" : null }));
+        const method = h("select", { class: "inline-select" }, PAY_METHODS.map((x) => h("option", { value: x, selected: r.method === x }, x)));
+        method.addEventListener("change", () => setRec(m.id, { method: method.value }));
+        const amt = h("input", { type: "number", class: "pay-amount", min: "0", inputmode: "numeric", value: String(amountOf(p, m.id)) });
+        amt.addEventListener("change", () => setRec(m.id, { amount: Math.max(0, Number(amt.value) || 0) }));
+        return h("div", { class: `cell pay-row ${r.status}` },
+          h("div", { class: "cell-main" }, h("b", null, m.name), h("div", { class: "cell-sub" }, r.status === "paid" ? `${r.method ?? ""} ${r.at ? fmtDate(r.at) : ""}` : "")),
+          amt, r.status === "paid" ? method : null, st);
+      }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
+      h("div", { class: "poll-actions" },
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${p.title}」を削除しますか？`)) fire(deleteDoc(D("payments", p.id)), "削除しました"); } }, "削除")));
+  }
+
+  // 人ごとの未入金
+  function byPerson() {
+    const rows = sortedMembers().map((m) => ({ m, owe: sortedPayments().filter((p) => !p.targets || p.targets.includes(m.id)).reduce((s, p) => s + (recordOf(p, m.id).status === "unpaid" ? amountOf(p, m.id) : 0), 0) }))
+      .filter((r) => r.owe > 0).sort((a, b) => b.owe - a.owe);
+    return group("人ごとの未入金", rows.length ? rows.map((r) => cell(r.m.name, h("b", { class: "owe" }, yen(r.owe)))) : none("未入金の人はいません"));
+  }
+
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      if (tab.value === "polls") {
+        const ps = sortedPolls();
+        setKids(body, fold("＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
+      } else {
+        const opts2 = [{ value: "all", label: "全員" }, ...sortedPolls().flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
+        fillSelect(who, opts2);
+        const ps = sortedPayments();
+        setKids(body, fold("＋ 新しい集金", payForm, !ps.length), ps.length ? [byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
+      }
+    },
+  };
+}
+
+// ---- 参加者
+function memberMoney({ compact = false } = {}) {
+  const body = h("div");
+  const el = h("div", null, sectionTitle("出欠・集金", compact), body);
+  const drafts = new Map(); // pollId -> コメント入力欄
+  redrawOnLeave(el);
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      const uid = S.user.uid;
+      const polls = sortedPolls();
+      const pays = sortedPayments().filter((p) => !p.targets || p.targets.includes(uid));
+      const pollEl = (p) => {
+        const mine = S.votes.get(`${p.id}_${uid}`);
+        const open = pollOpen(p);
+        let com = drafts.get(p.id);
+        if (!com) { com = editableInput({ placeholder: "ひとこと（任意）", maxlength: "60" }); drafts.set(p.id, com); }
+        com.sync(mine?.comment ?? "");
+        const vote = (choice) => fire(setDoc(D("votes", `${p.id}_${uid}`), { uid, pollId: p.id, choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
+        const res = p.showResults ? h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, [...S.pollTally.get(p.id) ?? []].filter((v) => v === o).length)))) : null;
+        return h("article", { class: `card poll-card${!mine && open ? " todo" : ""}` },
+          h("div", { class: "poll-head" }, h("b", null, p.question), h("span", { class: `tint${open ? "" : " closed"}` }, open ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
+          h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
+          p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(mine.choice); } }, "コメントを送る") : null) : null,
+          h("div", { class: "cell-sub" }, mine ? `あなたの回答：${mine.choice}${mine.byAdmin ? "（管理者が入力）" : ""}${open ? "（締切まで変えられます）" : ""}` : open ? "まだ回答していません" : "回答していません"),
+          res);
+      };
+      const payEl = (p) => {
+        const r = recordOf(p, uid);
+        return h("div", { class: `cell pay-mine ${r.status}` },
+          h("div", { class: "cell-main" }, h("b", null, p.title), h("div", { class: "cell-sub" }, [p.due ? `期限 ${p.due.replaceAll("-", "/")}` : null, p.note].filter(Boolean).join(" ・ "))),
+          h("div", { class: "pay-right" }, h("b", null, yen(amountOf(p, uid))), h("span", { class: `pay-badge ${r.status}` }, r.status === "paid" ? "入金済み ✓" : PAY_STATUS[r.status])));
+      };
+      const owe = myUnpaid(uid);
+      setKids(body,
+        polls.length || pays.length ? null : emptyState("check", "まだありません", "出欠のアンケートや集金があるとここに表示されます。"),
+        polls.length ? h("div", { class: "stack" }, polls.map(pollEl)) : null,
+        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "入金の確認は管理者が行います。払ったのに「未入金」のままなら管理者に伝えてください。") : null);
+    },
+  };
+}
+
+// 集計を見せるアンケートの回答（参加者用）。votes を全部は読まず、集計を見せるアンケートの分だけ読む
+function syncPollTally() {
+  if (S.isAdmin) return;
+  const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
+  for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
+  for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => v.choice)); });
+}
+
 // ---------------------------------------------------------------- 画面の組み立て
 //
 // スマホ：下のタブで画面を切り替える
@@ -4148,6 +4391,7 @@ const MEMBER_TABS = [
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
+  { key: "money", icon: "check", label: "出欠・集金", view: memberMoney, sheet: true, desktopOnly: true }, // スマホは1ページの中の欄
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -4159,6 +4403,7 @@ const ADMIN_TABS = [
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
+  { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -4362,11 +4607,12 @@ function buildMemberPageShell() {
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
     { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
     { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
+    { key: "money", label: "出欠", view: memberMoney({ compact: true }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
   ];
   const summary = memberSummary();
   const chip = meChip();
   const navTitle = h("div", { class: "nav-title" });
-  const gear = h("div", { class: "nav-left" }, MEMBER_TABS.filter((t) => t.sheet).map((t) =>
+  const gear = h("div", { class: "nav-left" }, MEMBER_TABS.filter((t) => t.sheet && !t.desktopOnly).map((t) =>
     h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const switcher = profileSwitcher("big");
