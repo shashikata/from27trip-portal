@@ -1691,7 +1691,7 @@ function settingsView({ withTitle = true } = {}) {
         field("参加者に地図を表示", mapSwitch),
         field("参加者の位置を共有", locSwitch),
         field("参加者同士でも見られる", locAllSwitch),
-      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が30秒ごとに管理者へ届きます。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"),
+      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"),
         S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
   };

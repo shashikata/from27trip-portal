@@ -1,6 +1,6 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v20";
+const CACHE = "island-v21";
 const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
