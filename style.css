@@ -1557,3 +1557,13 @@ input.cl-title { padding: 2px 0; }
 .rank-voters { display: grid; gap: 6px; font-size: 14px; padding: 4px 0; }
 .rank-voters b { margin-right: 8px; }
 .rank-voters small { color: var(--label-3); margin-left: 6px; }
+
+/* ---- ページの一番上に出すアンケート・集金 ---- */
+.pay-top:empty { display: none; }
+.pay-top { margin-bottom: 12px; }
+.pay-top > .stack { margin-bottom: 12px; }
+.desk-paytop { flex: none; max-height: 42vh; overflow: auto; padding: 12px 20px 0; border-bottom: .5px solid var(--separator); }
+.desk-paytop:has(.pay-top:empty) { display: none; }
+.desk-paytop .pay-top { max-width: 1800px; margin: 0 auto 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; align-items: start; }
+.desk-paytop .pay-top > * { margin: 0; }
+.desk-paytop .pay-top > .stack { display: contents; }

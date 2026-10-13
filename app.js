@@ -1643,7 +1643,7 @@ function memberSummary() {
         h("div", null, h("b", null, "ホーム画面に追加しておくと便利です"),
           h("div", null, "Safari の共有ボタン →「ホーム画面に追加」。追加したアプリを初めて開いたときだけ、カードの ID とパスワードを入力してください（iPhone はログイン状態が別になるため）。")),
         h("button", { class: "text-btn", onclick: () => { try { sessionStorage.removeItem("island.qrlogin"); } catch { /* なし */ } scheduleRender(); } }, "閉じる")));
-      if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => document.getElementById("sec-money")?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
+      if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => (myUnanswered(uid) || !document.getElementById("pay-top")?.childElementCount ? document.getElementById("sec-money") : document.getElementById("pay-top"))?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
     },
   };
 }
@@ -3074,6 +3074,7 @@ const buzzWinner = (L, qz) => {
 };
 function primaryLabel(L, qz, last) {
   if (L.phase === "reveal" && !allRevealed(L, qz)) return "残りを全部発表";
+  if (L.phase === "results" && quizEndArmed()) return "もう一度押して終了";
   if (L.phase === "reading") return "解答開始";
   if (L.phase === "question" && buzzWinner(L, qz)) return "正解を発表";
   return ({ lobby: "第1問を出題", question: "締め切る", closed: "全部まとめて発表", reveal: last ? "結果発表" : "次の問題へ", results: "クイズを終了" })[L.phase] ?? "";
@@ -3099,9 +3100,22 @@ function quizRevealFor(field, uid) {
   fire(updateDoc(liveRef(), { [field]: arrayUnion(uid) }));
 }
 
+// 終了は「2回押す」で確認する（ブラウザの確認ダイアログは、全画面表示中や「ダイアログを表示しない」を選んだあとだと
+// 出ずに「キャンセル」扱いになり、押しても何も起きないことがあるため）
+const quizEndArmed = () => Date.now() - (QZ.endArm ?? 0) < 5000;
 function quizEnd() {
-  if (!confirm("クイズを終了しますか？参加者の画面からクイズが消えます。")) return;
-  fire(updateDoc(liveRef(), { phase: "off" }));
+  if (!quizEndArmed()) {
+    QZ.endArm = Date.now();
+    toast("もう一度押すとクイズを終了します");
+    paintQuizLive();
+    setTimeout(() => paintQuizLive(), 5100);
+    return;
+  }
+  QZ.endArm = 0;
+  updateDoc(liveRef(), { phase: "off" })
+    .then(() => toast("クイズを終了しました"))
+    .catch((e) => { console.error(e); toast(`終了できませんでした：${errMsg(e)}`, true); });
+  if (!navigator.onLine) toast("オフラインです。電波が戻ったら終了が送信されます");
   closePresenter();
 }
 
@@ -3178,6 +3192,7 @@ function quizManager({ withTitle = true } = {}) {
       L && L.phase !== "off" ? group(`進行中：${L.title}`, [
         h("button", { class: "cell cell-button live-now", onclick: () => openPresenter("display") }, h("span", { class: "live-dot" }), "表示用の画面を開く（プロジェクター用）"),
         h("button", { class: "cell cell-button", onclick: () => openPresenter("operator") }, icon("play"), "操作用の画面を開く（進行・○×判定）"),
+        h("button", { class: "cell cell-button destructive", onclick: () => { quizEnd(); paintList(); setTimeout(paintList, 5100); } }, icon("xmark"), quizEndArmed() ? "もう一度押すとクイズを終了" : "クイズを終了する"),
       ], "表示用と操作用は、別の管理者アカウント・別の端末で開けます（例：admin1 で表示用、admin2 で操作用）。") : null,
       quizzes.length ? quizzes.map((qz) => h("article", { class: "card quiz-card", "data-quiz": qz.id },
         h("div", { class: "quiz-card-title" }, icon("quiz"), qz.title),
@@ -3882,7 +3897,7 @@ function paintOperator(P, L, qz, rem) {
     revealing ? h("button", { class: "pr-btn ghost", disabled: L.phase === "reveal" && L.shown === "all", onclick: () => quizReveal({ shown: "all" }) }, "○×を全員表示") : null,
     h("button", { class: "pr-btn primary", onclick: quizPrimaryAction }, primaryLabel(L, qz, last)),
     h("button", { class: "pr-btn ghost", disabled: !(!last && L.phase !== "lobby" && L.phase !== "results"), onclick: () => quizOpenQuestion(qz, L.index + 1) }, "次 →"),
-    h("button", { class: "pr-btn danger", onclick: quizEnd }, "終了"));
+    h("button", { class: "pr-btn danger", onclick: quizEnd }, quizEndArmed() ? "もう一度押して終了" : "終了"));
   // 入力中の欄（操作用はないが念のため）やスクロール位置を保つ
   const scroll = P.querySelector(".op-body")?.scrollTop ?? 0;
   setKids(P, head, body, foot);
@@ -4591,7 +4606,8 @@ function rankPollResult(p, votes, withVoters) {
   const d = pollDepth(p);
   return h("div", { class: "poll-bars" },
     h("div", { class: "cell-sub" }, `順位投票（${d > 1 ? `${d}位まで・1位${d}点 … ${d}位1点` : "1位だけ・1点"}）・${votes.length}人が回答`),
-    rows.map((r) => {
+    votes.length ? null : h("div", { class: "cell-sub" }, "まだ回答がありません"),
+    !votes.length ? null : rows.map((r) => {
       const pos = 1 + rows.filter((x) => x.pt > r.pt).length;
       return h("div", { class: "poll-bar" },
         h("div", { class: "poll-bar-top" }, h("span", null, h("b", { class: "rank-pos" }, `${pos}位`), r.o), h("b", null, `${r.pt}点`)),
@@ -4844,9 +4860,20 @@ function adminMoney({ withTitle = true } = {}) {
 }
 
 // ---- 参加者
-function memberMoney({ compact = false } = {}) {
+// ページの一番上（お知らせより上）に出すもの：受付中の出欠・アンケートと、次の集金。
+// 集金：期限内（期限の日まで）はどの状態でも、期限を過ぎたら未入金（確認待ちを含む）のときだけ。
+// 期限なしは未入金のときだけ
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const payPinned = (p, uid) => (recordOf(p, uid).status === "unpaid") || (!!p.due && localToday() <= p.due);
+
+// pinned: "split" … 上に出す集金は top（ページの一番上に置く欄）に、残りはこの欄に出す（スマホ）
+//         "only"  … 上に出す集金だけを top に出す（PC の画面上部）
+//         "none"  … すべてこの欄に出す（PC の「出欠・集金」の小窓）
+function memberMoney({ compact = false, pinned = "none" } = {}) {
   const body = h("div");
   const el = h("div", null, sectionTitle("出欠・集金", compact), body);
+  const top = h("div", { class: "pay-top", id: "pay-top" });
+  redrawOnLeave(top);
   const drafts = new Map(); // pollId -> コメント入力欄
   const exp = expenseView();
   const expGroup = h("section", { class: "expense-section" }, h("h3", { class: "sub-title" }, "立て替えの精算"), exp.el);
@@ -4892,12 +4919,19 @@ function memberMoney({ compact = false } = {}) {
     return f.open ? f.box : h("button", { class: "btn-small pay-sent-btn", onclick: () => { f.open = true; scheduleRender(); } }, icon("check"), "送金しました");
   }
   return {
-    el,
+    el, top,
     update() {
-      if (typingIn(el)) return;
+      if (typingIn(el) || typingIn(top)) return;
       const uid = S.user.uid;
       const polls = sortedPolls().filter((p) => isTarget(p, uid));
-      const pays = sortedPayments().filter((p) => isTarget(p, uid));
+      const allPays = sortedPayments().filter((p) => isTarget(p, uid));
+      const topPays = pinned === "none" ? [] : allPays.filter((p) => payPinned(p, uid))
+        // 未入金を先に、その中は期限の近い順
+        .sort((a, b) => (recordOf(a, uid).status === "unpaid" ? 0 : 1) - (recordOf(b, uid).status === "unpaid" ? 0 : 1) || (a.due || "9999").localeCompare(b.due || "9999"));
+      const pays = allPays.filter((p) => !topPays.includes(p));
+      // 受付中（締切前）の出欠・アンケートも一番上に出す。未回答を先に
+      const topPolls = pinned === "none" ? [] : polls.filter(pollOpen).sort((a, b) => (S.votes.has(`${a.id}_${uid}`) ? 1 : 0) - (S.votes.has(`${b.id}_${uid}`) ? 1 : 0));
+      const restPolls = polls.filter((p) => !topPolls.includes(p));
       const pollEl = (p) => {
         const mine = S.votes.get(`${p.id}_${uid}`);
         const open = pollOpen(p);
@@ -4929,10 +4963,15 @@ function memberMoney({ compact = false } = {}) {
           h("div", { class: "pay-right" }, h("b", null, yen(amountOf(p, uid))), h("span", { class: `pay-badge ${r.status}${rep && r.status === "unpaid" ? " wait" : ""}` }, badge)));
       };
       const owe = myUnpaid(uid);
+      const payHelp = "送金したら「送金しました」を押してください（スクリーンショットも付けられます）。管理者が確認すると「入金済み」になります。";
+      setKids(top,
+        topPolls.length ? h("div", { class: "stack" }, topPolls.map(pollEl)) : null,
+        topPays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : ""}`, topPays.map(payEl), payHelp) : null);
+      if (pinned === "only") return;
       setKids(body,
         null,
-        polls.length ? h("div", { class: "stack" }, polls.map(pollEl)) : null,
-        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "送金したら「送金しました」を押してください（スクリーンショットも付けられます）。管理者が確認すると「入金済み」になります。") : null,
+        restPolls.length ? h("div", { class: "stack" }, restPolls.map(pollEl)) : null,
+        pays.length ? group(topPays.length ? "そのほかの集金" : `集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), topPays.length ? null : payHelp) : null,
         expGroup);
       exp.update();
     },
@@ -5737,7 +5776,9 @@ function buildDesktopShell(tabs) {
     status, h("div", { class: "desk-right" }, chip, actions));
   const grid = h("main", { class: `desk-grid cols-${panels.length}` },
     views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el)));
-  const root = h("div", { class: "desk" }, header, grid);
+  // 参加者：受付中のアンケートと、期限内・未入金の集金を画面の一番上に出す
+  const payTop = S.isAdmin ? null : memberMoney({ pinned: "only" });
+  const root = h("div", { class: "desk" }, header, payTop ? h("div", { class: "desk-paytop" }, payTop.top) : null, grid);
   return {
     root,
     update() {
@@ -5745,6 +5786,7 @@ function buildDesktopShell(tabs) {
       paintStatus(status);
       chip?.paint();
       views.forEach((v) => v.update());
+      payTop?.update();
       paintSheet();
     },
   };
@@ -5757,7 +5799,7 @@ function buildMemberPageShell() {
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
     { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
     { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
-    { key: "money", label: "出欠", view: memberMoney({ compact: true }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
+    { key: "money", label: "出欠", view: memberMoney({ compact: true, pinned: "split" }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
     { key: "checklist", label: "チェック", view: checklistMember({ compact: true }) },
   ];
   const summary = memberSummary();
@@ -5775,7 +5817,8 @@ function buildMemberPageShell() {
       onclick: () => document.getElementById(`sec-${sec.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
     }, sec.label))));
   const main = h("main", null, sections.map((sec) => h("section", { class: "page-section", id: `sec-${sec.key}` }, sec.view.el)));
-  const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, summary.el, jump, main));
+  const payTop = sections.find((x) => x.key === "money").view.top;
+  const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, summary.el, payTop, jump, main));
 
   // スクロール位置に合わせて、上部のボタンの選択状態とナビゲーションバーの表示を変える
   const onScroll = () => {
