@@ -499,6 +499,7 @@ function errMsg(e) {
     "auth/requires-recent-login": "安全のため、一度ログアウトして再ログインしてください",
     "permission-denied": "権限がありません",
   };
+  if (e?.code === "permission-denied" && S.isAdmin) return "権限がありません（Firebase のルールが最新になっているか確認してください）";
   return map[e?.code] || e?.message || String(e);
 }
 
