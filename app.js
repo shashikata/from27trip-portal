@@ -7,7 +7,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-  writeBatch, serverTimestamp,
+  writeBatch, serverTimestamp, arrayUnion,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR } from "./config.js";
 
@@ -71,6 +71,9 @@ const S = {
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
+  quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
+  live: null,                // 進行中のクイズ live/quiz
+  quizAnswers: new Map(),    // 表示中の問題への解答 quizAnswers/{quizId}_{index}_{uid}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
@@ -147,6 +150,8 @@ function startAdmin() {
   listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
   listen("locations", C("locations"), (s) => { S.locations = toMap(s); });
+  listen("quizzes", C("quizzes"), (s) => { S.quizzes = toMap(s); });
+  listenLiveQuiz();
 }
 
 // 1つ目の旅行（ルート直下のデータ）を、旅行の一覧に必ず登録しておく。
@@ -228,6 +233,7 @@ function startMemberData(uid) {
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
   listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) S.acks = toMap(s); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
+  listenLiveQuiz();
   listen("annAll", query(ann, where("scope", "==", "all")), (s) => { S.annSrc.all = toMap(s); });
   listen("annUser", query(ann, where("scope", "==", "user"), where("target", "==", uid)), (s) => { S.annSrc.user = toMap(s); });
   listen("logPublic", query(logs, where("visibility", "==", "public")), (s) => { S.logSrc.pub = toMap(s); });
@@ -259,7 +265,9 @@ function resetProfileData() {
     me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, teamSubs: new Set(), tab: "home",
+    quizzes: new Map(), live: null, quizAnswers: new Map(),
   });
+  QZ.answersKey = null;
 }
 
 const pidKey = () => `island.pid.${S.user?.uid}`;
@@ -464,6 +472,8 @@ const ICONS = {
   chevron: '<path d="m9 6 6 6-6 6"/>',
   map: '<path d="M9 4.5 3.5 6.5v13l5.5-2 6 2 5.5-2v-13l-5.5 2-6-2Z"/><path d="M9 4.5v13M15 6.5v13"/>',
   locate: '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="7.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22"/>',
+  quiz: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5L8 5.5Z"/>',
   arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
 };
 
@@ -2084,6 +2094,735 @@ function adminPoints() {
   };
 }
 
+// ---------------------------------------------------------------- クイズ（ミニゲーム）
+//
+//   quizzes/{id}   { title, answerers: [uid] | null(=全員), questions: [問題], order }
+//     問題        { type: "choice" | "text" | "buzz", text, choices: [4つ], answer, points, time, penalty }
+//                  answer は 4択なら 0〜3、記述なら正解の文字列（「/」区切りで複数可）、早押しは管理者用のメモ
+//   live/quiz      進行中のクイズの状態（全員がこの1件だけを見ている）
+//                  { quizId, title, index, total, phase, seq, openedAt, q, answer, answerers, scores }
+//                  phase: lobby（待機）→ question（出題中）→ closed（締切）→ reveal（正解発表）→ … → results（結果）→ off
+//   quizAnswers/{quizId}_{index}_{uid}  { uid, quizId, index, choice | text | buzz, reactionMs, at, judge }
+//
+// 早押しの順位は「サーバーに届いた順」ではなく、各自の端末に問題が表示されてからボタンを押すまでの
+// 時間（reactionMs）で決める。電波の良し悪しで届くまでの時間が違っても、有利・不利がほぼ出ない。
+
+const QZ = { mode: "operator", answersKey: null, t0: 0, seenSeq: null, hidden: false, autoClosedSeq: null, textDraft: new Map(), presenter: null, tick: null };
+const QTYPE = { choice: "4択", text: "記述", buzz: "早押し" };
+const CHOICE_COLORS = ["#FF3B30", "#007AFF", "#FF9500", "#34C759"];
+const CHOICE_MARKS = ["A", "B", "C", "D"];
+
+function listenLiveQuiz() {
+  listen("live", D("live", "quiz"), (s) => {
+    const prev = S.live;
+    S.live = s?.exists() ? s.data({ serverTimestamps: "estimate" }) : null;
+    const L = S.live;
+    // 出題を受け取った瞬間を記録する（反応時間の起点。全体の再描画を待たずにここで測る）
+    if (L?.phase === "question" && L.seq !== QZ.seenSeq) {
+      QZ.seenSeq = L.seq;
+      QZ.t0 = performance.now();
+      QZ.hidden = false;
+    }
+    if (L && prev && L.phase !== prev.phase) QZ.hidden = false;
+    syncQuizAnswers();
+    paintQuizLive();
+  });
+}
+
+// 進行中のクイズの解答をすべて購読する（1クイズ分なので数百件程度）
+function syncQuizAnswers() {
+  const L = S.live;
+  const key = L && L.phase !== "off" && L.quizId ? L.quizId : null;
+  if (key === QZ.answersKey) return;
+  unlisten("quizAnswers");
+  S.quizAnswers = new Map();
+  QZ.answersKey = key;
+  if (!key) return;
+  listen("quizAnswers", query(C("quizAnswers"), where("quizId", "==", key)), (s) => {
+    if (s) S.quizAnswers = toMap(s);
+    paintQuizLive();
+  });
+}
+
+const normAnswer = (t) => String(t ?? "").normalize("NFKC").toLowerCase().replace(/[\s　]+/g, "");
+const acceptedAnswers = (q) => String(q.answer ?? "").split(/[/／,、]/).map(normAnswer).filter(Boolean);
+
+// 自動採点（早押しは管理者が判定するので null）
+function autoJudge(q, a) {
+  if (!q || !a) return null;
+  if (q.type === "choice") return a.choice === q.answer;
+  if (q.type === "text") return acceptedAnswers(q).includes(normAnswer(a.text));
+  return null;
+}
+const judged = (q, a) => (typeof a.judge === "boolean" ? a.judge : autoJudge(q, a));
+function answerPoints(q, a) {
+  const j = judged(q, a);
+  if (j === true) return Number(q.points ?? 10) || 0;
+  if (j === false && q.type === "buzz") return -(Number(q.penalty ?? 0) || 0);
+  return 0;
+}
+
+// 発表の状態（締切のあと、その場で組み合わせて出せる）
+//   showAns     : 各自の回答を出す相手（"all" か uid の配列）
+//   answerShown : 正解（答え）を出したか
+//   shown       : ○× を出す相手（"all" か uid の配列）
+const inList = (v, uid) => v === "all" || (Array.isArray(v) && v.includes(uid));
+const isShown = (L, uid) => L?.phase === "reveal" && inList(L.shown, uid);
+const isAnsShown = (L, uid) => L?.phase === "reveal" && (inList(L.showAns, uid) || inList(L.shown, uid));
+const answerVisible = (L) => L?.phase === "reveal" && L.answerShown === true;
+
+// アニメーションは最初に出たときだけ再生する（画面は0.2秒ごとに描き直すため）
+const animSeen = new Set();
+const firstTime = (key) => { if (animSeen.has(key)) return false; animSeen.add(key); return true; };
+
+// ○× の記号（線が描かれていくアニメーション付き）
+function markSvg(ok, animate, cls = "") {
+  if (ok !== true && ok !== false) return null;
+  const span = document.createElement("span");
+  span.className = `mk ${ok ? "mk-ok" : "mk-ng"}${animate ? " anim" : ""} ${cls}`;
+  span.innerHTML = ok
+    ? '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="36"/></svg>'
+    : '<svg viewBox="0 0 100 100"><path d="M24 24 76 76"/><path d="M76 24 24 76"/></svg>';
+  return span;
+}
+
+const answersOf = (index) => [...S.quizAnswers.values()].filter((a) => a.index === index);
+const buzzOrder = (index) => answersOf(index).filter((a) => a.buzz).sort((a, b) => (a.reactionMs ?? 1e9) - (b.reactionMs ?? 1e9));
+const fmtSec = (ms) => (ms == null ? "" : `${(ms / 1000).toFixed(2)}秒`);
+const amAnswerer = () => !S.isAdmin && S.live && (!S.live.answerers || S.live.answerers.includes(S.user?.uid));
+const quizAudience = (answerers) => (answerers ? sortedMembers().filter((m) => answerers.includes(m.id)) : sortedMembers());
+
+function quizScores(qz) {
+  const scores = new Map(quizAudience(qz.answerers).map((m) => [m.id, 0]));
+  qz.questions.forEach((q, i) => answersOf(i).forEach((a) => scores.set(a.uid, (scores.get(a.uid) ?? 0) + answerPoints(q, a))));
+  return [...scores.entries()].map(([uid, score]) => ({ uid, name: memberName(uid), score })).sort((a, b) => b.score - a.score);
+}
+
+const publicQuestion = (q) => ({
+  type: q.type, text: q.text ?? "", choices: q.type === "choice" ? q.choices ?? [] : [],
+  time: Number(q.time) || 0, points: Number(q.points ?? 10) || 0, phone: q.phone !== false,
+});
+
+// ---- 進行（管理者）
+
+const liveRef = () => D("live", "quiz");
+
+function quizOpenQuestion(qz, i) {
+  const q = qz.questions[i];
+  if (!q) return;
+  QZ.autoClosedSeq = null;
+  fire(setDoc(liveRef(), {
+    quizId: qz.id, title: qz.title, total: qz.questions.length, answerers: qz.answerers ?? null,
+    index: i, phase: "question", seq: Date.now(), openedAt: serverTimestamp(), q: publicQuestion(q), answer: null, scores: null,
+  }));
+}
+const quizSetPhase = (phase, extra = {}) => fire(updateDoc(liveRef(), { phase, ...extra }));
+
+function quizPrimaryAction() {
+  const L = S.live;
+  const qz = L && S.quizzes.get(L.quizId);
+  if (!L || !qz) return;
+  if (L.phase === "lobby") return quizOpenQuestion(qz, 0);
+  if (L.phase === "question") return quizSetPhase("closed");
+  if (L.phase === "closed") return quizReveal({ showAns: "all", shown: "all", answerShown: true });
+  if (L.phase === "reveal") {
+    // まだ出していないもの（回答・正解・○×）があれば、先に全部出す（誤って次へ進まないように）
+    if (!allRevealed(L, qz)) return quizReveal({ showAns: "all", shown: "all", answerShown: true });
+    if (L.index + 1 < qz.questions.length) return quizOpenQuestion(qz, L.index + 1);
+    return quizSetPhase("results", { scores: quizScores(qz).map(({ uid, score }) => ({ uid, score })) });
+  }
+  if (L.phase === "results") return quizEnd();
+}
+// ○× を全員に出せば各自の回答も見えるので、回答はそれで出し終わった扱いにする
+const allRevealed = (L, qz) => L.phase === "reveal" && L.shown === "all" && L.answerShown === true;
+function primaryLabel(L, qz, last) {
+  if (L.phase === "reveal" && !allRevealed(L, qz)) return "残りを全部発表";
+  return ({ lobby: "第1問を出題", question: "締め切る", closed: "全部まとめて発表", reveal: last ? "結果発表" : "次の問題へ", results: "クイズを終了" })[L.phase] ?? "";
+}
+
+// 発表の段階に進めつつ、出すものを指定する（締切の直後は何も出していない状態から始める）
+function quizReveal(patch) {
+  const L = S.live;
+  const qz = L && S.quizzes.get(L.quizId);
+  if (!qz) return;
+  const first = L.phase !== "reveal";
+  fire(updateDoc(liveRef(), {
+    phase: "reveal", answer: qz.questions[L.index]?.answer ?? null,
+    ...(first ? { showAns: [], shown: [], answerShown: false } : {}),
+    ...patch,
+  }));
+}
+// 1人分だけ出す（すでに全員分を出しているときは何もしない）
+function quizRevealFor(field, uid) {
+  const L = S.live;
+  if (L?.phase === "reveal" && L[field] === "all") return;
+  if (L?.phase !== "reveal") return quizReveal({ [field]: [uid] });
+  fire(updateDoc(liveRef(), { [field]: arrayUnion(uid) }));
+}
+
+function quizEnd() {
+  if (!confirm("クイズを終了しますか？参加者の画面からクイズが消えます。")) return;
+  fire(updateDoc(liveRef(), { phase: "off" }));
+  closePresenter();
+}
+
+async function quizStart(quizId, mode = "operator") {
+  const qz = S.quizzes.get(quizId);
+  if (!qz?.questions?.length) return toast("問題がありません", true);
+  if (S.live && S.live.phase !== "off" && S.live.quizId !== quizId && !confirm("別のクイズが進行中です。終了して、このクイズを始めますか？")) return;
+  fire(setDoc(liveRef(), {
+    quizId, title: qz.title, total: qz.questions.length, answerers: qz.answerers ?? null,
+    index: 0, phase: "lobby", seq: Date.now(), q: null, answer: null, scores: null,
+  }));
+  openPresenter(mode);
+}
+
+function quizToPoints(qz) {
+  const rows = quizScores(qz).filter((r) => r.score !== 0);
+  if (!rows.length) return toast("加算するポイントがありません", true);
+  if (!confirm(`${rows.length}人の個人ポイントにクイズの得点を加算します（全員に公開）。よろしいですか？`)) return;
+  const b = writeBatch(db);
+  rows.forEach((r) => b.set(doc(C("pointLogs")), {
+    kind: "user", target: r.uid, teamId: null, visibility: "public", delta: r.score,
+    reason: `クイズ「${qz.title}」`, createdAt: serverTimestamp(), author: emailToId(S.user.email),
+  }));
+  fire(b.commit(), "個人ポイントに加算しました");
+}
+
+// ---- 問題の作成（管理者）
+
+const newQuestion = (type = "choice") => ({
+  type, text: "", choices: ["", "", "", ""], answer: type === "choice" ? 0 : "", points: 10, time: type === "buzz" ? 0 : 20, penalty: 0, phone: true,
+});
+
+function quizManager({ withTitle = true } = {}) {
+  let editing = null;
+  let draft = null;
+  let dirty = false;
+  const list = h("div");
+  const editor = h("div");
+  const el = h("div", null, withTitle ? largeTitle("クイズ") : null, list, editor);
+
+  async function createQuiz() {
+    const ref = doc(C("quizzes"));
+    await setDoc(ref, { title: "新しいクイズ", answerers: null, questions: [newQuestion()], order: Date.now() });
+    openEditor(ref.id);
+  }
+  function openEditor(id) { editing = id; draft = null; dirty = false; list.hidden = true; editor.hidden = false; tryLoad(); }
+  function closeEditor() {
+    if (dirty && !confirm("保存していない変更があります。破棄して戻りますか？")) return;
+    editing = null; draft = null; dirty = false; list.hidden = false; editor.hidden = true; paintList();
+  }
+  function tryLoad() {
+    const qz = S.quizzes.get(editing);
+    if (!qz || draft) return;
+    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [] }));
+    paintEditor();
+  }
+  const touch = () => { dirty = true; editor.classList.add("dirty"); };
+  async function save() {
+    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions });
+    dirty = false; editor.classList.remove("dirty");
+    toast("保存しました");
+  }
+
+  function paintList() {
+    const quizzes = [...S.quizzes.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const L = S.live;
+    setKids(list,
+      L && L.phase !== "off" ? group(`進行中：${L.title}`, [
+        h("button", { class: "cell cell-button live-now", onclick: () => openPresenter("display") }, h("span", { class: "live-dot" }), "表示用の画面を開く（プロジェクター用）"),
+        h("button", { class: "cell cell-button", onclick: () => openPresenter("operator") }, icon("play"), "操作用の画面を開く（進行・○×判定）"),
+      ], "表示用と操作用は、別の管理者アカウント・別の端末で開けます（例：admin1 で表示用、admin2 で操作用）。") : null,
+      quizzes.length ? quizzes.map((qz) => h("article", { class: "card quiz-card", "data-quiz": qz.id },
+        h("div", { class: "quiz-card-title" }, icon("quiz"), qz.title),
+        h("div", { class: "cell-sub" }, `${qz.questions?.length ?? 0}問 ・ 解答者：${qz.answerers ? `${qz.answerers.length}人` : "全員"}`),
+        h("div", { class: "quiz-card-actions" },
+          h("button", { class: "text-btn", onclick: () => openEditor(qz.id) }, "編集"),
+          h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${qz.title}」を削除しますか？`)) fire(deleteDoc(D("quizzes", qz.id)), "削除しました"); } }, "削除"),
+          h("button", { class: "btn-small", onclick: () => quizStart(qz.id, "operator") }, icon("play"), "開始（操作用）")),
+      )) : emptyState("quiz", "クイズはまだありません", "「新しいクイズ」から作れます。"),
+      h("button", { class: "btn-filled", onclick: () => guard(null, createQuiz) }, icon("plus"), "新しいクイズ"),
+    );
+  }
+
+  function paintEditor() {
+    const d = draft;
+    const title = h("input", { type: "text", value: d.title, class: "plain title-input", placeholder: "クイズの名前" });
+    title.addEventListener("input", () => { d.title = title.value; touch(); });
+
+    // 解答者
+    const who = segmented([{ value: "all", label: "全員" }, { value: "pick", label: "選ぶ" }], d.answerers ? "pick" : "all");
+    const picks = h("div", { class: "pick-list" });
+    const paintPicks = () => {
+      picks.hidden = !d.answerers;
+      setKids(picks, d.answerers ? sortedMembers().map((m) => {
+        const cb = h("input", { type: "checkbox", checked: d.answerers.includes(m.id) });
+        cb.addEventListener("change", () => {
+          d.answerers = cb.checked ? [...new Set([...d.answerers, m.id])] : d.answerers.filter((x) => x !== m.id);
+          touch();
+        });
+        return h("label", { class: "pick" }, cb, m.name);
+      }) : null);
+    };
+    who.addEventListener("change", () => { d.answerers = who.value === "pick" ? [] : null; touch(); paintPicks(); });
+    paintPicks();
+
+    const qList = h("div");
+    const paintQuestions = () => setKids(qList, d.questions.map((q, i) => questionEditor(q, i)));
+    function questionEditor(q, i) {
+      const type = segmented(Object.entries(QTYPE).map(([value, label]) => ({ value, label })), q.type);
+      type.addEventListener("change", () => {
+        q.type = type.value;
+        if (q.type === "choice" && typeof q.answer !== "number") q.answer = 0;
+        if (q.type !== "choice" && typeof q.answer === "number") q.answer = "";
+        if (q.type === "buzz" && !q.time) q.time = 0;
+        touch(); paintQuestions();
+      });
+      const text = h("textarea", { class: "plain", rows: "2", placeholder: "問題文" });
+      text.value = q.text ?? "";
+      text.addEventListener("input", () => { q.text = text.value; touch(); });
+      const num = (val, onset, attrs = {}) => {
+        const inp = h("input", { type: "number", value: String(val ?? 0), inputmode: "numeric", ...attrs });
+        inp.addEventListener("input", () => { onset(Number(inp.value) || 0); touch(); });
+        return inp;
+      };
+      let body;
+      if (q.type === "choice") {
+        q.choices = [0, 1, 2, 3].map((k) => q.choices?.[k] ?? "");
+        body = h("div", { class: "choice-edit" }, q.choices.map((c, k) => {
+          const inp = h("input", { type: "text", value: c, placeholder: `選択肢 ${CHOICE_MARKS[k]}` });
+          inp.addEventListener("input", () => { q.choices[k] = inp.value; touch(); });
+          const radio = h("input", { type: "radio", name: `ans-${i}-${editing}`, checked: q.answer === k, "aria-label": `${CHOICE_MARKS[k]}を正解にする` });
+          radio.addEventListener("change", () => { q.answer = k; touch(); });
+          return h("label", { class: "choice-row" }, h("span", { class: "mark", style: `--c:${CHOICE_COLORS[k]}` }, CHOICE_MARKS[k]), inp, radio, h("span", { class: "radio-label" }, "正解"));
+        }));
+      } else {
+        const ans = h("input", { type: "text", value: q.answer ?? "", placeholder: q.type === "text" ? "正解（「/」で区切ると複数OK）" : "正解のメモ（自分用）" });
+        ans.addEventListener("input", () => { q.answer = ans.value; touch(); });
+        body = h("div", { class: "group-body" }, field("正解", ans));
+      }
+      const move = (dir) => {
+        const j = i + dir;
+        if (j < 0 || j >= d.questions.length) return;
+        [d.questions[i], d.questions[j]] = [d.questions[j], d.questions[i]];
+        touch(); paintQuestions();
+      };
+      return h("article", { class: "card q-edit" },
+        h("div", { class: "q-head" },
+          h("b", null, `第${i + 1}問`),
+          h("div", { class: "q-tools" },
+            h("button", { class: "icon-btn", title: "上へ", onclick: () => move(-1) }, "↑"),
+            h("button", { class: "icon-btn", title: "下へ", onclick: () => move(1) }, "↓"),
+            h("button", { class: "text-btn destructive", onclick: () => { d.questions.splice(i, 1); touch(); paintQuestions(); } }, "削除"))),
+        type, text, body,
+        h("div", { class: "group-body q-nums" },
+          field("スマホに問題文を表示", (() => {
+            const t = toggle(q.phone !== false);
+            t.addEventListener("change", () => { q.phone = t.checked; touch(); });
+            return t;
+          })()),
+          field("配点", num(q.points ?? 10, (v) => { q.points = v; })),
+          field(q.type === "buzz" ? "制限時間（秒・0で無制限）" : "制限時間（秒）", num(q.time ?? 0, (v) => { q.time = v; })),
+          q.type === "buzz" ? field("お手つき（減点）", num(q.penalty ?? 0, (v) => { q.penalty = v; })) : null),
+      );
+    }
+    paintQuestions();
+
+    setKids(editor,
+      h("div", { class: "row-between" },
+        h("button", { class: "text-btn", onclick: closeEditor }, "‹ 一覧へ戻る"),
+        h("button", { class: "text-btn", onclick: () => guard(null, save) }, "保存")),
+      h("div", { class: "card" }, title),
+      group("解答者", [h("div", { class: "cell" }, who)], "「選ぶ」にすると、チェックした人だけが解答できます。"),
+      picks,
+      qList,
+      h("div", { class: "quiz-add" }, Object.entries(QTYPE).map(([type, label]) =>
+        h("button", { class: "pill", onclick: () => { d.questions.push(newQuestion(type)); touch(); paintQuestions(); } }, icon("plus"), `${label}の問題`))),
+      h("button", { class: "btn-filled", onclick: () => guard(null, async () => { await save(); quizStart(editing, "operator"); }) }, icon("play"), "保存して開始（操作用の画面へ）"),
+    );
+  }
+
+  editor.hidden = true;
+  return {
+    el,
+    update() {
+      if (editing) { tryLoad(); return; }
+      paintList();
+    },
+  };
+}
+
+// ---- プレゼン画面（管理者）
+
+function openPresenter(mode = "operator") {
+  if (QZ.presenter && QZ.mode !== mode) closePresenter();
+  if (!QZ.presenter) {
+    closeSheet();
+    const el = h("div", { class: `present mode-${mode}`, role: "dialog", "aria-label": mode === "display" ? "クイズの表示用画面" : "クイズの操作用画面" });
+    document.body.append(el);
+    QZ.presenter = el;
+    QZ.mode = mode;
+    if (mode === "display") el.requestFullscreen?.().catch(() => {});
+    clearInterval(QZ.tick);
+    QZ.tick = setInterval(() => paintQuizLive(false), 200); // タイマー表示と自動締切
+  }
+  paintQuizLive();
+}
+
+function closePresenter() {
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  QZ.presenter?.remove();
+  QZ.presenter = null;
+  clearInterval(QZ.tick);
+  QZ.tick = null;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!QZ.presenter || !S.isAdmin || QZ.mode !== "operator") return;
+  if (e.target.closest?.("input, textarea, select")) return;
+  const L = S.live;
+  const qz = L && S.quizzes.get(L.quizId);
+  if (e.key === " " || e.key === "Enter") { e.preventDefault(); quizPrimaryAction(); }
+  if (qz && e.key === "ArrowRight" && L.index + 1 < qz.questions.length) quizOpenQuestion(qz, L.index + 1);
+  if (qz && e.key === "ArrowLeft" && L.index > 0) quizOpenQuestion(qz, L.index - 1);
+});
+
+function remainingSec(L, local) {
+  if (!L?.q?.time) return null;
+  const start = local ? QZ.t0 : ts(L.openedAt) || Date.now();
+  const elapsed = local ? (performance.now() - start) / 1000 : (Date.now() - start) / 1000;
+  return Math.max(0, L.q.time - elapsed);
+}
+
+function paintPresenter(full = true) {
+  const P = QZ.presenter;
+  const L = S.live;
+  if (!P) return;
+  const qz = L && S.quizzes.get(L.quizId);
+  if (L?.phase === "off") { closePresenter(); return; }
+  // 開いた直後で、進行状態やクイズがまだ届いていない
+  if (!L || !qz) {
+    P.dataset.state = "wait";
+    P.replaceChildren(h("div", { class: "pr-lobby" }, h("div", { class: "pr-sub" }, "準備中…"),
+      h("button", { class: "pr-btn ghost", onclick: closePresenter }, "閉じる")));
+    return;
+  }
+
+  // 制限時間が来たら自動で締め切る（表示用・操作用のどちらが開いていても動く）
+  const rem = L.phase === "question" ? remainingSec(L, false) : null;
+  if (rem === 0 && QZ.autoClosedSeq !== L.seq) { QZ.autoClosedSeq = L.seq; quizSetPhase("closed"); }
+  // 普段はタイマーだけ更新する。ただし「準備中」の表示中と、2秒に1回は全体を描き直して取りこぼしを防ぐ
+  if (!full && P.dataset.state !== "wait" && Date.now() - (QZ.lastFull ?? 0) < 2000) { updateQuizTimers(); return; }
+  QZ.lastFull = Date.now();
+  P.dataset.state = "ok";
+
+  if (QZ.mode === "display") paintDisplay(P, L, qz, rem);
+  else paintOperator(P, L, qz, rem);
+}
+
+// 解答者全員の状態（下のバー）。正解発表までは「回答あり / なし」だけ、発表後は ○×
+function answerBar(L, qz) {
+  const q = qz.questions[L.index];
+  const answers = answersOf(L.index);
+  const order = q?.type === "buzz" ? buzzOrder(L.index) : [];
+  return h("div", { class: "pr-bar" }, quizAudience(qz.answerers).map((m) => {
+    const a = answers.find((x) => x.uid === m.id && (q.type !== "buzz" || x.buzz));
+    const revealed = isShown(L, m.id);
+    const ok = a && revealed ? judged(q, a) : null;
+    const rank = q?.type === "buzz" && a ? order.indexOf(a) + 1 : 0;
+    const ansShown = a && isAnsShown(L, m.id);
+    const pop = (revealed && a && firstTime(`chip:${L.seq}:${m.id}`)) || (ansShown && firstTime(`ansv:${L.seq}:${m.id}`)) || (a && !revealed && firstTime(`ans:${L.seq}:${m.id}`));
+    const ansLabel = q.type === "choice" ? CHOICE_MARKS[a?.choice] ?? "?" : q.type === "text" ? a?.text : rank ? `${rank}番` : "✓";
+    return h("div", { class: `pr-chip${a ? " done" : ""}${ok === true ? " ok" : ok === false ? " ng" : ""}${pop ? " pop" : ""}` },
+      h("span", { class: "nm" }, m.name),
+      ansShown && q.type !== "buzz" ? h("span", { class: "av" }, ansLabel) : null,
+      h("span", { class: "st" }, revealed && a ? (markSvg(ok, false, "mark-chip") ?? "?") : rank ? `${rank}番` : a ? "✓" : "—"));
+  }));
+}
+
+function resultsBody(qz, withButton) {
+  const rows = quizScores(qz);
+  let rank = 0, prev = null;
+  const enter = firstTime(`res:${S.live?.seq}:${QZ.mode}`);
+  return h("div", { class: `pr-results${enter ? " enter" : ""}` },
+    h("div", { class: "pr-big" }, "結果発表"),
+    h("ol", { class: "pr-rank" }, rows.map((r, i) => {
+      if (r.score !== prev) { rank = i + 1; prev = r.score; }
+      return h("li", { class: `r${rank}` }, h("span", { class: "pr-rank-no" }, rank), h("span", { class: "pr-rank-name" }, r.name), h("span", { class: "pr-rank-pt" }, r.score, h("small", null, "点")));
+    })),
+    withButton ? h("button", { class: "pr-btn ghost", onclick: () => quizToPoints(qz) }, "この得点を個人ポイントに加算") : null);
+}
+
+// 表示用（プロジェクターに映す）：操作ボタンなし。○×は「正解を発表」まで出さない
+function paintDisplay(P, L, qz, rem) {
+  const q = qz.questions[L.index];
+  const audience = quizAudience(qz.answerers);
+  const answers = answersOf(L.index);
+  const revealed = answerVisible(L);
+  const head = h("div", { class: "pr-head" },
+    h("div", { class: "pr-title" }, L.title),
+    L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "pr-meta" },
+      h("span", { class: "pr-badge" }, `第${L.index + 1}問 / ${qz.questions.length}`),
+      h("span", { class: `pr-badge type-${q?.type}` }, QTYPE[q?.type] ?? ""),
+      h("span", { class: "pr-badge" }, `${q?.points ?? 10}点`),
+      L.phase === "closed" ? h("span", { class: "pr-badge closed" }, "締切") : null),
+    rem != null ? h("div", { class: `pr-timer${rem <= 5 ? " hurry" : ""}` }, Math.ceil(rem)) : null,
+    h("button", { class: "pr-exit", title: "表示用画面を閉じる", onclick: closePresenter }, icon("xmark")));
+
+  let body;
+  if (L.phase === "lobby") {
+    body = h("div", { class: "pr-lobby" },
+      h("div", { class: `pr-big${firstTime(`dl:${L.seq}`) ? " enter" : ""}` }, L.title),
+      h("div", { class: "pr-sub" }, `全${qz.questions.length}問 ・ 解答者 ${audience.length}人`),
+      h("div", { class: "pr-names" }, audience.map((m) => h("span", null, m.name))),
+      h("div", { class: "pr-hint" }, "まもなく始まります"));
+  } else if (L.phase === "results") {
+    body = resultsBody(qz, false);
+  } else {
+    let detail = null;
+    if (q.type === "choice") {
+      const counts = [0, 1, 2, 3].map((k) => answers.filter((a) => a.choice === k).length);
+      detail = h("div", { class: "pr-choices" }, (q.choices ?? []).map((c, k) => h("div", {
+        class: `pr-choice${revealed ? (q.answer === k ? ` correct${firstTime(`c:${L.seq}`) ? " anim" : ""}` : " dim") : ""}`, style: `--c:${CHOICE_COLORS[k]}`,
+      }, h("span", { class: "mark" }, CHOICE_MARKS[k]), h("span", { class: "txt" }, c),
+        L.phase === "reveal" && L.showAns === "all" ? h("span", { class: "cnt" }, `${counts[k]}人`) : null)));
+    } else if (q.type === "text" && L.phase === "reveal") {
+      detail = h("div", { class: "pr-texts" }, answers.filter((a) => isAnsShown(L, a.uid)).map((a) => {
+        const ok = isShown(L, a.uid) ? judged(q, a) : null;
+        return h("div", { class: `pr-text${ok === true ? " ok" : ok === false ? " ng" : ""}${firstTime(`tc:${L.seq}:${a.uid}`) ? " enter" : ""}` },
+          h("div", { class: "who" }, memberName(a.uid)), h("div", { class: "ans" }, a.text),
+          ok == null ? null : markSvg(ok, firstTime(`t:${L.seq}:${a.uid}`), "mark-big"));
+      }));
+    } else if (q.type === "buzz") {
+      const order = buzzOrder(L.index);
+      detail = h("ol", { class: "pr-buzz" }, order.length ? order.map((a, i) => {
+        const ok = isShown(L, a.uid) ? judged(q, a) : null;
+        return h("li", { class: `${i === 0 ? "first " : ""}${ok === true ? "ok" : ok === false ? "ng" : ""}${firstTime(`bl:${L.seq}:${a.uid}`) ? " enter" : ""}` },
+          h("span", { class: "no" }, i + 1), h("span", { class: "who" }, memberName(a.uid)), h("span", { class: "time" }, fmtSec(a.reactionMs)),
+          isShown(L, a.uid) ? markSvg(ok, firstTime(`b:${L.seq}:${a.uid}`), "mark-big") : null);
+      }) : h("li", { class: "wait" }, "早押し待ち…"));
+    }
+    body = h("div", { class: "pr-q" },
+      h("div", { class: `pr-text-q${firstTime(`dq:${L.seq}`) ? " enter" : ""}` }, q.text || "（問題文なし）"),
+      detail,
+      revealed && q.type !== "choice" && q.answer ? h("div", { class: `pr-answer${firstTime(`da:${L.seq}`) ? " enter" : ""}` }, "正解：", q.answer) : null);
+  }
+  setKids(P, head, body, L.phase === "lobby" || L.phase === "results" ? null : answerBar(L, qz));
+}
+
+// 操作用（手元で進行と ○×判定をする）
+function paintOperator(P, L, qz, rem) {
+  const q = qz.questions[L.index];
+  const audience = quizAudience(qz.answerers);
+  const answers = answersOf(L.index);
+  const last = L.index + 1 >= qz.questions.length;
+  const phaseLabel = { lobby: "待機中", question: "出題中", closed: "締切（判定してください）", reveal: "正解発表中", results: "結果発表中" }[L.phase] ?? "";
+
+  const head = h("div", { class: "op-head" },
+    h("div", null, h("div", { class: "op-title" }, L.title),
+      h("div", { class: "op-sub" }, L.phase === "lobby" || L.phase === "results" ? phaseLabel : `第${L.index + 1}問 / ${qz.questions.length} ・ ${QTYPE[q?.type]} ・ ${phaseLabel}`)),
+    rem != null ? h("div", { class: `op-timer${rem <= 5 ? " hurry" : ""}` }, `${Math.ceil(rem)}秒`) : null,
+    h("button", { class: "text-btn", onclick: () => openPresenter("display") }, "表示用に切り替え"),
+    h("button", { class: "text-btn", onclick: closePresenter }, "閉じる"));
+
+  let body;
+  if (L.phase === "lobby") {
+    body = h("div", { class: "op-body" },
+      h("p", { class: "op-note" }, "表示用の画面（プロジェクター）は、もう1台の端末で「クイズ」→「表示用の画面を開く」から開いてください。"),
+      group(`解答者 ${audience.length}人`, audience.map((m) => cell(m.name))));
+  } else if (L.phase === "results") {
+    body = h("div", { class: "op-body" }, resultsBody(qz, true));
+  } else {
+    const canReveal = L.phase === "closed" || L.phase === "reveal";
+    const order = q.type === "buzz" ? buzzOrder(L.index) : null;
+    const list = (order ?? answers.slice().sort((a, b) => (a.reactionMs ?? 0) - (b.reactionMs ?? 0))).map((a, i) => {
+      const ok = judged(q, a);
+      const shown = q.type === "choice" ? `${CHOICE_MARKS[a.choice] ?? "?"}：${q.choices?.[a.choice] ?? ""}` : q.type === "text" ? a.text : "早押し";
+      return h("div", { class: `cell op-ans${ok === true ? " ok" : ok === false ? " ng" : ""}` },
+        order ? h("span", { class: "op-rank" }, i + 1) : null,
+        h("div", { class: "cell-main" }, h("b", null, memberName(a.uid)), h("div", { class: "cell-sub" }, `${shown} ・ ${fmtSec(a.reactionMs)}`)),
+        judgeButtons(a, ok),
+        canReveal && q.type !== "buzz" ? (isAnsShown(L, a.uid)
+          ? h("span", { class: "op-shown" }, "回答済")
+          : h("button", { class: "btn-small ghost", onclick: () => quizRevealFor("showAns", a.uid) }, "回答")) : null,
+        canReveal ? (isShown(L, a.uid)
+          ? h("span", { class: "op-shown" }, "○×済")
+          : h("button", { class: "btn-small", onclick: () => quizRevealFor("shown", a.uid) }, "○×")) : null);
+    });
+    const missing = audience.filter((m) => !answers.some((a) => a.uid === m.id && (q.type !== "buzz" || a.buzz)));
+    body = h("div", { class: "op-body" },
+      h("div", { class: "card op-q" },
+        h("div", { class: "op-qtext" }, q.text || "（問題文なし）"),
+        q.type === "choice" ? h("div", { class: "op-choices" }, (q.choices ?? []).map((c, k) =>
+          h("div", { class: `op-choice${q.answer === k ? " correct" : ""}`, style: `--c:${CHOICE_COLORS[k]}` }, `${CHOICE_MARKS[k]} ${c}`))) : null,
+        q.type !== "choice" ? h("div", { class: "op-correct" }, "正解：", q.answer || "（未設定）") : null,
+        h("div", { class: "cell-sub" }, q.phone !== false ? "スマホに問題文を表示しています" : "スマホには問題文を表示していません")),
+      group(`${q.type === "buzz" ? "早押しの順番" : "回答"}（${list.length} / ${audience.length}人）`, list.length ? list : none("まだありません"),
+        q.type === "buzz" ? "1番目の人から順に答えてもらい、○×を付けてください。×なら次の人へ。" : "自動で採点しています。○×を押すと手動で直せます（もう一度押すと自動に戻ります）。"),
+      missing.length ? group("未回答", cell(h("span", { class: "secondary" }, missing.map((m) => m.name).join("・")))) : null,
+      h("p", { class: "op-note" }, "ここで付けた○×は、発表するまで表示用の画面や参加者には出ません。締切のあと、下のボタンで「回答」「正解」「○×」を好きな順に出せます。名前の横の「回答」「○×」で1人ずつ出すこともできます。"));
+  }
+
+  const revealing = L.phase === "closed" || L.phase === "reveal";
+  const qType = qz.questions[L.index]?.type;
+  const foot = h("div", { class: "op-foot" },
+    h("button", { class: "pr-btn ghost", disabled: !(L.index > 0 && L.phase !== "lobby" && L.phase !== "results"), onclick: () => quizOpenQuestion(qz, L.index - 1) }, "← 前"),
+    revealing && qType !== "buzz" ? h("button", { class: "pr-btn ghost", disabled: L.phase === "reveal" && L.showAns === "all", onclick: () => quizReveal({ showAns: "all" }) }, "回答を全員表示") : null,
+    revealing ? h("button", { class: "pr-btn ghost", disabled: answerVisible(L), onclick: () => quizReveal({ answerShown: true }) }, "正解を表示") : null,
+    revealing ? h("button", { class: "pr-btn ghost", disabled: L.phase === "reveal" && L.shown === "all", onclick: () => quizReveal({ shown: "all" }) }, "○×を全員表示") : null,
+    h("button", { class: "pr-btn primary", onclick: quizPrimaryAction }, primaryLabel(L, qz, last)),
+    h("button", { class: "pr-btn ghost", disabled: !(!last && L.phase !== "lobby" && L.phase !== "results"), onclick: () => quizOpenQuestion(qz, L.index + 1) }, "次 →"),
+    h("button", { class: "pr-btn danger", onclick: quizEnd }, "終了"));
+  P.replaceChildren(head, body, foot);
+}
+
+function judgeButtons(a, ok) {
+  const set = (v) => fire(updateDoc(D("quizAnswers", a.id), { judge: v }));
+  return h("span", { class: "judge" },
+    h("button", { class: `j ok${ok === true ? " on" : ""}`, onclick: () => set(ok === true ? null : true), title: "正解" }, "○"),
+    h("button", { class: `j ng${ok === false ? " on" : ""}`, onclick: () => set(ok === false ? null : false), title: "不正解" }, "×"));
+}
+
+// ---- 解答者の画面（スマホ）
+
+function quizAnswer(data) {
+  const L = S.live;
+  const uid = S.user.uid;
+  if (!L || L.phase !== "question") return;
+  const rem = remainingSec(L, true);
+  if (rem === 0) return toast("時間切れです", true);
+  const reactionMs = Math.round(performance.now() - QZ.t0);
+  fire(setDoc(D("quizAnswers", `${L.quizId}_${L.index}_${uid}`), {
+    uid, quizId: L.quizId, index: L.index, reactionMs, at: serverTimestamp(), ...data,
+  }));
+}
+
+function paintMemberQuiz(full = true) {
+  if (!full) { updateQuizTimers(); return; }
+  // 記述の答えを入力している最中は、同じ問題・同じ段階のあいだ作り直さない（キーボードが閉じないように）
+  const typing = document.activeElement?.classList?.contains("ql-input");
+  if (typing && QZ.lastPaint === `${S.live?.seq}:${S.live?.phase}`) { updateQuizTimers(); return; }
+  QZ.lastPaint = `${S.live?.seq}:${S.live?.phase}`;
+  let el = document.querySelector(".quiz-live");
+  let fab = document.querySelector(".quiz-fab");
+  const L = S.live;
+  const active = !!(L && L.phase !== "off" && amAnswerer());
+  if (!active) { el?.remove(); fab?.remove(); return; }
+  if (QZ.hidden) {
+    el?.remove();
+    if (!fab) document.body.append(h("button", { class: "quiz-fab", onclick: () => { QZ.hidden = false; paintMemberQuiz(); } }, icon("quiz"), "クイズに戻る"));
+    return;
+  }
+  fab?.remove();
+  if (!el) { el = h("div", { class: "quiz-live", role: "dialog", "aria-label": "クイズ" }); document.body.append(el); }
+
+  const uid = S.user.uid;
+  const q = L.q;
+  const mine = L.phase === "lobby" || L.phase === "results" ? null : S.quizAnswers.get(`${L.quizId}_${L.index}_${uid}`);
+  const rem = L.phase === "question" ? remainingSec(L, true) : null;
+  const locked = L.phase !== "question" || rem === 0;
+
+  const head = h("div", { class: "ql-head" },
+    h("div", { class: "ql-title" }, L.title),
+    L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "ql-meta" }, `第${L.index + 1}問 / ${L.total} ・ ${QTYPE[q?.type] ?? ""} ・ ${q?.points ?? 10}点`),
+    h("button", { class: "ql-close", "aria-label": "閉じる", onclick: () => { QZ.hidden = true; paintMemberQuiz(); } }, icon("xmark")));
+  const timer = rem != null ? h("div", { class: "ql-timer" }, h("div", { class: "bar", style: `width:${(rem / (q.time || 1)) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
+
+  let body;
+  if (L.phase === "lobby") {
+    body = h("div", { class: "ql-center" }, h("div", { class: `ql-big${firstTime(`ml:${L.seq}`) ? " enter" : ""}` }, "まもなく始まります"), h("div", { class: "ql-sub" }, `${S.me?.name ?? ""} さん、準備はいいですか？`));
+  } else if (L.phase === "results") {
+    const rows = (L.scores ?? []).map((r) => ({ ...r, name: memberName(r.uid) }));
+    const me = rows.findIndex((r) => r.uid === uid);
+    body = h("div", { class: "ql-center" },
+      h("div", { class: "ql-sub" }, "あなたの得点"),
+      h("div", { class: `ql-score${firstTime(`ms:${L.seq}`) ? " enter" : ""}` }, me >= 0 ? rows[me].score : 0, h("small", null, "点")),
+      me >= 0 ? h("div", { class: "ql-sub" }, `${rows.filter((r) => r.score > rows[me].score).length + 1}位 / ${rows.length}人`) : null,
+      h("ol", { class: "ql-top" }, rows.slice(0, 3).map((r) => h("li", null, h("span", null, r.name), h("b", null, `${r.score}点`)))));
+  } else {
+    const myShown = isShown(L, uid);
+    const correctNow = myShown ? (q.type === "buzz" ? (typeof mine?.judge === "boolean" ? mine.judge : null) : autoJudge({ ...q, answer: L.answer }, mine ?? {}) && !!mine) : null;
+    const judgeOverride = typeof mine?.judge === "boolean" ? mine.judge : null;
+    const verdict = myShown ? (judgeOverride ?? correctNow) : null;
+    let input;
+    if (q.type === "choice") {
+      input = h("div", { class: "ql-choices" }, (q.choices ?? []).map((c, k) => h("button", {
+        class: `ql-choice${mine?.choice === k ? " picked" : ""}${answerVisible(L) && L.answer === k ? " correct" : ""}`,
+        style: `--c:${CHOICE_COLORS[k]}`, disabled: locked,
+        onpointerdown: (e) => { e.preventDefault(); quizAnswer({ choice: k }); },
+      }, h("span", { class: "mark" }, CHOICE_MARKS[k]), q.phone !== false ? h("span", { class: "txt" }, c) : null)));
+    } else if (q.type === "text") {
+      const key = `${L.seq}`;
+      let ta = QZ.textDraft.get(key);
+      if (!ta) {
+        ta = h("textarea", { class: "ql-input", rows: "2", placeholder: "答えを入力" });
+        ta.value = mine?.text ?? "";
+        QZ.textDraft.clear();
+        QZ.textDraft.set(key, ta);
+      }
+      ta.disabled = locked;
+      input = h("div", { class: "ql-textbox" }, ta,
+        h("button", { class: "ql-send", disabled: locked, onclick: () => { if (ta.value.trim()) quizAnswer({ text: ta.value.trim() }); } }, mine ? "送り直す" : "送信"));
+    } else {
+      const order = buzzOrder(L.index);
+      const myRank = order.findIndex((a) => a.uid === uid);
+      input = h("div", { class: "ql-buzzwrap" },
+        h("button", {
+          class: `ql-buzz${mine?.buzz ? " pressed" : ""}`, disabled: locked || !!mine?.buzz,
+          onpointerdown: (e) => { e.preventDefault(); if (!mine?.buzz) quizAnswer({ buzz: true }); },
+        }, mine?.buzz ? "押した！" : "早押し"),
+        mine?.buzz ? h("div", { class: "ql-sub" }, myRank >= 0 ? `${myRank + 1}番目（${fmtSec(mine.reactionMs)}）` : `送信中…（${fmtSec(mine.reactionMs)}）`) : null);
+    }
+    const status = L.phase === "question"
+      ? (mine ? (q.type === "choice" ? "回答しました（締切まで変えられます）" : q.type === "text" ? "送信しました（締切まで送り直せます）" : "") : rem === 0 ? "時間切れ" : "")
+      : L.phase === "closed" ? "締め切りました。正解発表を待っています…" : "";
+    body = h("div", { class: "ql-q" },
+      q.phone !== false ? h("div", { class: `ql-qtext${firstTime(`mq:${L.seq}`) ? " enter" : ""}` }, q.text) : h("div", { class: "ql-qtext muted" }, "問題は前の画面を見てください"),
+      input,
+      status ? h("div", { class: "ql-status" }, status) : null,
+      L.phase === "reveal" ? h("div", { class: `ql-verdict${verdict === true ? " ok" : verdict === false ? " ng" : ""}${firstTime(`mv:${L.seq}:${myShown}`) ? " enter" : ""}` },
+        myShown ? markSvg(verdict, firstTime(`me:${L.seq}:${verdict}`), "mark-phone") : null,
+        h("div", { class: "ql-vtext" }, !myShown ? "発表を待っています…" : verdict === true ? "正解！" : verdict === false ? "不正解…" : mine ? "判定を待っています" : "未回答"),
+        answerVisible(L) && q.type !== "choice" && L.answer ? h("div", { class: "ql-ans" }, `正解：${L.answer}`) : null) : null);
+  }
+  setKids(el, head, timer, body);
+}
+
+// 全体の描画や Firestore の更新のたびに呼ぶ（full = false のときはタイマーの表示だけ更新する）
+function paintQuizLive(full = true) {
+  if (S.isAdmin) paintPresenter(full);
+  else paintMemberQuiz(full);
+}
+
+// タイマーの数字とバーだけを書き換える。画面全体を作り直すと、アニメーションがやり直しになったり、
+// 押している最中のボタンや入力中の欄が作り直されて操作が消えたりするため
+function updateQuizTimers() {
+  const L = S.live;
+  if (!L || L.phase !== "question" || !L.q?.time) return;
+  if (S.isAdmin) {
+    const rem = remainingSec(L, false);
+    for (const t of document.querySelectorAll(".pr-timer, .op-timer")) {
+      t.textContent = t.classList.contains("op-timer") ? `${Math.ceil(rem)}秒` : Math.ceil(rem);
+      t.classList.toggle("hurry", rem <= 5);
+    }
+  } else {
+    const rem = remainingSec(L, true);
+    const bar = document.querySelector(".ql-timer .bar");
+    const txt = document.querySelector(".ql-timer span");
+    if (bar) bar.style.width = `${(rem / (L.q.time || 1)) * 100}%`;
+    if (txt) txt.textContent = `${Math.ceil(rem)}秒`;
+  }
+}
+
+// 解答者側：時間切れになった瞬間だけ全体を描き直してボタンを止める。それ以外はタイマーだけ
+setInterval(() => {
+  const L = S.live;
+  if (S.isAdmin || L?.phase !== "question" || !L.q?.time) return;
+  if (remainingSec(L, true) === 0 && QZ.lockedSeq !== L.seq) { QZ.lockedSeq = L.seq; paintMemberQuiz(true); return; }
+  updateQuizTimers();
+}, 250);
+
 // ---------------------------------------------------------------- 画面の組み立て
 //
 // スマホ：下のタブで画面を切り替える
@@ -2105,6 +2844,7 @@ const ADMIN_TABS = [
   { key: "side", icon: "note", label: "表・メモ", view: adminSide, desktopOnly: true },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
+  { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -2384,6 +3124,7 @@ function render() {
   document.title = S.config.title || APP_TITLE;
   shell.update();
   paintMapButtons();
+  paintQuizLive();
 }
 
 const $app = document.getElementById("app");
