@@ -74,6 +74,8 @@ const S = {
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
   quizAnswers: new Map(),    // 表示中の問題への解答 quizAnswers/{quizId}_{index}_{uid}
+  quizSabo: new Map(),       // 妨害の申し込み quizSabo/{id}
+  quizBets: new Map(),       // 賭け quizBets/{id}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
@@ -103,7 +105,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { locations: "loc", live: "quiz", quizAnswers: "quiz" };
+const RENDER_KIND = { locations: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -360,7 +362,7 @@ function resetProfileData() {
     me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
-    quizzes: new Map(), live: null, quizAnswers: new Map(),
+    quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -2253,6 +2255,168 @@ const QZ = {
 const BUZZ_ANSWER_SEC = 6;   // 解答権を得てから答えを送るまでの秒数
 const BUZZ_GRACE_MS = 400;   // 最初の早押しから解答権を決めるまで待つ時間（通信の遅い人の方が先に押していることがあるため）
 const READ_SPEED = 6;        // 問題読みの速さ（文字/秒）の初期値
+
+// ---- 区切り（セッション）・妨害・賭けの設定
+//
+//   quizzes/{id}.sessions : [{ id, name, perUser, perTarget: { 種類: 回数 } }]   … A問題・B問題 などの区切り
+//                           問題は questions[i].session で区切りに属する（無ければ最初の区切り）
+//   quizzes/{id}.sabo     : 妨害の設定 { on, pay: "user"|"team", setId, who: "spectators"|"all", streak2x, types: { 種類: { on, price } } }
+//   quizzes/{id}.bet      : 賭けの設定 { on, pay, setId, rate(払戻率%), max(1人の上限), kinds: { 券種: { on } } }
+//   quizSabo/{自動}       : 妨害の申し込み { uid, quizId, forIndex, target, type, at, status: pending|ok|ng, reason, price }
+//   quizBets/{自動}       : 賭け { uid, quizId, kind, pick: [uid…], amount, at, status: pending|ok|ng|win|lose|refund, payout }
+//
+// 妨害の種類を増やすときは、SABO_TYPES に1行足して、効果（effectOn を見ている所）を書く。
+// for はその妨害が使える問題の種類、needsTime は「4択・記述では制限時間がある問題だけ」。
+const SABO_TYPES = {
+  seal: { label: "封印", mark: "封", desc: "その問題に解答できない", price: 10, for: ["choice", "text", "buzz"], on: true },
+  time: { label: "時間短縮", mark: "短", desc: "解答できる時間が半分になる（早押しは入力6秒→3秒）", price: 5, for: ["choice", "text", "buzz"], needsTime: true, on: true },
+  blind: { label: "目隠し", mark: "隠", desc: "スマホに問題文と選択肢の文字が出ない", price: 3, for: ["choice", "text", "buzz"], on: true },
+  late: { label: "出遅れ", mark: "遅", desc: "出題から5秒間は解答できない（早押しも押せない）", price: 4, for: ["choice", "text", "buzz"], on: false },
+  shuffle: { label: "シャッフル", mark: "混", desc: "スマホの選択肢の並びがバラバラ・色が全部灰色になる", price: 3, for: ["choice"], on: false },
+  flip: { label: "逆さま", mark: "逆", desc: "スマホの問題と解答欄が上下逆さまになる", price: 2, for: ["choice", "text", "buzz"], on: false },
+};
+const SABO_KEYS = Object.keys(SABO_TYPES);
+const LATE_SEC = 5;
+
+// 賭けの券種（競馬と同じ考え方）。増やすときはここに1行足す（n = 何人を選ぶか、ordered = 順番どおりか）
+const BET_KINDS = {
+  win: { label: "単勝", desc: "1位を当てる", n: 1, ordered: true, on: true },
+  exacta: { label: "2連単", desc: "1位・2位を順番どおりに当てる", n: 2, ordered: true, on: false },
+  trifecta: { label: "3連単", desc: "1位・2位・3位を順番どおりに当てる", n: 3, ordered: true, on: true },
+  trio: { label: "3連複", desc: "1〜3位の3人を当てる（順番は問わない）", n: 3, ordered: false, on: false },
+};
+const BET_KEYS = Object.keys(BET_KINDS);
+
+const SESSION_NAMES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const newSession = (k = 0) => ({ id: `s${Date.now().toString(36)}${k}`, name: `${SESSION_NAMES[k] ?? k + 1}問題`, perUser: 3, perTarget: Object.fromEntries(SABO_KEYS.map((t) => [t, 1])) });
+function quizSessions(qz) {
+  const ss = qz?.sessions?.length ? qz.sessions : [{ ...newSession(0), id: "s0" }];
+  return ss.map((s, k) => ({ ...newSession(k), ...s, perTarget: { ...newSession(k).perTarget, ...(s.perTarget ?? {}) } }));
+}
+function saboCfg(qz) {
+  const s = qz?.sabo ?? {};
+  return {
+    on: !!s.on, pay: s.pay === "team" ? "team" : "user", setId: s.setId ?? null, who: s.who === "all" ? "all" : "spectators", streak2x: s.streak2x !== false,
+    types: Object.fromEntries(SABO_KEYS.map((k) => [k, { on: s.types?.[k]?.on ?? SABO_TYPES[k].on, price: Number(s.types?.[k]?.price ?? SABO_TYPES[k].price) || 0 }])),
+  };
+}
+function betCfg(qz) {
+  const s = qz?.bet ?? {};
+  return {
+    on: !!s.on, pay: s.pay === "team" ? "team" : "user", setId: s.setId ?? null,
+    rate: Math.min(100, Math.max(1, Number(s.rate ?? 100) || 100)), max: Math.max(1, Number(s.max ?? 30) || 30),
+    kinds: Object.fromEntries(BET_KEYS.map((k) => [k, { on: s.kinds?.[k]?.on ?? BET_KINDS[k].on }])),
+  };
+}
+// 進行中の状態（live/quiz）に載せる設定。参加者のスマホはクイズ本体を読まないので、必要なものをここに入れる
+function liveBase(qz) {
+  const sessions = quizSessions(qz);
+  return {
+    quizId: qz.id, title: qz.title, total: qz.questions.length, answerers: qz.answerers ?? null,
+    sabo: saboCfg(qz), bet: betCfg(qz), sessions,
+    qMeta: qz.questions.map((q) => ({ s: sessions.some((s) => s.id === q.session) ? q.session : sessions[0].id, t: q.type, time: Number(q.time) || 0 })),
+  };
+}
+const sessionAt = (L, i) => { const id = L?.qMeta?.[i]?.s; return L?.sessions?.find((s) => s.id === id) ?? L?.sessions?.[0] ?? null; };
+const isAnswererIn = (L, uid) => !L?.answerers || L.answerers.includes(uid);
+const effectOn = (L, uid) => (L && L.phase !== "lobby" && L.phase !== "results" ? L.effects?.[uid]?.type ?? null : null);
+const myEffect = () => effectOn(S.live, S.user?.uid);
+
+// 支払う元（個人 or チーム）
+function payerOf(cfg, uid) {
+  if (cfg.pay === "team") {
+    const teamId = cfg.setId ? teamOfIn(uid, cfg.setId) : null;
+    return teamId ? { kind: "team", id: teamId, key: `t:${teamId}`, label: S.teams.get(teamId)?.name ?? "チーム" } : null;
+  }
+  return { kind: "user", id: uid, key: `u:${uid}`, label: "個人" };
+}
+const balanceOf = (payer) => (payer ? ptTotal(payer.kind, payer.id) : 0);
+
+// ---- 妨害の判定（スマホの事前チェックと、操作用の画面での確定で同じものを使う）
+//   accepted: 成功した妨害（status ok）の一覧、spent: この確定処理の中ですでに使った分
+function saboCheck(L, req, accepted, spent = new Map()) {
+  const cfg = L.sabo;
+  const T = SABO_TYPES[req.type];
+  const st = cfg?.types?.[req.type];
+  const no = (reason) => ({ ok: false, reason });
+  if (!cfg?.on) return no("妨害はオフです");
+  if (!T || !st?.on) return no("この妨害は使えません");
+  const qm = L.qMeta?.[req.forIndex];
+  if (!qm) return no("問題がありません");
+  if (!T.for.includes(qm.t) || (T.needsTime && qm.t !== "buzz" && !qm.time)) return no("この問題には使えません");
+  if (!req.target || req.target === req.uid) return no("自分には使えません");
+  if (!isAnswererIn(L, req.target)) return no("相手が解答者ではありません");
+  if (cfg.who !== "all" && isAnswererIn(L, req.uid)) return no("解答者は妨害できません");
+  if (accepted.some((a) => a.forIndex === req.forIndex && a.target === req.target)) return no("その人はこの問題ですでに妨害を受けています");
+  const sess = sessionAt(L, req.forIndex);
+  const inSess = accepted.filter((a) => L.qMeta?.[a.forIndex]?.s === qm.s);
+  const lim = Number(sess?.perTarget?.[req.type] ?? 1);
+  if (inSess.filter((a) => a.target === req.target && a.type === req.type).length >= lim) {
+    return no(lim === 0 ? `${sess.name}では「${T.label}」は使えません` : `${sess.name}では、この人への「${T.label}」はあと0回です`);
+  }
+  if (inSess.filter((a) => a.uid === req.uid).length >= Number(sess?.perUser ?? 3)) return no(`${sess?.name ?? ""}で妨害できる回数を使い切りました`);
+  const streak = cfg.streak2x && accepted.some((a) => a.uid === req.uid && a.target === req.target && a.forIndex === req.forIndex - 1);
+  const price = (Number(st.price) || 0) * (streak ? 2 : 1);
+  const payer = payerOf(cfg, req.uid);
+  if (!payer) return no("チームに入っていないので使えません");
+  const bal = balanceOf(payer) - (spent.get(payer.key) ?? 0);
+  if (bal < price) return no(`ポイントが足りません（残り ${bal}pt・必要 ${price}pt）`);
+  return { ok: true, price, payer, streak };
+}
+const canSabotage = (L) => !!(L?.sabo?.on && S.me && !S.isAdmin && (L.sabo.who === "all" || !isAnswererIn(L, S.user.uid)));
+const canBet = (L) => !!(L?.bet?.on && S.me && !S.isAdmin);
+
+// ---- 賭け（パリミュチュエル方式：券種ごとに賭け金を全部集め、払戻率をかけて、当たった人で賭け金に応じて分ける）
+const betKey = (kind, pick) => (BET_KINDS[kind]?.ordered ? pick.join(">") : [...pick].sort().join("+"));
+// 券種ごとのプール（取り消し・失敗したものは除く）
+function betPools(bets, kind) {
+  const list = bets.filter((b) => b.kind === kind && b.status !== "ng");
+  const total = list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  const byKey = new Map();
+  for (const b of list) byKey.set(betKey(kind, b.pick), (byKey.get(betKey(kind, b.pick)) ?? 0) + (Number(b.amount) || 0));
+  return { total, byKey };
+}
+// オッズ（倍率）。まだ誰も賭けていない組み合わせは「仮に1pt賭けたら」で出す
+function betOdds(pools, key, rate) {
+  const on = pools.byKey.get(key) ?? 0;
+  const total = pools.total + (on ? 0 : 1);
+  return Math.max(1, Math.floor(((total * rate) / 100 / (on || 1)) * 10) / 10);
+}
+// 結果の順位（同点は同じ順位）から、当たりになる組み合わせを全部出す（同着があると当たりが複数になる）
+function winningKeys(kind, rows) {
+  const K = BET_KINDS[kind];
+  // 順位 = 自分より点が高い人の数 + 1。同点が k 人いれば、その人たちは rank 〜 rank+k-1 番のどれにも入りうる
+  const ranked = rows.map((r) => ({ ...r, rank: rows.filter((x) => x.score > r.score).length + 1, ties: rows.filter((x) => x.score === r.score).length }));
+  const slots = [];
+  for (let pos = 1; pos <= K.n; pos++) slots.push(ranked.filter((r) => r.rank <= pos && pos <= r.rank + r.ties - 1).map((r) => r.uid));
+  const keys = new Set();
+  const walk = (pos, used) => {
+    if (pos === K.n) { keys.add(betKey(kind, used)); return; }
+    for (const uid of slots[pos]) if (!used.includes(uid)) walk(pos + 1, [...used, uid]);
+  };
+  walk(0, []);
+  return keys;
+}
+// 払い戻しを計算する（当たりの組み合わせが複数あるときは、プールを組み合わせの数で等分してから賭け金に応じて分ける）
+function settleBets(bets, rows, cfg) {
+  const out = new Map(); // betId -> { status, payout }
+  for (const kind of BET_KEYS) {
+    const list = bets.filter((b) => b.kind === kind && b.status === "ok");
+    if (!list.length) continue;
+    const pool = Math.floor((list.reduce((s, b) => s + b.amount, 0) * cfg.rate) / 100);
+    const wins = winningKeys(kind, rows);
+    const hitKeys = [...wins].filter((k) => list.some((b) => betKey(kind, b.pick) === k));
+    if (!hitKeys.length) { list.forEach((b) => out.set(b.id, { status: "refund", payout: b.amount })); continue; } // 誰も当たらなければ全額返す
+    const share = pool / hitKeys.length;
+    for (const b of list) {
+      const k = betKey(kind, b.pick);
+      if (!hitKeys.includes(k)) { out.set(b.id, { status: "lose", payout: 0 }); continue; }
+      const onKey = list.filter((x) => betKey(kind, x.pick) === k).reduce((s, x) => s + x.amount, 0);
+      out.set(b.id, { status: "win", payout: Math.floor((share * b.amount) / onKey) });
+    }
+  }
+  return out;
+}
 const QTYPE = { choice: "4択", text: "記述", buzz: "早押し" };
 const CHOICE_COLORS = ["#FF3B30", "#007AFF", "#FF9500", "#34C759"];
 const CHOICE_MARKS = ["A", "B", "C", "D"];
@@ -2290,13 +2454,20 @@ function syncQuizAnswers() {
   const key = L && L.phase !== "off" && L.quizId ? L.quizId : null;
   if (key === QZ.answersKey) return;
   unlisten("quizAnswers");
+  unlisten("quizSabo");
+  unlisten("quizBets");
   S.quizAnswers = new Map();
+  S.quizSabo = new Map();
+  S.quizBets = new Map();
   QZ.answersKey = key;
   if (!key) return;
   listen("quizAnswers", query(C("quizAnswers"), where("quizId", "==", key)), (s) => {
     if (s) S.quizAnswers = toMap(s);
     paintQuizLive();
   });
+  // 妨害と賭け（1回のクイズで数十件程度）
+  listen("quizSabo", query(C("quizSabo"), where("quizId", "==", key)), (s) => { if (s) S.quizSabo = toMap(s); paintQuizLive(); });
+  listen("quizBets", query(C("quizBets"), where("quizId", "==", key)), (s) => { if (s) S.quizBets = toMap(s); paintQuizLive(); });
 }
 
 const normAnswer = (t) => String(t ?? "").normalize("NFKC").toLowerCase().replace(/[\s　]+/g, "");
@@ -2400,7 +2571,11 @@ function paintRead(el, L) {
 
 // ---- 早押しの解答権
 
-const turnLeft = () => Math.max(0, BUZZ_ANSWER_SEC - (performance.now() - QZ.turnT0) / 1000);
+// 解答権の残り秒数（「時間短縮」の妨害を受けている人は半分）
+const turnSecs = (uid) => (effectOn(S.live, uid) === "time" ? BUZZ_ANSWER_SEC / 2 : BUZZ_ANSWER_SEC);
+const turnLeft = (uid) => Math.max(0, turnSecs(uid) - (performance.now() - QZ.turnT0) / 1000);
+// 「出遅れ」の残り秒数（自分のスマホだけ）
+const lateLeft = () => (myEffect() === "late" && S.live?.phase === "question" ? Math.max(0, LATE_SEC - (performance.now() - QZ.t0) / 1000) : 0);
 
 // 操作用の画面が、押した順と判定から「今の解答権」を決めて書き込む。
 // ×（または時間切れ）になったら、押した順に次の人へ移る。○が出たらその人で止める
@@ -2425,8 +2600,8 @@ function quizSyncTurn(L, qz) {
   }
   // 解答者のスマホが閉じている・電波がないなどで時間切れが届かないときは、少し待ってからこちらで時間切れにする
   const a = next && !winner ? next : null;
-  if (a && !a.text && !a.timeout && typeof a.judge !== "boolean" && turnLeft() === 0
-    && performance.now() - QZ.turnT0 > (BUZZ_ANSWER_SEC + 2.5) * 1000 && !QZ.timeoutSent.has(`${a.id}:${L.turn.seq}`)) {
+  if (a && !a.text && !a.timeout && typeof a.judge !== "boolean" && turnLeft(a.uid) === 0
+    && performance.now() - QZ.turnT0 > (turnSecs(a.uid) + 2.5) * 1000 && !QZ.timeoutSent.has(`${a.id}:${L.turn.seq}`)) {
     QZ.timeoutSent.add(`${a.id}:${L.turn.seq}`);
     fire(updateDoc(D("quizAnswers", a.id), { timeout: true }));
   }
@@ -2442,12 +2617,129 @@ function quizOpenQuestion(qz, i, read = wantsRead(qz, i)) {
   QZ.autoClosedSeq = null;
   // 4択・記述の問題読みは、読み終わってから「解答開始」で受け付ける。早押しは読み上げ中も押せる
   const reading = read && q.type !== "buzz";
-  fire(setDoc(liveRef(), {
-    quizId: qz.id, title: qz.title, total: qz.questions.length, answerers: qz.answerers ?? null,
+  const base = liveBase(qz);
+  const b = writeBatch(db);
+  // 受付中の妨害・賭けは、この問題を出す瞬間に先着順で確定してポイントを引く
+  // 妨害と賭けは同じ持ちポイントから引くので、使った分（spent）を共有して残高を超えないようにする
+  const spent = new Map();
+  const effects = resolveSabo(qz, i, b, base, spent);
+  if (S.live?.betWin?.open) resolveBets(qz, b, base, spent);
+  b.set(liveRef(), {
+    ...base, run: S.live?.run ?? null,
     index: i, phase: reading ? "reading" : "question", seq: Date.now(), openedAt: serverTimestamp(), q: publicQuestion(q), answer: null, scores: null,
-    read: !!read, fullText: false, turn: null, readStop: null,
-  }));
+    read: !!read, fullText: false, turn: null, readStop: null, effects, saboWin: null, betWin: null, slide: null,
+  });
+  fire(b.commit());
 }
+
+// ---- 妨害・賭けの受付と確定（操作用の画面）
+
+const runOf = (r) => r.quizId === S.live?.quizId && r.run === S.live?.run;
+const runSabo = () => [...S.quizSabo.values()].filter(runOf);
+const runBets = () => [...S.quizBets.values()].filter(runOf);
+const byArrival = (x, y) => (ts(x.at) || Infinity) - (ts(y.at) || Infinity) || (x.id < y.id ? -1 : 1);
+
+// 受付中の妨害を先着順に確定する。失敗したものはポイントを引かない。成功したものはその問題の効果として返す
+function resolveSabo(qz, i, b, base, spent = new Map()) {
+  const L = S.live;
+  const all = runSabo();
+  const accepted = all.filter((r) => r.status === "ok");
+  const open = L?.saboWin?.open && L.saboWin.index === i;
+  const logs = [];
+  for (const r of all.filter((x) => x.status === "pending").sort(byArrival)) {
+    if (!open || r.forIndex !== i) { b.update(D("quizSabo", r.id), { status: "ng", reason: "受付時間外でした（ポイントは引かれていません）" }); continue; }
+    const c = saboCheck({ ...base, run: L.run }, r, accepted, spent);
+    if (!c.ok) { b.update(D("quizSabo", r.id), { status: "ng", reason: c.reason }); continue; }
+    accepted.push({ ...r, status: "ok" });
+    spent.set(c.payer.key, (spent.get(c.payer.key) ?? 0) + c.price);
+    b.update(D("quizSabo", r.id), { status: "ok", price: c.price, streak: c.streak, payKind: c.payer.kind, payId: c.payer.id });
+    if (c.price) logs.push({
+      kind: c.payer.kind, target: c.payer.id, teamId: c.payer.kind === "team" ? c.payer.id : null, visibility: "public", delta: -c.price,
+      reason: `クイズ妨害：${memberName(r.uid)} → ${memberName(r.target)}「${SABO_TYPES[r.type].label}」（${qz.title} 第${i + 1}問）`,
+      createdAt: serverTimestamp(), author: emailToId(S.user.email),
+    });
+  }
+  logs.forEach((x) => b.set(doc(C("pointLogs")), x));
+  addStats(b, logs);
+  const effects = {};
+  accepted.filter((a) => a.forIndex === i).forEach((a) => { effects[a.target] = { type: a.type, by: a.uid }; });
+  return effects;
+}
+
+// 賭けの事前チェック・確定で使う
+function betCheck(L, bet, accepted, spent = new Map()) {
+  const cfg = L.bet;
+  const K = BET_KINDS[bet.kind];
+  const no = (reason) => ({ ok: false, reason });
+  if (!cfg?.on) return no("賭けはオフです");
+  if (!K || !cfg.kinds?.[bet.kind]?.on) return no("この券種は使えません");
+  const pick = bet.pick ?? [];
+  if (pick.length !== K.n || new Set(pick).size !== K.n) return no(`${K.n}人を選んでください`);
+  if (pick.some((u) => !isAnswererIn(L, u))) return no("解答者ではない人が入っています");
+  const amount = Math.floor(Number(bet.amount) || 0);
+  if (amount < 1) return no("1pt 以上賭けてください");
+  const used = accepted.filter((a) => a.uid === bet.uid).reduce((x, a) => x + (Number(a.amount) || 0), 0);
+  if (used + amount > cfg.max) return no(`1人 ${cfg.max}pt までです（あと ${Math.max(0, cfg.max - used)}pt）`);
+  const payer = payerOf(cfg, bet.uid);
+  if (!payer) return no("チームに入っていないので賭けられません");
+  const bal = balanceOf(payer) - (spent.get(payer.key) ?? 0);
+  if (bal < amount) return no(`ポイントが足りません（残り ${bal}pt）`);
+  return { ok: true, amount, payer };
+}
+
+// 受付中の賭けを確定する（賭け金を引く）。確定後の一覧を返す
+function resolveBets(qz, b, base, spent = new Map()) {
+  const L = S.live;
+  const all = runBets().map((x) => ({ ...x }));
+  const accepted = all.filter((x) => x.status === "ok");
+  const logs = [];
+  for (const r of all.filter((x) => x.status === "pending").sort(byArrival)) {
+    const c = L?.betWin?.open ? betCheck({ ...base, run: L.run }, r, accepted, spent) : { ok: false, reason: "受付時間外でした" };
+    if (!c.ok) { r.status = "ng"; b.update(D("quizBets", r.id), { status: "ng", reason: c.reason }); continue; }
+    Object.assign(r, { status: "ok", amount: c.amount, payKind: c.payer.kind, payId: c.payer.id });
+    accepted.push(r);
+    spent.set(c.payer.key, (spent.get(c.payer.key) ?? 0) + c.amount);
+    b.update(D("quizBets", r.id), { status: "ok", amount: c.amount, payKind: c.payer.kind, payId: c.payer.id });
+    logs.push({
+      kind: c.payer.kind, target: c.payer.id, teamId: c.payer.kind === "team" ? c.payer.id : null, visibility: "public", delta: -c.amount,
+      reason: `クイズの賭け：${memberName(r.uid)}「${BET_KINDS[r.kind].label} ${r.pick.map(memberName).join("→")}」（${qz.title}）`,
+      createdAt: serverTimestamp(), author: emailToId(S.user.email),
+    });
+  }
+  logs.forEach((x) => b.set(doc(C("pointLogs")), x));
+  addStats(b, logs);
+  return all;
+}
+
+// 結果発表のときに払い戻す
+function settleInto(b, qz, bets, rows, cfg) {
+  const out = settleBets(bets.filter((x) => x.status === "ok"), rows, cfg);
+  const logs = [];
+  for (const [id, r] of out) {
+    const bet = bets.find((x) => x.id === id);
+    b.update(D("quizBets", id), r);
+    if (r.payout > 0) logs.push({
+      kind: bet.payKind, target: bet.payId, teamId: bet.payKind === "team" ? bet.payId : null, visibility: "public", delta: r.payout,
+      reason: `クイズの賭け${r.status === "refund" ? "（的中者なしで返金）" : "的中"}：${memberName(bet.uid)}「${BET_KINDS[bet.kind].label} ${bet.pick.map(memberName).join("→")}」（${qz.title}）`,
+      createdAt: serverTimestamp(), author: emailToId(S.user.email),
+    });
+  }
+  logs.forEach((x) => b.set(doc(C("pointLogs")), x));
+  addStats(b, logs);
+}
+
+function quizFinish(qz) {
+  const rows = quizScores(qz);
+  const base = liveBase(qz);
+  const b = writeBatch(db);
+  let bets = runBets();
+  if (S.live?.betWin?.open) bets = resolveBets(qz, b, base);
+  if (S.live?.bet?.on) settleInto(b, qz, bets, rows, base.bet);
+  b.update(liveRef(), { phase: "results", scores: rows.map(({ uid, score }) => ({ uid, score })), saboWin: null, betWin: null, slide: null });
+  fire(b.commit());
+}
+
+const quizLiveUpdate = (patch) => fire(updateDoc(liveRef(), patch));
 const quizStartAnswering = () => quizSetPhase("question", { openedAt: serverTimestamp(), fullText: true });
 const quizSetPhase = (phase, extra = {}) => fire(updateDoc(liveRef(), { phase, ...extra }));
 
@@ -2464,7 +2756,7 @@ function quizPrimaryAction() {
     // まだ出していないもの（回答・正解・○×）があれば、先に全部出す（誤って次へ進まないように）
     if (!allRevealed(L, qz)) return quizReveal({ showAns: "all", shown: "all", answerShown: true });
     if (L.index + 1 < qz.questions.length) return quizOpenQuestion(qz, L.index + 1);
-    return quizSetPhase("results", { scores: quizScores(qz).map(({ uid, score }) => ({ uid, score })) });
+    return quizFinish(qz);
   }
   if (L.phase === "results") return quizEnd();
 }
@@ -2511,9 +2803,10 @@ async function quizStart(quizId, mode = "operator") {
   const qz = S.quizzes.get(quizId);
   if (!qz?.questions?.length) return toast("問題がありません", true);
   if (S.live && S.live.phase !== "off" && S.live.quizId !== quizId && !confirm("別のクイズが進行中です。終了して、このクイズを始めますか？")) return;
+  // run：このクイズを何回目に始めたか（前に同じクイズをやったときの妨害・賭けと混ざらないように）
   fire(setDoc(liveRef(), {
-    quizId, title: qz.title, total: qz.questions.length, answerers: qz.answerers ?? null,
-    index: 0, phase: "lobby", seq: Date.now(), q: null, answer: null, scores: null,
+    ...liveBase(qz), run: Date.now(),
+    index: 0, phase: "lobby", seq: Date.now(), q: null, answer: null, scores: null, effects: {}, saboWin: null, betWin: null, slide: null,
   }));
   openPresenter(mode);
 }
@@ -2559,12 +2852,14 @@ function quizManager({ withTitle = true } = {}) {
   function tryLoad() {
     const qz = S.quizzes.get(editing);
     if (!qz || draft) return;
-    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [] }));
+    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [], sessions: quizSessions(qz), sabo: saboCfg(qz), bet: betCfg(qz) }));
+    // 区切りが無い問題は最初の区切りへ
+    draft.questions.forEach((q) => { if (!draft.sessions.some((x) => x.id === q.session)) q.session = draft.sessions[0].id; });
     paintEditor();
   }
   const touch = () => { dirty = true; editor.classList.add("dirty"); };
   async function save() {
-    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions });
+    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions, sessions: draft.sessions, sabo: draft.sabo, bet: draft.bet });
     dirty = false; editor.classList.remove("dirty");
     toast("保存しました");
   }
@@ -2579,7 +2874,8 @@ function quizManager({ withTitle = true } = {}) {
       ], "表示用と操作用は、別の管理者アカウント・別の端末で開けます（例：admin1 で表示用、admin2 で操作用）。") : null,
       quizzes.length ? quizzes.map((qz) => h("article", { class: "card quiz-card", "data-quiz": qz.id },
         h("div", { class: "quiz-card-title" }, icon("quiz"), qz.title),
-        h("div", { class: "cell-sub" }, `${qz.questions?.length ?? 0}問 ・ 解答者：${qz.answerers ? `${qz.answerers.length}人` : "全員"}`),
+        h("div", { class: "cell-sub" }, [`${qz.questions?.length ?? 0}問`, quizSessions(qz).length > 1 ? `${quizSessions(qz).length}区切り` : null, `解答者：${qz.answerers ? `${qz.answerers.length}人` : "全員"}`,
+          qz.sabo?.on ? "妨害あり" : null, qz.bet?.on ? "賭けあり" : null].filter(Boolean).join(" ・ ")),
         h("div", { class: "quiz-card-actions" },
           h("button", { class: "text-btn", onclick: () => openEditor(qz.id) }, "編集"),
           h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${qz.title}」を削除しますか？`)) fire(deleteDoc(D("quizzes", qz.id)), "削除しました"); } }, "削除"),
@@ -2608,11 +2904,44 @@ function quizManager({ withTitle = true } = {}) {
         return h("label", { class: "pick" }, cb, m.name);
       }) : null);
     };
-    who.addEventListener("change", () => { d.answerers = who.value === "pick" ? [] : null; touch(); paintPicks(); });
+    who.addEventListener("change", () => { d.answerers = who.value === "pick" ? [] : null; touch(); paintPicks(); paintSettings(); });
     paintPicks();
 
     const qList = h("div");
-    const paintQuestions = () => setKids(qList, d.questions.map((q, i) => questionEditor(q, i)));
+    // 問題は区切りの順に並べておく（同じ区切りの中の順番はそのまま）
+    const normalize = () => {
+      const order = new Map(d.sessions.map((x, k) => [x.id, k]));
+      d.questions.forEach((q) => { if (!order.has(q.session)) q.session = d.sessions[0].id; });
+      d.questions = d.questions.map((q, k) => [q, k]).sort((a, b) => order.get(a[0].session) - order.get(b[0].session) || a[1] - b[1]).map(([q]) => q);
+    };
+    const numIn = (val, onset, attrs = {}) => {
+      const inp = h("input", { type: "number", value: String(val ?? 0), inputmode: "numeric", min: "0", ...attrs });
+      inp.addEventListener("input", () => { onset(Math.max(0, Number(inp.value) || 0)); touch(); });
+      return inp;
+    };
+    function sessionEditor(sx, k) {
+      const name = h("input", { type: "text", value: sx.name, class: "plain session-name", placeholder: "区切りの名前（例：A問題）" });
+      name.addEventListener("input", () => { sx.name = name.value; touch(); });
+      const qs = d.questions.map((q, i) => [q, i]).filter(([q]) => q.session === sx.id);
+      const onTypes = SABO_KEYS.filter((t) => d.sabo.types[t]?.on);
+      return h("section", { class: "session-block" },
+        h("div", { class: "session-head" }, name,
+          d.sessions.length > 1 ? h("button", { class: "text-btn destructive", onclick: () => {
+            if (!confirm(`「${sx.name}」を削除しますか？中の問題は1つ前の区切りに移ります。`)) return;
+            const to = d.sessions[k - 1] ?? d.sessions[k + 1];
+            d.questions.forEach((q) => { if (q.session === sx.id) q.session = to.id; });
+            d.sessions.splice(k, 1); normalize(); touch(); paintQuestions();
+          } }, "区切りを削除") : null),
+        d.sabo.on ? h("div", { class: "group-body q-nums" },
+          field("1人が妨害できる回数", numIn(sx.perUser, (v) => { sx.perUser = v; })),
+          onTypes.map((t) => field(`1人が受ける「${SABO_TYPES[t].label}」の上限`, numIn(sx.perTarget?.[t] ?? 1, (v) => { sx.perTarget = { ...sx.perTarget, [t]: v }; })))) : null,
+        d.sabo.on ? h("div", { class: "cell-sub q-hint" }, "この区切りの中での回数です。0 にするとこの区切りでは使えません。") : null,
+        qs.length ? qs.map(([q, i]) => questionEditor(q, i)) : h("div", { class: "cell-sub q-hint" }, "まだ問題がありません"),
+        h("div", { class: "quiz-add" }, Object.entries(QTYPE).map(([type, label]) =>
+          h("button", { class: "pill", onclick: () => { d.questions.push({ ...newQuestion(type), session: sx.id }); normalize(); touch(); paintQuestions(); } }, icon("plus"), `${label}の問題`))));
+    }
+    const paintQuestions = () => setKids(qList, d.sessions.map((sx, k) => sessionEditor(sx, k)),
+      h("button", { class: "btn-small ghost add-session", onclick: () => { d.sessions.push(newSession(d.sessions.length)); touch(); paintQuestions(); } }, icon("plus"), "区切りを追加（B問題…）"));
     function questionEditor(q, i) {
       const type = segmented(Object.entries(QTYPE).map(([value, label]) => ({ value, label })), q.type);
       type.addEventListener("change", () => {
@@ -2647,7 +2976,7 @@ function quizManager({ withTitle = true } = {}) {
       }
       const move = (dir) => {
         const j = i + dir;
-        if (j < 0 || j >= d.questions.length) return;
+        if (j < 0 || j >= d.questions.length || d.questions[j].session !== q.session) return;
         [d.questions[i], d.questions[j]] = [d.questions[j], d.questions[i]];
         touch(); paintQuestions();
       };
@@ -2660,6 +2989,11 @@ function quizManager({ withTitle = true } = {}) {
             h("button", { class: "text-btn destructive", onclick: () => { d.questions.splice(i, 1); touch(); paintQuestions(); } }, "削除"))),
         type, text, body,
         h("div", { class: "group-body q-nums" },
+          d.sessions.length > 1 ? field("区切り", (() => {
+            const sel = h("select", { class: "inline-select" }, d.sessions.map((x) => h("option", { value: x.id, selected: x.id === q.session }, x.name)));
+            sel.addEventListener("change", () => { q.session = sel.value; normalize(); touch(); paintQuestions(); });
+            return sel;
+          })()) : null,
           field("スマホに問題文を表示", (() => {
             const t = toggle(q.phone !== false);
             t.addEventListener("change", () => { q.phone = t.checked; touch(); });
@@ -2681,6 +3015,46 @@ function quizManager({ withTitle = true } = {}) {
     }
     paintQuestions();
 
+    // 妨害・賭けの設定
+    const settings = h("div");
+    const paySel = (cfg) => {
+      const pay = segmented([{ value: "user", label: "個人のポイント" }, { value: "team", label: "チームのポイント" }], cfg.pay);
+      pay.addEventListener("change", () => { cfg.pay = pay.value; if (cfg.pay === "team" && !cfg.setId) cfg.setId = sortedSets()[0]?.id ?? null; touch(); paintSettings(); });
+      const set = h("select", { class: "inline-select" }, sortedSets().map((x) => h("option", { value: x.id, selected: x.id === cfg.setId }, x.name)));
+      set.addEventListener("change", () => { cfg.setId = set.value; touch(); });
+      return [h("div", { class: "cell" }, pay), cfg.pay === "team" ? field("どのチーム表のチームか", sortedSets().length ? set : h("span", { class: "secondary" }, "チーム表がありません")) : null];
+    };
+    const sw = (val, onset, repaint) => { const t = toggle(val); t.addEventListener("change", () => { onset(t.checked); touch(); if (repaint) { paintSettings(); paintQuestions(); } }); return t; };
+    function paintSettings() {
+      const sb = d.sabo, bt = d.bet;
+      const who = segmented([{ value: "spectators", label: "解答者以外" }, { value: "all", label: "全員" }], sb.who);
+      who.addEventListener("change", () => { sb.who = who.value; touch(); paintSettings(); });
+      setKids(settings,
+        group("妨害システム", [
+          field("妨害を使う", sw(sb.on, (v) => { sb.on = v; }, true)),
+          ...(sb.on ? [
+            h("div", { class: "cell" }, who),
+            ...paySel(sb),
+            field("同じ人を2問続けて狙うと値段2倍", sw(sb.streak2x, (v) => { sb.streak2x = v; })),
+            ...SABO_KEYS.map((t) => h("div", { class: "cell sabo-type" },
+              h("div", { class: "cell-main" }, h("b", null, SABO_TYPES[t].label), h("div", { class: "cell-sub" }, SABO_TYPES[t].desc + (SABO_TYPES[t].for.length < 3 ? `（${SABO_TYPES[t].for.map((x) => QTYPE[x]).join("・")}のみ）` : ""))),
+              numIn(sb.types[t].price, (v) => { sb.types[t].price = v; }, { class: "price-input", "aria-label": `${SABO_TYPES[t].label}の値段` }), h("span", { class: "secondary" }, "pt"),
+              sw(sb.types[t].on, (v) => { sb.types[t].on = v; }, true))),
+          ] : []),
+        ], sb.on ? (sb.who === "spectators" && !d.answerers ? "⚠ 解答者が「全員」なので、このままだと妨害できる人がいません。解答者を選ぶか「全員」にしてください。"
+          : "1問で1人が受ける妨害は1つまで（早い者勝ち）。回数の上限は区切りごとに下で決めます。") : "オンにすると、問題と問題の間にポイントで解答者を妨害できます。"),
+        group("順位予想（賭け）", [
+          field("賭けを使う", sw(bt.on, (v) => { bt.on = v; }, true)),
+          ...(bt.on ? [
+            ...paySel(bt),
+            field("払戻率（%）", numIn(bt.rate, (v) => { bt.rate = Math.min(100, Math.max(1, v)); }, { min: "1", max: "100" })),
+            field("1人が賭けられる上限（pt）", numIn(bt.max, (v) => { bt.max = Math.max(1, v); }, { min: "1" })),
+            ...BET_KEYS.map((k) => field(`${BET_KINDS[k].label}（${BET_KINDS[k].desc}）`, sw(bt.kinds[k].on, (v) => { bt.kinds[k].on = v; }))),
+          ] : []),
+        ], bt.on ? "オッズは賭け金の合計で決まります（パリミュチュエル方式）。払戻率100%なら、集まったポイントが全部当たった人に分けられます。" : "オンにすると、クイズの最終順位を予想してポイントを賭けられます。"));
+    }
+    paintSettings();
+
     setKids(editor,
       h("div", { class: "row-between" },
         h("button", { class: "text-btn", onclick: closeEditor }, "‹ 一覧へ戻る"),
@@ -2688,9 +3062,8 @@ function quizManager({ withTitle = true } = {}) {
       h("div", { class: "card" }, title),
       group("解答者", [h("div", { class: "cell" }, who)], "「選ぶ」にすると、チェックした人だけが解答できます。"),
       picks,
+      settings,
       qList,
-      h("div", { class: "quiz-add" }, Object.entries(QTYPE).map(([type, label]) =>
-        h("button", { class: "pill", onclick: () => { d.questions.push(newQuestion(type)); touch(); paintQuestions(); } }, icon("plus"), `${label}の問題`))),
       h("button", { class: "btn-filled", onclick: () => guard(null, async () => { await save(); quizStart(editing, "operator"); }) }, icon("play"), "保存して開始（操作用の画面へ）"),
     );
   }
@@ -2735,16 +3108,23 @@ document.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea, select")) return;
   const L = S.live;
   const qz = L && S.quizzes.get(L.quizId);
+  if (L?.phase === "lobby" && L.slide != null && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+    const n = ruleSlides(L).length;
+    quizLiveUpdate({ slide: Math.min(n - 1, Math.max(0, L.slide + (e.key === "ArrowRight" ? 1 : -1))) });
+    return;
+  }
   if (e.key === " " || e.key === "Enter") { e.preventDefault(); quizPrimaryAction(); }
   if (qz && e.key === "ArrowRight" && L.index + 1 < qz.questions.length) quizOpenQuestion(qz, L.index + 1);
   if (qz && e.key === "ArrowLeft" && L.index > 0) quizOpenQuestion(qz, L.index - 1);
 });
 
+// 制限時間の秒数。自分のスマホでは「時間短縮」の妨害を受けていると半分
+const myQTime = (L, local) => (L?.q?.time ? (local && !S.isAdmin && L.q.type !== "buzz" && myEffect() === "time" ? L.q.time / 2 : L.q.time) : 0);
 function remainingSec(L, local) {
   if (!L?.q?.time) return null;
   const start = local ? QZ.t0 : ts(L.openedAt) || Date.now();
   const elapsed = local ? (performance.now() - start) / 1000 : (Date.now() - start) / 1000;
-  return Math.max(0, L.q.time - elapsed);
+  return Math.max(0, myQTime(L, local) - elapsed);
 }
 
 function paintPresenter(full = true) {
@@ -2791,7 +3171,9 @@ function answerBar(L, qz) {
     const ansShown = a && isAnsShown(L, m.id);
     const pop = (revealed && a && firstTime(`chip:${L.seq}:${m.id}`)) || (ansShown && firstTime(`ansv:${L.seq}:${m.id}`)) || (a && !revealed && firstTime(`ans:${L.seq}:${m.id}`));
     const ansLabel = q.type === "choice" ? CHOICE_MARKS[a?.choice] ?? "?" : q.type === "text" ? a?.text : rank ? `${rank}番` : "✓";
-    return h("div", { class: `pr-chip${a ? " done" : ""}${ok === true ? " ok" : ok === false ? " ng" : ""}${turn ? " turn" : ""}${pop ? " pop" : ""}` },
+    const fx = effectOn(L, m.id);
+    return h("div", { class: `pr-chip${a ? " done" : ""}${ok === true ? " ok" : ok === false ? " ng" : ""}${turn ? " turn" : ""}${pop ? " pop" : ""}${fx ? " fx" : ""}` },
+      fx ? h("span", { class: "mk2", title: SABO_TYPES[fx]?.label }, SABO_TYPES[fx]?.mark ?? "!") : null,
       h("span", { class: "nm" }, m.name),
       ansShown && q.type !== "buzz" ? h("span", { class: "av" }, ansLabel) : null,
       h("span", { class: "st" }, revealed && a ? (markSvg(ok, false, "mark-chip") ?? "?") : turn ? "解答中" : rank ? `${rank}番` : a ? "✓" : "—"));
@@ -2808,7 +3190,126 @@ function resultsBody(qz, withButton) {
       if (r.score !== prev) { rank = i + 1; prev = r.score; }
       return h("li", { class: `r${rank}` }, h("span", { class: "pr-rank-no" }, rank), h("span", { class: "pr-rank-name" }, r.name), h("span", { class: "pr-rank-pt" }, r.score, h("small", null, "点")));
     })),
+    resultsExtras(),
     withButton ? h("button", { class: "pr-btn ghost", onclick: () => quizToPoints(qz) }, "この得点を個人ポイントに加算") : null);
+}
+
+// ---- 妨害・賭け・スライドの操作（操作用の画面）
+function betCloseNow(qz) {
+  const b = writeBatch(db);
+  resolveBets(qz, b, liveBase(qz));
+  b.update(liveRef(), { betWin: null });
+  fire(b.commit(), "賭けを締め切りました");
+}
+
+// 受付中の妨害を、確定したときと同じ順番・同じルールで仮に判定する（操作用の画面での確認用）
+function previewSabo(L) {
+  const all = runSabo();
+  const accepted = all.filter((r) => r.status === "ok");
+  const spent = new Map();
+  return all.filter((r) => r.status === "pending").sort(byArrival).map((r) => {
+    const c = L.saboWin?.open && r.forIndex === L.saboWin.index ? saboCheck(L, r, accepted, spent) : { ok: false, reason: "受付時間外" };
+    if (c.ok) { accepted.push({ ...r, status: "ok" }); spent.set(c.payer.key, (spent.get(c.payer.key) ?? 0) + c.price); }
+    return { r, c };
+  });
+}
+
+function opExtras(L, qz) {
+  const between = ["lobby", "closed", "reveal"].includes(L.phase);
+  const nextIndex = L.phase === "lobby" ? 0 : L.index + 1;
+  const hasNext = nextIndex < qz.questions.length;
+  const rows = [];
+  if (L.phase === "lobby") {
+    const n = ruleSlides(L).length;
+    rows.push(L.slide == null
+      ? h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ slide: 0 }) }, "ルール説明（スライド）を表示")
+      : h("div", { class: "op-slidectl" },
+        h("b", null, "ルール説明"),
+        h("button", { class: "btn-small ghost", disabled: L.slide <= 0, onclick: () => quizLiveUpdate({ slide: L.slide - 1 }) }, "← 前"),
+        h("span", null, `${L.slide + 1} / ${n}`),
+        h("button", { class: "btn-small ghost", disabled: L.slide >= n - 1, onclick: () => quizLiveUpdate({ slide: L.slide + 1 }) }, "次 →"),
+        h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ slide: null }) }, "説明を閉じる")));
+  }
+  if (L.sabo?.on) {
+    if (L.saboWin?.open) {
+      const pv = previewSabo(L);
+      rows.push(h("div", { class: "op-win sabo" },
+        h("div", { class: "op-win-head" }, h("span", { class: "live-dot" }), `妨害受付中（第${L.saboWin.index + 1}問）${pv.length}件`,
+          h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ saboWin: null }) }, "受付を中止")),
+        pv.length ? pv.map(({ r, c }) => h("div", { class: `op-win-row${c.ok ? " ok" : " ng"}` },
+          `${memberName(r.uid)} → ${memberName(r.target)}「${SABO_TYPES[r.type]?.label}」`, h("small", null, c.ok ? `${c.price}pt` : c.reason))) : h("div", { class: "op-win-row" }, "まだ申し込みはありません"),
+        h("div", { class: "cell-sub" }, "次の問題を出した瞬間に、この順番で確定します（失敗したものはポイントを引きません）。")));
+    } else if (between && hasNext) {
+      rows.push(h("button", { class: "btn-small", onclick: () => quizLiveUpdate({ saboWin: { index: nextIndex, open: true } }) }, `妨害受付を開始（第${nextIndex + 1}問）`));
+    }
+  }
+  if (L.bet?.on && L.phase !== "results") {
+    if (L.betWin?.open) {
+      const bets = runBets().filter((b) => b.status === "pending");
+      rows.push(h("div", { class: "op-win bet" },
+        h("div", { class: "op-win-head" }, h("span", { class: "live-dot" }), `賭け受付中 ${bets.length}件（${bets.reduce((x, b) => x + (Number(b.amount) || 0), 0)}pt）`,
+          h("button", { class: "btn-small", onclick: () => betCloseNow(qz) }, "締め切る（賭け金を確定）")),
+        h("div", { class: "cell-sub" }, "次の問題を出したときにも自動で締め切ります。")));
+    } else if (between) {
+      rows.push(h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ betWin: { open: true } }) }, "賭け受付を開始"));
+    }
+  }
+  return rows.length ? h("div", { class: "card op-ctl" }, rows) : null;
+}
+
+// ---- 表示用：妨害・賭けのパネル
+function oddsBoard(L, compact) {
+  const cfg = L.bet;
+  const bets = runBets().filter((b) => b.status !== "ng");
+  const kinds = BET_KEYS.filter((k) => cfg.kinds[k]?.on);
+  const people = quizAudience(L.answerers);
+  const win = cfg.kinds.win?.on ? betPools(bets, "win") : null;
+  return h("div", { class: `pr-odds${compact ? " compact" : ""}` },
+    h("div", { class: "pr-side-title" }, "オッズ"),
+    h("div", { class: "pr-pools" }, kinds.map((k) => h("span", null, BET_KINDS[k].label, h("b", null, `${betPools(bets, k).total}pt`)))),
+    win ? h("ol", { class: "pr-oddlist" }, people.map((m) => ({ m, o: betOdds(win, betKey("win", [m.id]), cfg.rate), on: win.byKey.get(m.id) ?? 0 }))
+      .sort((a, b) => a.o - b.o).slice(0, compact ? 6 : 10).map(({ m, o, on }) => h("li", null, h("span", null, m.name), h("small", null, `${on}pt`), h("b", null, `${o}倍`)))) : null,
+    kinds.filter((k) => k !== "win").map((k) => {
+      const p = betPools(bets, k);
+      const top = [...p.byKey.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+      return top.length ? h("div", { class: "pr-combos" }, h("div", { class: "pr-side-sub" }, `${BET_KINDS[k].label} 人気`),
+        top.map(([key, amt]) => h("div", null, h("span", null, key.split(/[>+]/).map(memberName).join(BET_KINDS[k].ordered ? "→" : "・")), h("b", null, `${betOdds(p, key, cfg.rate)}倍`)))) : null;
+    }));
+}
+
+function displaySide(L) {
+  const parts = [];
+  if (L.saboWin?.open) {
+    const reqs = runSabo().filter((r) => r.status === "pending" && r.forIndex === L.saboWin.index).sort(byArrival);
+    parts.push(h("div", { class: "pr-side-card sabo" },
+      h("div", { class: "pr-side-title" }, h("span", { class: "live-dot" }), `妨害受付中 ・ 第${L.saboWin.index + 1}問`),
+      reqs.length ? h("ol", { class: "pr-reqs" }, reqs.map((r) => h("li", { class: firstTime(`rq:${r.id}`) ? "enter" : null },
+        h("b", null, memberName(r.uid)), " → ", h("b", null, memberName(r.target)), h("span", { class: "mk2" }, SABO_TYPES[r.type]?.mark ?? "!"), SABO_TYPES[r.type]?.label)))
+        : h("div", { class: "pr-side-sub" }, "スマホから申し込んでください")));
+  }
+  if (L.betWin?.open) parts.push(h("div", { class: "pr-side-card bet" }, h("div", { class: "pr-side-title" }, h("span", { class: "live-dot" }), "賭け受付中"), oddsBoard(L, !!L.saboWin?.open)));
+  return parts.length ? h("aside", { class: "pr-side" }, parts) : null;
+}
+
+// 今の問題で発動している妨害（表示用の画面の上に並べる）
+function effectRow(L) {
+  const fxs = effectList(L);
+  if (!fxs.length || L.phase === "lobby" || L.phase === "results") return null;
+  return h("div", { class: `pr-fxrow${firstTime(`fxr:${L.seq}`) ? " enter" : ""}` }, h("span", { class: "pr-fx-label" }, "妨害発動"),
+    fxs.map((f) => h("span", { class: "pr-fx" }, h("span", { class: "mk2" }, SABO_TYPES[f.type]?.mark ?? "!"), `${memberName(f.by)} → `, h("b", null, memberName(f.target)), `「${SABO_TYPES[f.type]?.label ?? f.type}」`)));
+}
+
+// 結果発表で出す：妨害の記録と賭けの結果
+function resultsExtras() {
+  const sabo = runSabo().filter((r) => r.status === "ok").sort((a, b) => a.forIndex - b.forIndex || byArrival(a, b));
+  const bets = runBets().filter((b) => ["win", "lose", "refund"].includes(b.status));
+  const hits = bets.filter((b) => b.status === "win").sort((a, b) => b.payout - a.payout);
+  const cards = [];
+  if (sabo.length) cards.push(h("div", { class: "pr-res-card" }, h("div", { class: "pr-side-title" }, `妨害の記録 ${sabo.length}件`),
+    h("ol", null, sabo.map((r) => h("li", null, h("small", null, `第${r.forIndex + 1}問`), `${memberName(r.uid)} → ${memberName(r.target)}「${SABO_TYPES[r.type]?.label}」`, h("em", null, `−${r.price}pt`))))));
+  if (bets.length) cards.push(h("div", { class: "pr-res-card" }, h("div", { class: "pr-side-title" }, hits.length ? `賭けの的中 ${hits.length}件` : "賭け：的中なし（全額返金）"),
+    h("ol", null, (hits.length ? hits : []).map((b) => h("li", null, h("b", null, memberName(b.uid)), `${BET_KINDS[b.kind]?.label} ${b.pick.map(memberName).join("→")}`, h("em", null, `+${b.payout}pt（${b.amount}pt）`))))));
+  return cards.length ? h("div", { class: "pr-res-extra" }, cards) : null;
 }
 
 // 早押し（表示用）：今の解答権と、その問題の誤答一覧
@@ -2827,7 +3328,7 @@ function buzzStage(L, q) {
       h("div", { class: "lbl" }, ok ? "正解" : "解答権"),
       h("div", { class: "who" }, memberName(cur.uid), h("small", null, fmtSec(cur.reactionMs))),
       text ? h("div", { class: "ans" }, `「${text}」`)
-        : L.phase === "question" ? h("div", { class: "pr-turn-count", "data-turncount": "" }, Math.ceil(turnLeft())) : null,
+        : L.phase === "question" ? h("div", { class: "pr-turn-count", "data-turncount": "" }, Math.ceil(turnLeft(cur.uid))) : null,
       ok ? markSvg(true, firstTime(`bw:${L.seq}:${cur.uid}`), "mark-turn") : null);
   } else if (L.phase === "question") {
     const left = order.filter((a) => judged(q, a) !== false).length;
@@ -2852,6 +3353,7 @@ function paintDisplay(P, L, qz, rem) {
   const head = h("div", { class: "pr-head" },
     h("div", { class: "pr-title" }, L.title),
     L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "pr-meta" },
+      (L.sessions?.length ?? 0) > 1 ? h("span", { class: "pr-badge session" }, sessionAt(L, L.index)?.name ?? "") : null,
       h("span", { class: "pr-badge" }, `第${L.index + 1}問 / ${qz.questions.length}`),
       h("span", { class: `pr-badge type-${q?.type}` }, QTYPE[q?.type] ?? ""),
       h("span", { class: "pr-badge" }, `${q?.points ?? 10}点`),
@@ -2861,7 +3363,9 @@ function paintDisplay(P, L, qz, rem) {
     h("button", { class: "pr-exit", title: "表示用画面を閉じる", onclick: closePresenter }, icon("xmark")));
 
   let body;
-  if (L.phase === "lobby") {
+  if (L.phase === "lobby" && L.slide != null) {
+    body = slideView(L, "sl-display");
+  } else if (L.phase === "lobby") {
     body = h("div", { class: "pr-lobby" },
       h("div", { class: `pr-big${firstTime(`dl:${L.seq}`) ? " enter" : ""}` }, L.title),
       h("div", { class: "pr-sub" }, `全${qz.questions.length}問 ・ 解答者 ${audience.length}人`),
@@ -2894,7 +3398,8 @@ function paintDisplay(P, L, qz, rem) {
       detail,
       revealed && q.type !== "choice" && q.answer ? h("div", { class: `pr-answer${firstTime(`da:${L.seq}`) ? " enter" : ""}` }, "正解：", q.answer) : null);
   }
-  setKids(P, head, body, L.phase === "lobby" || L.phase === "results" ? null : answerBar(L, qz));
+  const side = displaySide(L);
+  setKids(P, head, effectRow(L), side ? h("div", { class: "pr-row" }, body, side) : body, L.phase === "lobby" || L.phase === "results" ? null : answerBar(L, qz));
 }
 
 // 操作用（手元で進行と ○×判定をする）
@@ -2907,7 +3412,7 @@ function paintOperator(P, L, qz, rem) {
 
   const head = h("div", { class: "op-head" },
     h("div", null, h("div", { class: "op-title" }, L.title),
-      h("div", { class: "op-sub" }, L.phase === "lobby" || L.phase === "results" ? phaseLabel : `第${L.index + 1}問 / ${qz.questions.length} ・ ${QTYPE[q?.type]} ・ ${phaseLabel}`)),
+      h("div", { class: "op-sub" }, L.phase === "lobby" || L.phase === "results" ? phaseLabel : `${sessionAt(L, L.index)?.name ?? ""} 第${L.index + 1}問 / ${qz.questions.length} ・ ${QTYPE[q?.type]} ・ ${phaseLabel}`)),
     rem != null ? h("div", { class: `op-timer${rem <= 5 ? " hurry" : ""}` }, `${Math.ceil(rem)}秒`) : null,
     h("button", { class: "text-btn", onclick: () => openPresenter("display") }, "表示用に切り替え"),
     h("button", { class: "text-btn", onclick: closePresenter }, "閉じる"));
@@ -2932,6 +3437,7 @@ function paintOperator(P, L, qz, rem) {
   if (L.phase === "lobby") {
     body = h("div", { class: "op-body" },
       h("p", { class: "op-note" }, "表示用の画面（プロジェクター）は、もう1台の端末で「クイズ」→「表示用の画面を開く」から開いてください。"),
+      opExtras(L, qz),
       nextCard,
       group(`解答者 ${audience.length}人`, audience.map((m) => cell(m.name))));
   } else if (L.phase === "results") {
@@ -2951,7 +3457,7 @@ function paintOperator(P, L, qz, rem) {
         h("div", { class: "cell-main" },
           h("b", null, memberName(a.uid), hasTurn ? h("span", { class: "op-turn" }, "解答権") : null),
           h("div", { class: "cell-sub" }, `${shown} ・ ${fmtSec(a.reactionMs)}`, match ? h("span", { class: "op-match" }, "正解と一致") : null),
-          hasTurn && !a.text ? h("div", { class: "op-turn-count", "data-turncount": "" }, `残り ${Math.ceil(turnLeft())} 秒`) : null),
+          hasTurn && !a.text ? h("div", { class: "op-turn-count", "data-turncount": "" }, `残り ${Math.ceil(turnLeft(a.uid))} 秒`) : null),
         judgeButtons(a, ok),
         canReveal && !isBuzz ? (isAnsShown(L, a.uid)
           ? h("span", { class: "op-shown" }, "回答済")
@@ -2962,7 +3468,10 @@ function paintOperator(P, L, qz, rem) {
     });
     const missing = audience.filter((m) => !answers.some((a) => a.uid === m.id && (!isBuzz || a.buzz)));
     const reading = L.read && (L.phase === "reading" || (isBuzz && L.phase === "question")) && !L.fullText;
+    const fxs = effectList(L);
     body = h("div", { class: "op-body" },
+      opExtras(L, qz),
+      fxs.length ? h("div", { class: "op-fx" }, "妨害：", fxs.map((f) => `${memberName(f.by)}→${memberName(f.target)}「${SABO_TYPES[f.type]?.label}」`).join("　")) : null,
       h("div", { class: "card op-q" },
         h("div", { class: "op-qtext" }, q.text || "（問題文なし）"),
         reading ? h("div", { class: "op-readline" }, "画面の表示：", readTextEl(L, "op-readprog"),
@@ -3017,6 +3526,8 @@ function quizAnswer(data) {
   if (!L || L.phase !== "question") return;
   const rem = remainingSec(L, true);
   if (rem === 0) return toast("時間切れです", true);
+  if (myEffect() === "seal") return toast("封印されているので解答できません", true);
+  if (lateLeft() > 0) return toast(`出遅れ中：あと${Math.ceil(lateLeft())}秒`, true);
   const reactionMs = Math.round(performance.now() - QZ.t0);
   fire(setDoc(D("quizAnswers", `${L.quizId}_${L.index}_${uid}`), {
     uid, quizId: L.quizId, index: L.index, reactionMs, at: serverTimestamp(), ...data,
@@ -3053,7 +3564,7 @@ function buzzPanel(L) {
   const submit = () => {
     const text = input.value.trim();
     const L2 = S.live;
-    if (!text || ui.sent || L2?.turn?.uid !== uid || L2.phase !== "question" || turnLeft() === 0) return;
+    if (!text || ui.sent || L2?.turn?.uid !== uid || L2.phase !== "question" || turnLeft(uid) === 0) return;
     ui.sent = true;
     fire(updateDoc(D("quizAnswers", id), { text, textMs: Math.round(performance.now() - QZ.turnT0) }));
     input.blur();
@@ -3073,13 +3584,14 @@ function updateBuzzPanel() {
   const mine = S.quizAnswers.get(ui.id);
   const pressed = ui.pressed || !!mine?.buzz;
   const rem = remainingSec(L, true);
-  const open = L.phase === "question" && rem !== 0;
+  const late = lateLeft();
+  const open = L.phase === "question" && rem !== 0 && myEffect() !== "seal" && late === 0;
   const order = buzzOrder(L.index);
   const rank = order.findIndex((a) => a.uid === uid) + 1;
   const myTurn = L.phase === "question" && L.turn?.uid === uid;
   const verdict = mine ? (typeof mine.judge === "boolean" ? mine.judge : mine.timeout ? false : null) : null;
   const sent = ui.sent || !!mine?.text;
-  const left = myTurn ? turnLeft() : null;
+  const left = myTurn ? turnLeft(uid) : null;
   // 時間切れ：自分で「時間切れ」を記録する（誤答扱い）
   if (myTurn && left === 0 && !sent && !mine?.timeout && !QZ.timeoutSent.has(`${ui.id}:${L.turn.seq}`)) {
     QZ.timeoutSent.add(`${ui.id}:${L.turn.seq}`);
@@ -3093,7 +3605,7 @@ function updateBuzzPanel() {
   const timedOut = mine?.timeout || (myTurn && left === 0 && !sent);
   let msg = "";
   if (L.phase !== "question") msg = "";
-  else if (!pressed) msg = open ? "" : "締め切りました";
+  else if (!pressed) msg = late > 0 ? `出遅れ中：あと ${Math.ceil(late)} 秒` : open ? "" : "締め切りました";
   else if (verdict === false && !L.answerShown && L.phase === "question") msg = timedOut && !mine?.text ? "時間切れ（誤答）" : `「${mine?.text ?? ""}」は誤答でした`;
   else if (sent) msg = `「${mine?.text ?? ui.input.value.trim()}」で解答しました。判定を待っています…`;
   else if (timedOut) msg = "時間切れ（誤答）";
@@ -3109,8 +3621,234 @@ function updateBuzzPanel() {
   ui.count.textContent = myTurn ? `${Math.ceil(left)}` : "";
   ui.count.classList.toggle("hurry", myTurn && left <= 3);
   ui.send.disabled = !myTurn || left === 0 || !ui.input.value.trim();
-  ui.input.oninput = () => { ui.send.disabled = !(S.live?.turn?.uid === uid && turnLeft() > 0 && ui.input.value.trim()); };
+  ui.input.oninput = () => { ui.send.disabled = !(S.live?.turn?.uid === uid && turnLeft(uid) > 0 && ui.input.value.trim()); };
 }
+
+// ---- ルール説明のスライド（表示用・スマホで同じ内容を出す）
+function ruleSlides(L) {
+  const slides = [];
+  const ss = L.sessions ?? [];
+  const range = (s) => {
+    const idx = (L.qMeta ?? []).map((m, i) => (m.s === s.id ? i + 1 : null)).filter(Boolean);
+    return idx.length ? (idx.length === 1 ? `第${idx[0]}問` : `第${idx[0]}〜${idx[idx.length - 1]}問`) : "問題なし";
+  };
+  const types = new Set((L.qMeta ?? []).map((m) => m.t));
+  const setName = (cfg) => (cfg.pay === "team" ? `チームのポイント（${S.sets.get(cfg.setId)?.name ?? "チーム表"}）` : "自分の個人ポイント");
+  slides.push({ title: L.title, sub: "ルール説明", body: h("div", { class: "sl-list" },
+    h("div", { class: "sl-big" }, `全${L.total}問`),
+    ss.length > 1 ? h("div", { class: "sl-chips" }, ss.map((s) => h("span", null, h("b", null, s.name), range(s)))) : null) });
+  slides.push({ title: "答え方", body: h("div", { class: "sl-cards" },
+    types.has("choice") ? h("div", { class: "sl-card" }, h("b", null, "4択"), "スマホで A〜D を選ぶ。締切までは変えられる") : null,
+    types.has("text") ? h("div", { class: "sl-card" }, h("b", null, "記述"), "スマホに答えを入力して送信。締切までは送り直せる") : null,
+    types.has("buzz") ? h("div", { class: "sl-card" }, h("b", null, "早押し"), `問題を読んでいる途中でも押せる。押した順に解答権 → ${BUZZ_ANSWER_SEC}秒以内に答えを入力。間違い・時間切れは次の人へ（減点あり）`) : null) });
+  const sb = L.sabo;
+  if (sb?.on) {
+    const on = SABO_KEYS.filter((k) => sb.types[k]?.on);
+    slides.push({ title: "妨害システム", body: h("ul", { class: "sl-points" },
+      h("li", null, h("b", null, sb.who === "all" ? "全員" : "解答者以外の人"), "が、ポイントを使って解答者を妨害できる"),
+      h("li", null, "使うのは ", h("b", null, setName(sb))),
+      h("li", null, "問題と問題の間の「妨害受付」の時間に、スマホから相手と種類を選んで申し込む"),
+      h("li", null, "次の問題が出た瞬間に発動。", h("b", null, "誰が誰を妨害したかは画面に出る"))) });
+    slides.push({ title: "妨害の種類", body: h("div", { class: "sl-cards" }, on.map((k) => h("div", { class: "sl-card sabo" },
+      h("div", { class: "sl-mark" }, SABO_TYPES[k].mark), h("b", null, SABO_TYPES[k].label), h("span", null, SABO_TYPES[k].desc), h("em", null, `${sb.types[k].price}pt`)))) });
+    slides.push({ title: "妨害のルール", body: h("div", null,
+      h("ul", { class: "sl-points" },
+        h("li", null, "1問で1人が受ける妨害は ", h("b", null, "1つまで"), "（早い者勝ち）"),
+        h("li", null, "失敗した申し込みは ", h("b", null, "ポイントが引かれない")),
+        sb.streak2x ? h("li", null, "同じ人を2問続けて妨害すると ", h("b", null, "値段が2倍")) : null),
+      h("table", { class: "sl-table" },
+        h("caption", null, "区切りごとの上限（種類の列は、同じ人が受けられる回数）"),
+        h("tr", null, h("th", null, "区切り"), h("th", null, "1人が妨害できる"), on.map((k) => h("th", null, SABO_TYPES[k].label))),
+        ss.map((s) => h("tr", null, h("td", null, s.name), h("td", null, `${s.perUser}回`), on.map((k) => h("td", null, s.perTarget?.[k] ? `${s.perTarget[k]}回` : "なし")))))) });
+  }
+  const bt = L.bet;
+  if (bt?.on) {
+    slides.push({ title: "順位予想（賭け）", body: h("div", null,
+      h("div", { class: "sl-cards" }, BET_KEYS.filter((k) => bt.kinds[k]?.on).map((k) => h("div", { class: "sl-card" }, h("b", null, BET_KINDS[k].label), BET_KINDS[k].desc))),
+      h("ul", { class: "sl-points" },
+        h("li", null, "最終順位を予想して ", h("b", null, setName(bt)), " を賭ける（1人 ", h("b", null, `${bt.max}pt`), " まで）"),
+        h("li", null, "オッズは全員の賭け金で決まる（多く賭けられた予想ほど低い）。払戻率 ", h("b", null, `${bt.rate}%`)),
+        h("li", null, "同点のときはどちらの順番でも当たり。誰も当たらなければ全額返す"))) });
+  }
+  return slides;
+}
+
+function slideView(L, cls) {
+  const slides = ruleSlides(L);
+  const n = Math.min(Math.max(0, L.slide ?? 0), slides.length - 1);
+  const sl = slides[n];
+  return h("div", { class: `sl ${cls}${firstTime(`sl:${cls}:${L.seq}:${n}`) ? " enter" : ""}` },
+    h("div", { class: "sl-head" }, h("div", { class: "sl-title" }, sl.title), sl.sub ? h("div", { class: "sl-sub" }, sl.sub) : null),
+    h("div", { class: "sl-body" }, sl.body),
+    h("div", { class: "sl-dots" }, slides.map((_, i) => h("span", { class: i === n ? "on" : null }))));
+}
+
+// 自分がまだ確定していない妨害・賭けで使う予定のポイント（支払い元ごと）。残高の表示と事前チェックで引いておく
+function myPendingSpend(L, uid) {
+  const m = new Map();
+  const add = (payer, n) => { if (payer && n) m.set(payer.key, (m.get(payer.key) ?? 0) + n); };
+  if (L.sabo?.on) for (const r of runSabo()) if (r.uid === uid && r.status === "pending") add(payerOf(L.sabo, uid), Number(L.sabo.types[r.type]?.price) || 0);
+  if (L.bet?.on) for (const r of runBets()) if (r.uid === uid && r.status === "pending") add(payerOf(L.bet, uid), Number(r.amount) || 0);
+  return m;
+}
+
+// ---- 妨害の申し込み（スマホ）
+QZ.saboSel = { target: null, type: null };
+function saboPanel(L) {
+  const uid = S.user.uid;
+  const idx = L.saboWin.index;
+  const qm = L.qMeta?.[idx];
+  const sess = sessionAt(L, idx);
+  const all = runSabo();
+  const mine = all.filter((r) => r.uid === uid && r.forIndex === idx);
+  const accepted = all.filter((r) => r.status === "ok" || (r.status === "pending" && r.uid === uid));
+  const spent = myPendingSpend(L, uid);
+  const payer = payerOf(L.sabo, uid);
+  const used = all.filter((r) => r.uid === uid && (r.status === "ok" || r.status === "pending") && L.qMeta?.[r.forIndex]?.s === qm?.s).length;
+  const targets = quizAudience(L.answerers).filter((m) => m.id !== uid);
+  const sel = QZ.saboSel;
+  if (sel.target && !targets.some((m) => m.id === sel.target)) sel.target = null;
+  const types = SABO_KEYS.filter((k) => L.sabo.types[k]?.on && SABO_TYPES[k].for.includes(qm?.t));
+  const check = (type) => (sel.target ? saboCheck(L, { uid, target: sel.target, type, forIndex: idx }, accepted, spent) : null);
+  const cur = sel.type ? check(sel.type) : null;
+  const earlier = sel.target && all.some((r) => r.status === "pending" && r.uid !== uid && r.forIndex === idx && r.target === sel.target);
+  const send = () => {
+    if (!cur?.ok) return;
+    fire(addDoc(C("quizSabo"), { uid, quizId: L.quizId, run: L.run, forIndex: idx, target: sel.target, type: sel.type, at: serverTimestamp(), status: "pending" }), "申し込みました");
+    sel.type = null;
+  };
+  return h("section", { class: "ql-panel sabo" },
+    h("div", { class: "ql-panel-head" }, h("span", { class: "live-dot" }), `妨害受付中 ・ 第${idx + 1}問（${sess?.name ?? ""}・${QTYPE[qm?.t] ?? ""}）`),
+    h("div", { class: "ql-panel-sub" }, payer ? `${payer.label}：${balanceOf(payer) - (spent.get(payer.key) ?? 0)}pt ・ ${sess?.name}であと ${Math.max(0, (sess?.perUser ?? 0) - used)} 回` : "チームに入っていないので妨害できません"),
+    h("div", { class: "ql-label" }, "だれを？"),
+    h("div", { class: "ql-picks" }, targets.map((m) => h("button", { class: `ql-pick${sel.target === m.id ? " on" : ""}`, onclick: () => { sel.target = m.id; paintMemberQuiz(); } }, m.name))),
+    h("div", { class: "ql-label" }, "なにを？"),
+    h("div", { class: "ql-types" }, types.map((k) => {
+      const c = check(k);
+      return h("button", { class: `ql-type${sel.type === k ? " on" : ""}${c && !c.ok ? " ng" : ""}`, disabled: !sel.target, onclick: () => { sel.type = k; paintMemberQuiz(); } },
+        h("span", { class: "mk2" }, SABO_TYPES[k].mark), h("b", null, SABO_TYPES[k].label), h("em", null, c?.ok ? `${c.price}pt${c.streak ? "（2倍）" : ""}` : `${L.sabo.types[k].price}pt`),
+        h("small", null, c && !c.ok ? c.reason : SABO_TYPES[k].desc));
+    })),
+    earlier ? h("div", { class: "ql-warn" }, "この人には先に申し込んだ人がいます（早い者勝ち）") : null,
+    h("button", { class: "ql-send", disabled: !cur?.ok, onclick: send }, cur?.ok ? `${memberName(sel.target)} に「${SABO_TYPES[sel.type].label}」（${cur.price}pt）` : "相手と種類を選んでください"),
+    mine.length ? h("div", { class: "ql-mylist" }, mine.map((r) => h("div", { class: `ql-myrow ${r.status}` },
+      h("span", null, `${memberName(r.target)}「${SABO_TYPES[r.type]?.label}」`),
+      r.status === "pending" ? h("button", { class: "text-btn", onclick: () => fire(deleteDoc(D("quizSabo", r.id)), "取り消しました") }, "取り消す")
+        : h("small", null, r.status === "ok" ? `成功 −${r.price}pt` : r.reason ?? "失敗")))) : null,
+    h("div", { class: "ql-note" }, "次の問題が出た瞬間に先着順で確定します。失敗したらポイントは引かれません。"));
+}
+
+// ---- 賭け（スマホ）
+QZ.betSel = { kind: null, pick: [], amount: 5 };
+function betPanel(L) {
+  const uid = S.user.uid;
+  const cfg = L.bet;
+  const kinds = BET_KEYS.filter((k) => cfg.kinds[k]?.on);
+  const sel = QZ.betSel;
+  if (!kinds.includes(sel.kind)) { sel.kind = kinds[0]; sel.pick = []; }
+  const K = BET_KINDS[sel.kind];
+  const all = runBets();
+  const live = all.filter((b) => b.status !== "ng");
+  const mine = all.filter((b) => b.uid === uid);
+  const usedAmt = mine.filter((b) => b.status === "ok" || b.status === "pending").reduce((x, b) => x + (Number(b.amount) || 0), 0);
+  const payer = payerOf(cfg, uid);
+  const spentAll = myPendingSpend(L, uid);
+  const pendingAmt = payer ? spentAll.get(payer.key) ?? 0 : 0;
+  const people = quizAudience(L.answerers);
+  const pools = betPools(live, sel.kind);
+  const full = sel.pick.length === K.n;
+  const key = full ? betKey(sel.kind, sel.pick) : null;
+  const odds = full ? betOdds(pools, key, cfg.rate) : null;
+  const accepted = mine.filter((b) => b.status === "ok" || b.status === "pending");
+  const spent = new Map(payer ? [[payer.key, pendingAmt]] : []);
+  const checkNow = () => (sel.pick.length === K.n ? betCheck(L, { uid, kind: sel.kind, pick: sel.pick, amount: sel.amount }, accepted, spent) : null);
+  // 金額を変えたときは、画面全体を作り直さずに、関係する所だけ書き換える
+  // （作り直すと、入力欄から「賭ける」ボタンへ移るときにボタンが入れ替わって押せないことがある）
+  const payoutNote = h("div", { class: "ql-note" });
+  const warn = h("div", { class: "ql-warn" });
+  const sendBtn = h("button", { class: "ql-send" }, "賭ける");
+  const refresh = () => {
+    const cc = checkNow();
+    payoutNote.textContent = full && cc?.ok ? `当たれば 約 ${Math.floor(cc.amount * odds)}pt（オッズはこの後の賭けで変わります）` : "";
+    payoutNote.hidden = !payoutNote.textContent;
+    warn.textContent = cc && !cc.ok ? cc.reason : "";
+    warn.hidden = !warn.textContent;
+    sendBtn.disabled = !cc?.ok;
+  };
+  const amount = h("input", { type: "number", class: "ql-input ql-amount", min: "1", inputmode: "numeric", value: String(sel.amount) });
+  amount.addEventListener("input", () => { sel.amount = Math.max(0, Math.floor(Number(amount.value) || 0)); refresh(); });
+  const toggle = (id) => {
+    const i = sel.pick.indexOf(id);
+    if (i >= 0) sel.pick.splice(i, 1);
+    else if (sel.pick.length < K.n) sel.pick.push(id);
+    paintMemberQuiz();
+  };
+  const send = () => {
+    const cc = checkNow();
+    if (!cc?.ok) return;
+    fire(addDoc(C("quizBets"), { uid, quizId: L.quizId, run: L.run, kind: sel.kind, pick: [...sel.pick], amount: cc.amount, at: serverTimestamp(), status: "pending" }), "賭けました");
+    sel.pick = [];
+    amount.blur();
+    paintMemberQuiz();
+  };
+  sendBtn.addEventListener("click", send);
+  refresh();
+  return h("section", { class: "ql-panel bet" },
+    h("div", { class: "ql-panel-head" }, h("span", { class: "live-dot" }), "順位予想・賭け受付中"),
+    h("div", { class: "ql-panel-sub" }, payer ? `${payer.label}：${balanceOf(payer) - pendingAmt}pt ・ あと ${Math.max(0, cfg.max - usedAmt)}pt 賭けられます` : "チームに入っていないので賭けられません"),
+    h("div", { class: "seg ql-seg" }, kinds.map((k) => h("button", { type: "button", "aria-selected": String(sel.kind === k), onclick: () => { sel.kind = k; sel.pick = []; paintMemberQuiz(); } }, BET_KINDS[k].label))),
+    h("div", { class: "ql-note" }, K.desc),
+    h("div", { class: "ql-picks" }, people.map((m) => {
+      const pos = sel.pick.indexOf(m.id);
+      const win1 = sel.kind === "win" ? betOdds(pools, betKey("win", [m.id]), cfg.rate) : null;
+      return h("button", { class: `ql-pick${pos >= 0 ? " on" : ""}`, onclick: () => toggle(m.id) },
+        pos >= 0 ? h("span", { class: "pos" }, K.ordered ? `${pos + 1}着` : "✓") : null, m.name, win1 ? h("small", null, `${win1}倍`) : null);
+    })),
+    full ? h("div", { class: "ql-odds" }, h("span", null, sel.pick.map(memberName).join(K.ordered ? " → " : "・")), h("b", null, `${odds}倍`)) : h("div", { class: "ql-note" }, `あと ${K.n - sel.pick.length} 人選んでください`),
+    h("div", { class: "ql-amountrow" }, amount, h("span", null, "pt"),
+      [1, 5, 10].map((v) => h("button", { class: "pill", onclick: () => { sel.amount = (sel.amount || 0) + v; paintMemberQuiz(); } }, `+${v}`))),
+    payoutNote,
+    warn,
+    sendBtn,
+    mine.length ? h("div", { class: "ql-mylist" }, mine.map((b) => h("div", { class: `ql-myrow ${b.status}` },
+      h("span", null, `${BET_KINDS[b.kind]?.label} ${b.pick.map(memberName).join("→")} ・ ${b.amount}pt`),
+      b.status === "pending" ? h("button", { class: "text-btn", onclick: () => fire(deleteDoc(D("quizBets", b.id)), "取り消しました") }, "取り消す")
+        : h("small", null, { ok: "確定", ng: b.reason ?? "失敗", win: `的中 +${b.payout}pt`, lose: "はずれ", refund: `返金 +${b.payout}pt` }[b.status] ?? "")))) : null,
+    h("div", { class: "ql-note" }, "締め切った時点で賭け金が引かれます（それまでは取り消せます）。"));
+}
+
+// 自分が受けた妨害のお知らせ（スマホ）
+function effectBanner(L) {
+  const fx = L.effects?.[S.user.uid];
+  if (!fx || L.phase === "lobby" || L.phase === "results") return null;
+  const T = SABO_TYPES[fx.type];
+  return h("div", { class: `ql-fx${firstTime(`fx:${L.seq}`) ? " enter" : ""}` }, h("span", { class: "mk2" }, T?.mark ?? "!"),
+    h("div", null, h("b", null, `${memberName(fx.by)} から「${T?.label ?? fx.type}」！`), h("small", null, T?.desc ?? "")));
+}
+
+// 今の問題での妨害（表示用・スマホ共通の一覧）
+const effectList = (L) => Object.entries(L.effects ?? {}).map(([target, fx]) => ({ target, ...fx }));
+
+// 自分のスマホでの選択肢の並び（「シャッフル」の妨害を受けたときだけ並べ替える。問題ごとに同じ並び）
+function choiceOrder(L) {
+  const base = [0, 1, 2, 3];
+  if (myEffect() !== "shuffle") return base;
+  let seed = [...`${L.seq}:${S.user.uid}`].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7);
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  for (let i = base.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [base[i], base[j]] = [base[j], base[i]]; }
+  return base;
+}
+
+// 結果発表で出す：自分の賭けの結果
+function myBetResults() {
+  const mine = runBets().filter((b) => b.uid === S.user.uid && b.status !== "ng");
+  if (!mine.length) return null;
+  return h("div", { class: "ql-mylist" }, h("div", { class: "ql-label" }, "賭けの結果"), mine.map((b) => h("div", { class: `ql-myrow ${b.status}` },
+    h("span", null, `${BET_KINDS[b.kind]?.label} ${b.pick.map(memberName).join("→")} ・ ${b.amount}pt`),
+    h("small", null, { win: `的中 +${b.payout}pt`, lose: "はずれ", refund: `返金 +${b.payout}pt`, ok: "集計中…", pending: "集計中…" }[b.status] ?? ""))));
+}
+
+const quizActiveForMe = (L) => !!(L && L.phase !== "off" && (amAnswerer() || canSabotage(L) || canBet(L)));
 
 function paintMemberQuiz(full = true) {
   if (!full) { updateQuizTicks(); return; }
@@ -3119,14 +3857,13 @@ function paintMemberQuiz(full = true) {
   // （押した直後に作り直すと、入力欄にキーボードが出ないことがある）
   const typing = document.activeElement?.classList?.contains("ql-input");
   const live = S.live;
-  const steady = live && ((live.phase === "question" && live.q?.type === "buzz") || live.phase === "reading");
-  if ((typing || steady) && QZ.lastPaint === `${live?.seq}:${live?.phase}` && !QZ.hidden && amAnswerer() && document.querySelector(".quiz-live")) { updateQuizTicks(); return; }
+  const steady = live && ((live.phase === "question" && live.q?.type === "buzz") || live.phase === "reading") && amAnswerer();
+  if ((typing || steady) && QZ.lastPaint === `${live?.seq}:${live?.phase}` && !QZ.hidden && quizActiveForMe(live) && document.querySelector(".quiz-live")) { updateQuizTicks(); return; }
   QZ.lastPaint = `${S.live?.seq}:${S.live?.phase}`;
   let el = document.querySelector(".quiz-live");
   let fab = document.querySelector(".quiz-fab");
   const L = S.live;
-  const active = !!(L && L.phase !== "off" && amAnswerer());
-  if (!active) { el?.remove(); fab?.remove(); return; }
+  if (!quizActiveForMe(L)) { el?.remove(); fab?.remove(); return; }
   if (QZ.hidden) {
     el?.remove();
     if (!fab) document.body.append(h("button", { class: "quiz-fab", onclick: () => { QZ.hidden = false; paintMemberQuiz(); } }, icon("quiz"), "クイズに戻る"));
@@ -3134,45 +3871,69 @@ function paintMemberQuiz(full = true) {
   }
   fab?.remove();
   if (!el) { el = h("div", { class: "quiz-live", role: "dialog", "aria-label": "クイズ" }); document.body.append(el); }
+  const scroll = el.scrollTop;
 
   const uid = S.user.uid;
+  const answerer = amAnswerer();
   const q = L.q;
+  const fx = answerer ? myEffect() : null;
+  el.classList.toggle("flip", fx === "flip" && (L.phase === "question" || L.phase === "reading"));
   const mine = L.phase === "lobby" || L.phase === "results" ? null : S.quizAnswers.get(`${L.quizId}_${L.index}_${uid}`);
-  const rem = L.phase === "question" ? remainingSec(L, true) : null;
-  const locked = L.phase !== "question" || rem === 0;
+  const rem = answerer && L.phase === "question" ? remainingSec(L, true) : null;
+  const late = lateLeft();
+  const locked = L.phase !== "question" || rem === 0 || fx === "seal" || late > 0;
   const readingNow = L.phase === "reading";
 
   const head = h("div", { class: "ql-head" },
-    h("div", { class: "ql-title" }, L.title),
-    L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "ql-meta" }, `第${L.index + 1}問 / ${L.total} ・ ${QTYPE[q?.type] ?? ""} ・ ${q?.points ?? 10}点`),
+    h("div", { class: "ql-title" }, L.title, answerer ? null : h("span", { class: "ql-watch" }, "観戦")),
+    L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "ql-meta" }, `${sessionAt(L, L.index)?.name ?? ""} 第${L.index + 1}問 / ${L.total} ・ ${QTYPE[q?.type] ?? ""} ・ ${q?.points ?? 10}点`),
     h("button", { class: "ql-close", "aria-label": "閉じる", onclick: () => { QZ.hidden = true; paintMemberQuiz(); } }, icon("xmark")));
-  const timer = rem != null ? h("div", { class: "ql-timer" }, h("div", { class: "bar", style: `width:${(rem / (q.time || 1)) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
+  const qt = myQTime(L, true) || 1;
+  const timer = rem != null ? h("div", { class: "ql-timer" }, h("div", { class: "bar", style: `width:${(rem / qt) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
+  const panels = [
+    L.phase !== "question" && L.phase !== "reading" && L.saboWin?.open && canSabotage(L) ? saboPanel(L) : null,
+    L.phase !== "question" && L.phase !== "reading" && L.betWin?.open && canBet(L) ? betPanel(L) : null,
+  ];
 
   let body;
-  if (L.phase === "lobby") {
-    body = h("div", { class: "ql-center" }, h("div", { class: `ql-big${firstTime(`ml:${L.seq}`) ? " enter" : ""}` }, "まもなく始まります"), h("div", { class: "ql-sub" }, `${S.me?.name ?? ""} さん、準備はいいですか？`));
+  if (L.phase === "lobby" && L.slide != null) {
+    body = slideView(L, "sl-phone");
+  } else if (L.phase === "lobby") {
+    body = h("div", { class: "ql-center" }, h("div", { class: `ql-big${firstTime(`ml:${L.seq}`) ? " enter" : ""}` }, "まもなく始まります"),
+      h("div", { class: "ql-sub" }, answerer ? `${S.me?.name ?? ""} さん、準備はいいですか？` : "観戦モードです。妨害・賭けの受付が始まると、ここから参加できます"));
   } else if (L.phase === "results") {
     const rows = (L.scores ?? []).map((r) => ({ ...r, name: memberName(r.uid) }));
     const me = rows.findIndex((r) => r.uid === uid);
     body = h("div", { class: "ql-center" },
-      h("div", { class: "ql-sub" }, "あなたの得点"),
-      h("div", { class: `ql-score${firstTime(`ms:${L.seq}`) ? " enter" : ""}` }, me >= 0 ? rows[me].score : 0, h("small", null, "点")),
-      me >= 0 ? h("div", { class: "ql-sub" }, `${rows.filter((r) => r.score > rows[me].score).length + 1}位 / ${rows.length}人`) : null,
-      h("ol", { class: "ql-top" }, rows.slice(0, 3).map((r) => h("li", null, h("span", null, r.name), h("b", null, `${r.score}点`)))));
+      answerer ? h("div", { class: "ql-sub" }, "あなたの得点") : h("div", { class: "ql-sub" }, "結果発表"),
+      answerer ? h("div", { class: `ql-score${firstTime(`ms:${L.seq}`) ? " enter" : ""}` }, me >= 0 ? rows[me].score : 0, h("small", null, "点")) : null,
+      answerer && me >= 0 ? h("div", { class: "ql-sub" }, `${rows.filter((r) => r.score > rows[me].score).length + 1}位 / ${rows.length}人`) : null,
+      h("ol", { class: "ql-top" }, rows.slice(0, 3).map((r) => h("li", null, h("span", null, r.name), h("b", null, `${r.score}点`)))),
+      myBetResults());
+  } else if (!answerer) {
+    // 観戦（解答者ではない人）
+    const fxs = effectList(L);
+    body = h("div", { class: "ql-q" },
+      h("div", { class: "ql-sub" }, readingNow ? "問題読み中" : L.phase === "question" ? "出題中 — 前の画面を見てください" : L.phase === "closed" ? "締切" : "正解発表"),
+      fxs.length ? h("div", { class: "ql-fxlist" }, fxs.map((f) => h("div", null, `${memberName(f.by)} → ${memberName(f.target)}「${SABO_TYPES[f.type]?.label ?? f.type}」`))) : null);
   } else {
     const myShown = isShown(L, uid);
     const correctNow = myShown ? (q.type === "buzz" ? (typeof mine?.judge === "boolean" ? mine.judge : mine?.timeout ? false : null) : autoJudge({ ...q, answer: L.answer }, mine ?? {}) && !!mine) : null;
     const judgeOverride = typeof mine?.judge === "boolean" ? mine.judge : null;
     const verdict = myShown ? (judgeOverride ?? correctNow) : null;
+    const blind = fx === "blind";
     let input;
     if (readingNow) {
       input = h("div", { class: "ql-reading" }, h("span", { class: "live-dot" }), "問題を読んでいます。まもなく解答開始です");
+    } else if (fx === "seal" && L.phase === "question") {
+      input = h("div", { class: "ql-sealed" }, h("div", { class: "mk2 big" }, "封"), "封印されています。この問題は解答できません");
     } else if (q.type === "choice") {
-      input = h("div", { class: "ql-choices" }, (q.choices ?? []).map((c, k) => h("button", {
+      const gray = fx === "shuffle";
+      input = h("div", { class: "ql-choices" }, choiceOrder(L).map((k) => h("button", {
         class: `ql-choice${mine?.choice === k ? " picked" : ""}${answerVisible(L) && L.answer === k ? " correct" : ""}`,
-        style: `--c:${CHOICE_COLORS[k]}`, disabled: locked,
+        style: `--c:${gray ? "#8E8E93" : CHOICE_COLORS[k]}`, disabled: locked,
         onpointerdown: (e) => { e.preventDefault(); quizAnswer({ choice: k }); },
-      }, h("span", { class: "mark" }, CHOICE_MARKS[k]), q.phone !== false ? h("span", { class: "txt" }, c) : null)));
+      }, gray ? null : h("span", { class: "mark" }, CHOICE_MARKS[k]), q.phone !== false && !blind ? h("span", { class: "txt" }, q.choices?.[k] ?? "") : gray ? h("span", { class: "txt" }, "？") : null)));
     } else if (q.type === "text") {
       const key = `${L.seq}`;
       let ta = QZ.textDraft.get(key);
@@ -3192,7 +3953,10 @@ function paintMemberQuiz(full = true) {
       ? (mine ? (q.type === "choice" ? "回答しました（締切まで変えられます）" : q.type === "text" ? "送信しました（締切まで送り直せます）" : "") : rem === 0 ? "時間切れ" : "")
       : L.phase === "closed" ? "締め切りました。正解発表を待っています…" : "";
     body = h("div", { class: "ql-q" },
-      q.phone !== false ? readTextEl(L, `ql-qtext${firstTime(`mq:${L.seq}`) ? " enter" : ""}`) : h("div", { class: "ql-qtext muted" }, "問題は前の画面を見てください"),
+      effectBanner(L),
+      blind && L.phase !== "reveal" ? h("div", { class: "ql-qtext muted" }, "目隠し中：問題文は表示されません")
+        : q.phone !== false ? readTextEl(L, `ql-qtext${firstTime(`mq:${L.seq}`) ? " enter" : ""}`) : h("div", { class: "ql-qtext muted" }, "問題は前の画面を見てください"),
+      late > 0 && q.type !== "buzz" ? h("div", { class: "ql-late", "data-late": "" }, `出遅れ中：あと ${Math.ceil(late)} 秒`) : null,
       input,
       status ? h("div", { class: "ql-status" }, status) : null,
       L.phase === "reveal" ? h("div", { class: `ql-verdict${verdict === true ? " ok" : verdict === false ? " ng" : ""}${firstTime(`mv:${L.seq}:${myShown}`) ? " enter" : ""}` },
@@ -3200,7 +3964,8 @@ function paintMemberQuiz(full = true) {
         h("div", { class: "ql-vtext" }, !myShown ? "発表を待っています…" : verdict === true ? "正解！" : verdict === false ? "不正解…" : mine ? "判定を待っています" : "未回答"),
         answerVisible(L) && q.type !== "choice" && L.answer ? h("div", { class: "ql-ans" }, `正解：${L.answer}`) : null) : null);
   }
-  setKids(el, head, timer, body);
+  setKids(el, head, timer, body, panels);
+  el.scrollTop = scroll;
 }
 
 // 全体の描画や Firestore の更新のたびに呼ぶ（full = false のときはタイマーの表示だけ更新する）
@@ -3216,11 +3981,17 @@ function updateQuizTicks() {
   if (!L) return;
   for (const el of document.querySelectorAll("[data-read]")) paintRead(el, L);
   for (const el of document.querySelectorAll("[data-turncount]")) {
-    const n = Math.ceil(turnLeft());
+    const n = Math.ceil(turnLeft(S.live?.turn?.uid));
     el.textContent = el.classList.contains("op-turn-count") ? `残り ${n} 秒` : n;
     el.classList.toggle("hurry", n <= 3);
   }
-  if (!S.isAdmin) updateBuzzPanel();
+  if (!S.isAdmin) {
+    updateBuzzPanel();
+    const late = lateLeft();
+    for (const el of document.querySelectorAll("[data-late]")) el.textContent = `出遅れ中：あと ${Math.ceil(late)} 秒`;
+    // 出遅れが終わった瞬間に、ボタンを押せるように描き直す
+    if (myEffect() === "late" && late === 0 && QZ.lateDone !== L.seq && L.phase === "question") { QZ.lateDone = L.seq; QZ.lastPaint = null; paintMemberQuiz(true); }
+  }
   if (L.phase !== "question" || !L.q?.time) return;
   if (S.isAdmin) {
     const rem = remainingSec(L, false);
@@ -3232,7 +4003,7 @@ function updateQuizTicks() {
     const rem = remainingSec(L, true);
     const bar = document.querySelector(".ql-timer .bar");
     const txt = document.querySelector(".ql-timer span");
-    if (bar) bar.style.width = `${(rem / (L.q.time || 1)) * 100}%`;
+    if (bar) bar.style.width = `${(rem / (myQTime(L, true) || 1)) * 100}%`;
     if (txt) txt.textContent = `${Math.ceil(rem)}秒`;
   }
 }
@@ -3240,7 +4011,7 @@ function updateQuizTicks() {
 // 解答者側：時間切れになった瞬間だけ全体を描き直してボタンを止める。それ以外はタイマー・問題読み・解答権の秒数だけ
 setInterval(() => {
   const L = S.live;
-  if (S.isAdmin || !(L?.phase === "question" || L?.phase === "reading") || !amAnswerer() || QZ.hidden) return;
+  if (S.isAdmin || !(L?.phase === "question" || L?.phase === "reading") || !quizActiveForMe(L) || QZ.hidden) return;
   if (L.phase === "question" && L.q?.time && remainingSec(L, true) === 0 && QZ.lockedSeq !== L.seq) { QZ.lockedSeq = L.seq; paintMemberQuiz(true); return; }
   updateQuizTicks();
 }, 200);
