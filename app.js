@@ -5742,7 +5742,11 @@ function buildMobileShell(allTabs) {
   };
 }
 
+// 管理者の PC 画面では、上部の「出欠・集金」「チェック」「チャット」「設定」は小窓ではなく一番右の欄に出す（クイズ・地図は小窓のまま）
+const DESK_SIDE_KEYS = new Set(["money", "checklist", "chat", "settings"]);
+let deskSideOpen = null; // buildDesktopShell が設定する（右の欄に出したら true を返す）
 function openSheet(tab) {
+  if (deskSideOpen?.(tab)) return;
   const view = tab.view({ withTitle: false });
   S.sheet = { key: tab.key, title: tab.label, view };
   scheduleRender();
@@ -5790,8 +5794,27 @@ function buildDesktopShell(tabs) {
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
     S.isAdmin ? h("span", { class: "badge static" }, adminName(S.user.email)) : null,
     status, h("div", { class: "desk-right" }, chip, actions));
-  const grid = h("main", { class: `desk-grid cols-${panels.length}` },
-    views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el)));
+  const sections = views.map((v, i) => h("section", { class: "panel", "data-panel": panels[i].key }, v.el));
+  const grid = h("main", { class: `desk-grid cols-${panels.length}` }, sections);
+  // 管理者：一番右の欄（表・メモ／参加者）を、上部のボタンで選んだ画面に切り替える
+  const sideIdx = S.isAdmin ? panels.length - 1 : -1;
+  let sideTab = null, sideView = null;
+  const paintSide = () => {
+    const sec = sections[sideIdx];
+    if (sideTab) setKids(sec, h("div", { class: "side-head" }, h("h2", null, sideTab.label),
+      h("button", { class: "text-btn", onclick: () => showInSide(null) }, `${panels[sideIdx].label}に戻る`)), sideView.el);
+    else setKids(sec, views[sideIdx].el);
+    sec.scrollTop = 0;
+    for (const b of actions.querySelectorAll(".desk-btn")) b.classList.toggle("on", b.dataset.sheet === sideTab?.key);
+  };
+  function showInSide(t) {
+    sideView?.destroy?.();
+    if (!t || sideTab?.key === t.key) { sideTab = null; sideView = null; } // もう一度押すと元に戻る
+    else { closeSheet(); sideTab = t; sideView = t.view({ withTitle: false }); }
+    paintSide();
+    scheduleRender();
+  }
+  deskSideOpen = sideIdx >= 0 ? (t) => { if (!DESK_SIDE_KEYS.has(t.key)) return false; showInSide(t); return true; } : null;
   // 参加者：受付中のアンケートと、期限内・未入金の集金を画面の一番上に出す
   const payTop = S.isAdmin ? null : memberMoney({ pinned: "only" });
   const root = h("div", { class: "desk" }, header, payTop ? h("div", { class: "desk-paytop" }, payTop.top) : null, grid);
@@ -5801,7 +5824,8 @@ function buildDesktopShell(tabs) {
       title.paint();
       paintStatus(status);
       chip?.paint();
-      views.forEach((v) => v.update());
+      views.forEach((v, i) => { if (i !== sideIdx || !sideTab) v.update(); });
+      sideView?.update();
       payTop?.update();
       paintSheet();
     },
@@ -5905,6 +5929,7 @@ function render(kinds) {
   }
   if (!shell) {
     closeSheet();
+    deskSideOpen = null;
     if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? ADMIN_TABS : MEMBER_TABS);
     else shell = S.isAdmin ? buildMobileShell(ADMIN_TABS) : buildMemberPageShell();
     $app.replaceChildren(shell.root);

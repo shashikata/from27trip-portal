@@ -1568,3 +1568,8 @@ input.cl-title { padding: 2px 0; }
 .desk-paytop .pay-top > * { margin: 0; }
 .desk-paytop .pay-top > .stack { display: contents; }
 .btn-filled.ghost-btn { background: var(--fill); color: var(--blue); margin-top: -20px; }
+
+/* 管理者の PC：一番右の欄を切り替えたとき */
+.side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 4px 14px; }
+.side-head h2 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; margin: 0; }
+.desk-btn.on { background: color-mix(in srgb, var(--blue) 14%, transparent); font-weight: 700; }
