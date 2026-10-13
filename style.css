@@ -1241,3 +1241,41 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .quiz-live.flip .ql-q { transform: rotate(180deg); }
 .sl-table caption { caption-side: top; color: var(--qz-sub); font-size: .75em; font-weight: 700; padding-bottom: .6em; }
 .sl-table th, .sl-table td { white-space: nowrap; }
+
+/* ---- 地図のピン ---- */
+.map-addpin {
+  position: absolute; z-index: 500; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 6px;
+  border: none; border-radius: 999px; padding: 10px 16px; min-height: 44px; font-size: 16px; font-weight: 700;
+  background: var(--cell); color: var(--label); box-shadow: 0 2px 10px rgba(0, 0, 0, .25);
+}
+.map-addpin.on { background: var(--blue); color: #fff; animation: livePulse 1.2s infinite; }
+.mpin { position: relative; width: max-content; transform: translate(-50%, -100%); display: flex; flex-direction: column; align-items: center; pointer-events: auto; }
+.mpin-head {
+  width: 38px; height: 38px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: grid; place-items: center;
+  background: var(--c); box-shadow: 0 3px 10px rgba(0, 0, 0, .35); border: 2px solid #fff; font-size: 18px;
+}
+.mpin-head i { transform: rotate(45deg); font-style: normal; line-height: 1; }
+.mpin b {
+  position: absolute; top: 44px; white-space: nowrap; padding: 2px 8px; border-radius: 8px; font-size: 12px; font-weight: 800;
+  background: rgba(255, 255, 255, .92); color: #1c1c1e; box-shadow: 0 1px 4px rgba(0, 0, 0, .25);
+}
+.mpin b:empty { display: none; }
+.mpin.ghost { opacity: .6; }
+.mpin-pop b { display: block; font-size: 15px; margin-bottom: 4px; }
+.map-pins { margin: 14px 2px 0; display: grid; gap: 6px; }
+.map-pins-title { font-size: 13px; color: var(--label-2); font-weight: 600; padding: 0 4px; }
+.map-pin-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: none; border-radius: 12px; background: var(--cell); color: var(--label); text-align: left; }
+.map-pin-row .cell-main { flex: 1; display: grid; }
+.map-pin-row small { color: var(--label-2); font-size: 12px; }
+.dot-ic { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 22%, transparent); flex: none; }
+.pin-editor { margin-top: 14px; padding: 12px; border-radius: 14px; background: var(--bg); box-shadow: inset 0 0 0 1px var(--separator); display: grid; gap: 10px; }
+.pin-editor-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.pin-editor textarea, .pin-editor input { width: 100%; border: none; background: none; font: inherit; color: var(--label); resize: none; outline: none; }
+.pin-icons, .pin-colors { display: flex; flex-wrap: wrap; gap: 6px; }
+.pin-choice { width: 40px; height: 40px; border-radius: 10px; border: none; background: var(--cell); font-size: 20px; }
+.pin-choice.on { box-shadow: inset 0 0 0 2px var(--blue); }
+.pin-color { width: 32px; height: 32px; border-radius: 50%; border: 3px solid var(--cell); background: var(--c); }
+.pin-color.on { box-shadow: 0 0 0 2px var(--blue); }
+.pin-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
+.pin-actions .destructive { margin-right: auto; }
+.map-pin-row .cell-main { text-align: left; justify-items: start; min-width: 0; }

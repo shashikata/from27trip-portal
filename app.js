@@ -71,6 +71,7 @@ const S = {
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
+  mapPins: new Map(),        // 管理者が地図に刺したピン mapPins/{id}
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
   quizAnswers: new Map(),    // 表示中の問題への解答 quizAnswers/{quizId}_{index}_{uid}
@@ -105,7 +106,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { locations: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
+const RENDER_KIND = { locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -1175,6 +1176,40 @@ const GEO_ERRORS = {
   3: "現在地の取得に時間がかかっています。空が見える場所で少し待ってください。",
 };
 
+// ---- 地図のピン（管理者が刺す）
+//   mapPins/{id} { lat, lng, title, note, icon, color, vis: "all" | "admin", createdAt }
+const PIN_ICONS = ["📍", "🏕️", "🍖", "🚻", "🚩", "⛱️", "🎯", "⚠️", "💎", "🏁"];
+const PIN_COLORS = ["#FF3B30", "#FF9500", "#34C759", "#007AFF", "#AF52DE", "#1C1C1E"];
+const visiblePins = () => [...S.mapPins.values()].filter((p) => S.isAdmin || p.vis !== "admin").sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+
+function pinEditor(pin, { onClose, onMove }) {
+  const d = { title: "", note: "", icon: PIN_ICONS[0], color: PIN_COLORS[0], vis: "all", ...pin };
+  const title = h("input", { type: "text", placeholder: "名前（例：集合場所）", value: d.title, maxlength: "40" });
+  const note = h("textarea", { rows: "2", placeholder: "メモ（任意）" });
+  note.value = d.note ?? "";
+  const icons = h("div", { class: "pin-icons" });
+  const colors = h("div", { class: "pin-colors" });
+  const paintChoices = () => {
+    setKids(icons, PIN_ICONS.map((ic) => h("button", { type: "button", class: `pin-choice${d.icon === ic ? " on" : ""}`, onclick: () => { d.icon = ic; paintChoices(); onMove?.(d); } }, ic)));
+    setKids(colors, PIN_COLORS.map((c) => h("button", { type: "button", class: `pin-color${d.color === c ? " on" : ""}`, style: `--c:${c}`, "aria-label": "色", onclick: () => { d.color = c; paintChoices(); onMove?.(d); } })));
+  };
+  paintChoices();
+  const vis = segmented([{ value: "all", label: "全員に表示" }, { value: "admin", label: "管理者だけ" }], d.vis);
+  const save = () => {
+    const data = { lat: d.lat, lng: d.lng, title: title.value.trim() || "ピン", note: note.value.trim(), icon: d.icon, color: d.color, vis: vis.value };
+    fire(d.id ? updateDoc(D("mapPins", d.id), data) : addDoc(C("mapPins"), { ...data, createdAt: serverTimestamp() }), d.id ? "ピンを更新しました" : "ピンを刺しました");
+    onClose();
+  };
+  return h("div", { class: "pin-editor" },
+    h("div", { class: "pin-editor-head" }, h("b", null, d.id ? "ピンを編集" : "新しいピン"), h("span", { class: "secondary" }, "ピンはドラッグで動かせます")),
+    h("div", { class: "group-body" }, h("div", { class: "cell" }, title), h("div", { class: "cell" }, note)),
+    icons, colors, h("div", { class: "pin-vis" }, vis),
+    h("div", { class: "pin-actions" },
+      d.id ? h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${d.title}」を削除しますか？`)) { fire(deleteDoc(D("mapPins", d.id)), "削除しました"); onClose(); } } }, "削除") : null,
+      h("button", { class: "text-btn", onclick: onClose }, "キャンセル"),
+      h("button", { class: "btn-small", onclick: save }, d.id ? "保存" : "刺す")));
+}
+
 function mapView() {
   const box = h("div", { class: "map-box" });
   const status = h("div", { class: "map-status" }, "現在地を探しています…");
@@ -1184,6 +1219,77 @@ function mapView() {
   const others = new Map(); // uid -> marker
   const people = h("div", { class: "map-people" });
   el.append(people);
+
+  // ピン
+  const pinMarks = new Map(); // id -> marker
+  const pinList = h("div", { class: "map-pins" });
+  const editorBox = h("div");
+  let adding = false, draft = null, ghost = null;
+  const addBtn = S.isAdmin ? h("button", { class: "map-addpin", title: "ピンを刺す", onclick: () => {
+    adding = !adding;
+    addBtn.classList.toggle("on", adding);
+    status.dataset.hint = adding ? "1" : "";
+    if (adding) status.textContent = "ピンを刺したい場所をタップしてください";
+  } }, "📍", h("span", null, "ピン")) : null;
+  el.querySelector(".map-wrap").append(...(addBtn ? [addBtn] : []));
+  el.append(editorBox, pinList);
+  const pinIcon = (p, ghostPin) => window.L.divIcon({ className: "", iconSize: [0, 0],
+    html: `<div class="mpin${ghostPin ? " ghost" : ""}" style="--c:${p.color || PIN_COLORS[0]}"><span class="mpin-head"><i>${PIN_ICONS.includes(p.icon) ? p.icon : "📍"}</i></span><b></b></div>` });
+  const closeEditor = () => { draft = null; ghost?.remove(); ghost = null; editorBox.replaceChildren(); status.textContent = ""; paintPins(); };
+  const openEditor = (pin) => {
+    draft = { ...pin };
+    ghost?.remove(); ghost = null;
+    if (!pin.id && map) {
+      // まだ保存していないピンは、半透明の仮のピンで場所を見せる（ドラッグで調整できる）
+      ghost = window.L.marker([pin.lat, pin.lng], { icon: pinIcon(pin, true), draggable: true }).addTo(map);
+      ghost.on("dragend", () => { const ll = ghost.getLatLng(); draft.lat = ll.lat; draft.lng = ll.lng; });
+    }
+    editorBox.replaceChildren(pinEditor(draft, {
+      onClose: closeEditor,
+      onMove: (d) => { Object.assign(draft, { icon: d.icon, color: d.color }); if (ghost) ghost.setIcon(pinIcon(draft, true)); },
+    }));
+    editorBox.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+  };
+  const paintPins = () => {
+    const list = visiblePins();
+    if (map) {
+      const alive = new Set();
+      for (const p of list) {
+        if (draft?.id === p.id) { alive.add(p.id); continue; }
+        alive.add(p.id);
+        let mk = pinMarks.get(p.id);
+        const sig = `${p.lat},${p.lng},${p.icon},${p.color},${p.title},${p.note},${p.vis}`;
+        if (!mk) {
+          mk = window.L.marker([p.lat, p.lng], { icon: pinIcon(p), draggable: S.isAdmin, keyboard: false }).addTo(map);
+          if (S.isAdmin) {
+            mk.on("click", () => openEditor(S.mapPins.get(mk.pinId) ?? p));
+            mk.on("dragend", () => { const ll = mk.getLatLng(); fire(updateDoc(D("mapPins", mk.pinId), { lat: ll.lat, lng: ll.lng }), "ピンを動かしました"); });
+          } else {
+            mk.on("click", () => {
+              const cur = S.mapPins.get(mk.pinId);
+              if (!cur) return;
+              mk.unbindPopup();
+              mk.bindPopup(h("div", { class: "mpin-pop" }, h("b", null, `${cur.icon ?? ""} ${cur.title}`), cur.note ? h("div", null, cur.note) : null)).openPopup();
+            });
+          }
+          mk.pinId = p.id;
+          pinMarks.set(p.id, mk);
+        }
+        if (mk.sig !== sig) {
+          mk.setLatLng([p.lat, p.lng]).setIcon(pinIcon(p));
+          const node = mk.getElement()?.querySelector(".mpin b");
+          if (node) node.textContent = p.title;
+          mk.sig = sig;
+        }
+      }
+      for (const [id, mk] of pinMarks) if (!alive.has(id)) { mk.remove(); pinMarks.delete(id); }
+    }
+    pinList.hidden = !list.length;
+    setKids(pinList, list.length ? [h("div", { class: "map-pins-title" }, "ピン"), ...list.map((p) => h("button", {
+      class: "map-pin-row", onclick: () => { follow = false; map?.setView([p.lat, p.lng], Math.max(map.getZoom(), 17)); if (S.isAdmin) openEditor(p); },
+    }, h("span", { class: "dot-ic", style: `--c:${p.color}` }, p.icon ?? "📍"), h("span", { class: "cell-main" }, h("b", null, p.title), p.note ? h("small", null, p.note) : null),
+      p.vis === "admin" ? h("span", { class: "tint" }, "管理者だけ") : null))] : null);
+  };
 
   // 他の人の位置（管理者は全員、参加者は設定でオンのときだけ届く）
   const paintOthers = () => {
@@ -1228,6 +1334,7 @@ function mapView() {
       if (follow) map.panTo(last);
     }
     const t = new Date(pos.timestamp);
+    if (status.dataset.hint) return;
     status.textContent = `現在地：誤差 約${Math.round(accuracy)}m ・ ${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}:${String(t.getSeconds()).padStart(2, "0")} 更新`;
   };
 
@@ -1241,12 +1348,14 @@ function mapView() {
   const syncListen = () => {
     if (S.isAdmin || S.config.locAll) listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
     else if (subs.has("locations")) { unlisten("locations"); S.locations = new Map(); }
+    listen("mapPins", C("mapPins"), (x) => { if (x) S.mapPins = toMap(x); });
   };
   return {
     el,
     update() {
       syncListen();
       paintOthers();
+      paintPins();
       if (started) { map?.invalidateSize(); return; }
       started = true;
       loadLeaflet().then((L) => {
@@ -1256,6 +1365,16 @@ function mapView() {
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
         map.on("dragstart", () => { follow = false; });
+        // 管理者：「ピン」ボタンを押してから地図をタップすると、そこにピンを刺す
+        map.on("click", (e) => {
+          if (!adding) return;
+          adding = false;
+          addBtn?.classList.remove("on");
+          status.dataset.hint = "";
+          status.textContent = "名前を付けて「刺す」を押してください";
+          openEditor({ lat: e.latlng.lat, lng: e.latlng.lng });
+        });
+        paintPins();
         setTimeout(() => map.invalidateSize(), 50);
         paintOthers();
         if (!("geolocation" in navigator)) { status.textContent = "この端末では現在地を取得できません。"; return; }
@@ -1273,7 +1392,9 @@ function mapView() {
       if (watchId != null) navigator.geolocation.clearWatch(watchId);
       map?.remove();
       unlisten("locations");
+      unlisten("mapPins");
       S.locations = new Map();
+      S.mapPins = new Map();
     },
   };
 }
@@ -1438,7 +1559,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
