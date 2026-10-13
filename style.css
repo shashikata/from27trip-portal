@@ -1393,3 +1393,47 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .member-checks .pick-list { margin: 0; }
 .member-checks .pick { background: var(--fill); }
 .cell[hidden] { display: none !important; }
+
+/* ---- チャット ---- */
+[data-sheet=chat] { position: relative; }
+.chat-badge { position: absolute; top: 2px; right: 0; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--red); color: #fff; font-size: 11px; font-weight: 800; line-height: 18px; text-align: center; }
+.desk-btn .chat-badge { position: static; margin-left: 4px; }
+.chat { display: flex; flex-direction: column; min-height: min(70vh, 640px); }
+.chat-list { display: grid; gap: 12px; }
+.chat-new { display: flex; }
+.chat-pick { display: grid; gap: 8px; width: 100%; }
+.chat-pick .pick-list { margin: 0; }
+.chat-pick .pick { border: none; cursor: pointer; }
+.chat-row { gap: 12px; text-align: left; }
+.chat-row .cell-main { display: grid; min-width: 0; }
+.chat-row small { color: var(--label-2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-ic { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); }
+.chat-ic.team { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.chat-ic.admin { background: color-mix(in srgb, var(--orange) 16%, transparent); color: var(--orange); }
+.chat-ic.dm { background: color-mix(in srgb, #AF52DE 16%, transparent); color: #AF52DE; }
+.chat-ic .icon { width: 20px; height: 20px; }
+.chat-unread { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--red); color: #fff; font-size: 12px; font-weight: 800; line-height: 22px; text-align: center; flex: none; }
+.chat-room { display: flex; flex-direction: column; height: min(72vh, 680px); }
+.chat-room-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: .5px solid var(--separator); }
+.chat-title { font-weight: 800; font-size: 16px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-msgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 2px; }
+.chat-day { align-self: center; font-size: 12px; color: var(--label-2); padding: 2px 10px; border-radius: 999px; background: var(--fill); margin: 6px 0; }
+.chat-empty { align-self: center; margin: auto; color: var(--label-2); font-size: 14px; }
+.chat-msg { display: grid; justify-items: start; max-width: 80%; align-self: flex-start; gap: 2px; }
+.chat-msg.mine { justify-items: end; align-self: flex-end; }
+.chat-name { font-size: 12px; color: var(--label-2); font-weight: 700; padding: 0 6px; }
+.chat-msg.admin .chat-name { color: var(--orange); }
+.chat-bubble { padding: 8px 12px; border-radius: 18px; background: var(--fill); color: var(--label); font-size: 15px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-msg.mine .chat-bubble { background: var(--blue); color: #fff; }
+.chat-msg.admin:not(.mine) .chat-bubble { background: color-mix(in srgb, var(--orange) 16%, var(--cell)); }
+.chat-time { font-size: 11px; color: var(--label-3); padding: 0 6px; display: flex; gap: 8px; align-items: center; }
+.chat-del { border: none; background: none; color: var(--red); font-size: 11px; padding: 0; cursor: pointer; }
+.chat-composer { display: flex; align-items: flex-end; gap: 8px; padding-top: 8px; border-top: .5px solid var(--separator); }
+.chat-input { flex: 1; min-width: 0; resize: none; border: none; border-radius: 18px; padding: 9px 14px; font: inherit; font-size: 16px; line-height: 1.35; background: var(--fill); color: var(--label); outline: none; max-height: 140px; }
+.chat-send { border: none; border-radius: 18px; padding: 9px 16px; font-weight: 800; color: #fff; background: var(--blue); flex: none; }
+.chat-readonly { text-align: center; font-size: 13px; color: var(--label-2); padding: 10px; border-top: .5px solid var(--separator); }
+.nav-left .nav-gear[data-sheet=chat] { position: relative; }
+.chat-row { text-align: left; }
+.chat-row .cell-main { justify-items: start; flex: 1; }
+/* .cell-main は flex 用に justify-content: center が付いているので、grid にした行では左寄せに戻す */
+.chat-row .cell-main, .map-pin-row .cell-main { justify-content: start; }

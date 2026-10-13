@@ -78,6 +78,8 @@ const S = {
   votes: new Map(),          // 回答 votes/{pollId}_{uid}（参加者は自分の分だけ）
   pollTally: new Map(),      // 参加者：集計を見せるアンケートの回答（pollId -> [choice]）
   payments: new Map(),       // 集金 payments/{id}
+  msgRecent: new Map(),      // チャット：新しい順に80件（未読の数・一覧に使う）
+  chatMsgs: new Map(),       // チャット：開いているチャットの全メッセージ
   payReports: new Map(),     // 参加者からの「送金しました」 payReports/{paymentId}_{uid}（参加者は自分の分だけ）
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
@@ -113,7 +115,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
+const RENDER_KIND = { msgRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -198,6 +200,7 @@ function startAdmin() {
   listen("votes", C("votes"), (s) => { S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { S.payments = toMap(s); });
   listen("payReports", C("payReports"), (s) => { S.payReports = toMap(s); });
+  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
   listenLiveQuiz();
 }
 
@@ -284,6 +287,8 @@ function startMemberData(uid) {
   listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { if (s) S.payments = toMap(s); });
   listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) S.payReports = toMap(s); });
+  // チャットは新しい順に80件だけ（自分に関係するものだけ使う。開いているチャットは別に全部受け取る）
+  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) S.msgRecent = toMap(s); }); // 見てよいかは使うときに判定（チームの所属が後から届くため）
   listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
   listenRecent(uid);
 }
@@ -379,7 +384,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), mapPins: new Map(),
+    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -637,6 +642,7 @@ const ICONS = {
   quiz: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
   play: '<path d="M8 5.5v13l10.5-6.5L8 5.5Z"/>',
   arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
+  chat: '<path d="M4.5 5.5h15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4.5 3.5V16.5h-1a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z"/><path d="M8 10h8M8 13h5"/>',
 };
 
 function icon(name, cls = "") {
@@ -1631,7 +1637,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -4598,6 +4604,207 @@ function syncPollTally() {
   for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => v.choice)); });
 }
 
+// ---------------------------------------------------------------- チャット
+//
+//   messages/{自動}  { uid(送った人), chat, text, at, parties: [uid, uid] (DM と管理者連絡のみ), from(管理者の表示名) }
+//   chat の種類：
+//     "all"              全体チャット
+//     "team:{teamId}"    チーム内チャット（発表済みのチームのメンバー）
+//     "admin:{uid}"      その参加者と管理者の1対1（管理者は誰でも読み書きできる）
+//     "dm:{uid}_{uid}"   参加者どうしのDM（uid は小さい順）。管理者は閲覧のみ
+//
+// 読み取り回数を抑えるため、ふだんは「新しい順に80件」だけ受け取り（未読の数に使う）、
+// 開いているチャットだけ、そのチャットの全メッセージを受け取る。
+
+const dmKey = (a, b) => `dm:${[a, b].sort().join("_")}`;
+const chatParts = (key) => { const [type, rest = ""] = key.split(/:(.*)/s); return { type, rest }; };
+const sortedMsgs = (map) => [...map.values()].sort((a, b) => (ts(a.at) || Date.now()) - (ts(b.at) || Date.now()) || (a.id < b.id ? -1 : 1));
+const senderName = (m) => m.from || memberName(m.uid);
+
+// 参加者がそのチャットに入れるか（管理者はすべて）
+function canSeeChat(key) {
+  if (S.isAdmin) return true;
+  const uid = S.user.uid;
+  const { type, rest } = chatParts(key);
+  if (type === "all") return true;
+  if (type === "team") return myTeamIds(uid).includes(rest);
+  if (type === "admin") return rest === uid;
+  if (type === "dm") return rest.split("_").includes(uid);
+  return false;
+}
+// 管理者が書き込めるか（参加者どうしのDMは閲覧のみ）
+const canPost = (key) => !S.isAdmin || chatParts(key).type !== "dm";
+
+function chatTitle(key) {
+  const { type, rest } = chatParts(key);
+  if (type === "all") return "全体チャット";
+  if (type === "team") return S.teams.has(rest) ? `${teamName(rest)}（チーム内）` : "チーム内チャット";
+  if (type === "admin") return S.isAdmin ? `${memberName(rest)} ↔ 管理者` : "管理者への連絡";
+  if (type === "dm") {
+    const [a, b] = rest.split("_");
+    if (!S.isAdmin) return memberName(a === S.user.uid ? b : a);
+    // 管理者には参加者一覧の順（user01 → user02 …）で並べて出す
+    const order = sortedMembers().map((m) => m.id);
+    const [x, y] = [a, b].sort((p, q) => order.indexOf(p) - order.indexOf(q));
+    return `${memberName(x)} ↔ ${memberName(y)}`;
+  }
+  return key;
+}
+
+// 既読（最後に見た時刻）と、開いたことのあるDMは端末に保存する
+const chatStoreKey = (name) => `island.chat.${name}.${S.pid}.${S.user?.uid}`;
+const loadJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const saveJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 保存できなくても動く */ } };
+const chatRead = () => loadJson(chatStoreKey("read"), {});
+function markChatRead(key) { const r = chatRead(); r[key] = Date.now(); saveJson(chatStoreKey("read"), r); }
+const knownThreads = () => loadJson(chatStoreKey("threads"), []);
+function rememberThread(key) { const t = knownThreads(); if (!t.includes(key)) { t.push(key); saveJson(chatStoreKey("threads"), t); } }
+
+function unreadOf(key) {
+  const last = chatRead()[key] ?? 0;
+  return [...S.msgRecent.values()].filter((m) => m.chat === key && m.uid !== S.user.uid && (ts(m.at) || Date.now()) > last).length;
+}
+// 一覧に出すチャット
+function chatList() {
+  const keys = new Set(["all"]);
+  if (S.isAdmin) for (const t of S.teams.values()) keys.add(`team:${t.id}`);
+  else {
+    for (const id of myTeamIds(S.user.uid)) keys.add(`team:${id}`);
+    keys.add(`admin:${S.user.uid}`);
+    for (const k of knownThreads()) keys.add(k);
+  }
+  for (const m of S.msgRecent.values()) if (canSeeChat(m.chat)) keys.add(m.chat);
+  const lastOf = (k) => sortedMsgs(new Map([...S.msgRecent].filter(([, m]) => m.chat === k))).pop();
+  return [...keys].filter(canSeeChat).map((k) => ({ key: k, last: lastOf(k), unread: unreadOf(k) }))
+    .sort((a, b) => (a.key === "all" ? -1 : b.key === "all" ? 1 : 0) || (ts(b.last?.at) || 0) - (ts(a.last?.at) || 0) || chatTitle(a.key).localeCompare(chatTitle(b.key), "ja"));
+}
+const totalUnread = () => chatList().reduce((s, c) => s + c.unread, 0);
+
+function paintChatBadges() {
+  if (!S.user) return;
+  const n = totalUnread();
+  for (const b of document.querySelectorAll("[data-sheet=chat]")) {
+    let dotEl = b.querySelector(".chat-badge");
+    if (!dotEl) { dotEl = h("span", { class: "chat-badge" }); b.append(dotEl); }
+    dotEl.textContent = n > 99 ? "99+" : String(n);
+    dotEl.hidden = !n;
+  }
+}
+
+function chatView() {
+  let current = null;           // 開いているチャット
+  let picking = false;          // DM の相手を選んでいる
+  const el = h("div", { class: "chat" });
+  const listBox = h("div", { class: "chat-list" });
+  const msgs = h("div", { class: "chat-msgs" });
+  const title = h("div", { class: "chat-title" });
+  const input = h("textarea", { class: "chat-input", rows: "1", placeholder: "メッセージ", maxlength: "1000", enterkeyhint: "send" });
+  const sendBtn = h("button", { class: "chat-send", "aria-label": "送信" }, "送信");
+  const readonly = h("div", { class: "chat-readonly" }, "参加者どうしのDMです（閲覧のみ）");
+  const composer = h("div", { class: "chat-composer" }, input, sendBtn);
+  const room = h("div", { class: "chat-room" },
+    h("div", { class: "chat-room-head" }, h("button", { class: "text-btn", onclick: () => leave() }, "‹ 一覧"), title),
+    msgs, readonly, composer);
+
+  const send = () => {
+    const text = input.value.trim();
+    if (!text || !current || !canPost(current)) return;
+    const { type, rest } = chatParts(current);
+    const data = { uid: S.user.uid, chat: current, text, at: serverTimestamp() };
+    if (type === "dm") data.parties = rest.split("_");
+    if (type === "admin") data.parties = [rest];
+    if (S.isAdmin) data.from = adminName(S.user.email);
+    fire(addDoc(C("messages"), data));
+    input.value = "";
+    autosize();
+    rememberThread(current);
+    stick = true;
+  };
+  const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(140, input.scrollHeight)}px`; };
+  input.addEventListener("input", autosize);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && matchMedia("(pointer: fine)").matches) { e.preventDefault(); send(); } });
+  sendBtn.addEventListener("click", send);
+
+  let stick = true; // 一番下を見ているときは、新しいメッセージが来たら一番下へ
+  msgs.addEventListener("scroll", () => { stick = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 40; });
+
+  function open(key) {
+    current = key; picking = false; stick = true;
+    unlisten("chatOpen");
+    S.chatMsgs = new Map();
+    listen("chatOpen", query(C("messages"), where("chat", "==", key)), (s) => { if (s) S.chatMsgs = toMap(s); });
+    rememberThread(key);
+    paint();
+  }
+  function leave() { current = null; unlisten("chatOpen"); S.chatMsgs = new Map(); paint(); }
+
+  function paintList() {
+    const items = chatList();
+    const people = sortedMembers().filter((m) => m.id !== S.user.uid);
+    setKids(listBox,
+      S.isAdmin ? null : h("div", { class: "chat-new" },
+        picking ? h("div", { class: "chat-pick" }, h("div", { class: "cell-sub" }, "DMする相手を選んでください"),
+          h("div", { class: "pick-list" }, people.map((m) => h("button", { class: "pick", onclick: () => open(dmKey(S.user.uid, m.id)) }, m.name))),
+          h("button", { class: "text-btn", onclick: () => { picking = false; paint(); } }, "やめる"))
+          : h("button", { class: "btn-small", onclick: () => { picking = true; paint(); } }, icon("plus"), "新しいDM")),
+      h("div", { class: "group-body" }, items.map((c) => h("button", { class: "cell cell-button chat-row", onclick: () => open(c.key) },
+        h("span", { class: `chat-ic ${chatParts(c.key).type}` }, icon(chatParts(c.key).type === "dm" ? "chat" : chatParts(c.key).type === "admin" ? "lock" : chatParts(c.key).type === "team" ? "flag" : "people")),
+        h("span", { class: "cell-main" }, h("b", null, chatTitle(c.key)),
+          h("small", null, c.last ? `${senderName(c.last)}：${c.last.text}` : "まだメッセージはありません")),
+        c.unread ? h("span", { class: "chat-unread" }, c.unread) : null))));
+  }
+
+  function paintRoom() {
+    title.textContent = chatTitle(current);
+    readonly.hidden = canPost(current);
+    composer.hidden = !canPost(current);
+    const list = sortedMsgs(S.chatMsgs);
+    let prevDay = null;
+    const rows = [];
+    for (const m of list) {
+      const d = m.at?.toDate ? m.at.toDate() : new Date();
+      const day = `${d.getMonth() + 1}月${d.getDate()}日`;
+      if (day !== prevDay) { rows.push({ id: `day:${day}`, day }); prevDay = day; }
+      rows.push(m);
+    }
+    keyedList(msgs, rows, (r) => ({ el: h("div") }), (row, r) => {
+      if (r.day) { row.el.className = "chat-day"; row.el.textContent = r.day; return; }
+      const mine = r.uid === S.user.uid;
+      const d = r.at?.toDate ? r.at.toDate() : null;
+      const sig = `${r.text}|${d?.getTime()}|${mine}`;
+      if (row.sig === sig) return;
+      row.sig = sig;
+      row.el.className = `chat-msg${mine ? " mine" : ""}${r.from ? " admin" : ""}`;
+      setKids(row.el,
+        mine ? null : h("div", { class: "chat-name" }, senderName(r)),
+        h("div", { class: "chat-bubble" }, r.text),
+        h("div", { class: "chat-time" }, d ? `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}` : "送信中…",
+          S.isAdmin ? h("button", { class: "chat-del", title: "削除", onclick: () => { if (confirm("このメッセージを削除しますか？")) fire(deleteDoc(D("messages", r.id)), "削除しました"); } }, "削除") : null));
+    });
+    if (!list.length && !msgs.querySelector(".chat-empty")) msgs.append(h("div", { class: "chat-empty" }, "まだメッセージはありません"));
+    if (list.length) msgs.querySelector(".chat-empty")?.remove();
+    if (stick) requestAnimationFrame(() => { msgs.scrollTop = msgs.scrollHeight; });
+    markChatRead(current);
+  }
+
+  function paint() {
+    if (current && !canSeeChat(current)) current = null;
+    if (current) {
+      if (el.firstChild !== room) el.replaceChildren(room);
+      paintRoom();
+    } else {
+      if (el.firstChild !== listBox) el.replaceChildren(listBox);
+      paintList();
+    }
+    paintChatBadges();
+  }
+  return {
+    el,
+    update: paint,
+    destroy() { unlisten("chatOpen"); S.chatMsgs = new Map(); },
+  };
+}
+
 // ---------------------------------------------------------------- ID・パスワードの印刷
 //
 // パスワードは Firebase から読み出せないので、作成したときに accounts/{loginId}.pw（管理者だけが読める）に控えておく。
@@ -4690,6 +4897,7 @@ const MEMBER_TABS = [
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
   { key: "money", icon: "check", label: "出欠・集金", view: memberMoney, sheet: true, desktopOnly: true }, // スマホは1ページの中の欄
+  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -4702,6 +4910,7 @@ const ADMIN_TABS = [
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
+  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -4962,7 +5171,8 @@ function render(kinds) {
   if (!S.authReady) return;
   // 位置・クイズだけが変わったときは、開いている小窓とクイズの画面だけ描き直す
   if (kinds && !kinds.has("all") && shell && S.user) {
-    if ((kinds.has("loc") && S.sheet?.key === "map") || (kinds.has("quiz") && S.sheet?.key === "quiz")) S.sheet.view.update();
+    if ((kinds.has("loc") && S.sheet?.key === "map") || (kinds.has("quiz") && S.sheet?.key === "quiz") || (kinds.has("chat") && S.sheet?.key === "chat")) S.sheet.view.update();
+    if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
     return;
   }
@@ -4995,6 +5205,7 @@ function render(kinds) {
   document.title = S.config.title || APP_TITLE;
   shell.update();
   paintMapButtons();
+  paintChatBadges();
   paintQuizLive();
 }
 
