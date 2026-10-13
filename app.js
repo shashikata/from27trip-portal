@@ -76,7 +76,7 @@ const S = {
   mapPins: new Map(),        // 管理者が地図に刺したピン mapPins/{id}
   polls: new Map(),          // 出欠などのアンケート polls/{id}
   votes: new Map(),          // 回答 votes/{pollId}_{uid}（参加者は自分の分だけ）
-  pollTally: new Map(),      // 参加者：集計を見せるアンケートの回答（pollId -> [choice]）
+  pollTally: new Map(),      // 参加者：集計を見せるアンケートの回答（pollId -> [{ choice, order }]）
   payments: new Map(),       // 集金 payments/{id}
   msgRecent: new Map(),      // チャット：新しい順に80件（未読の数・一覧に使う）
   chatMsgs: new Map(),       // チャット：開いているチャットの全メッセージ
@@ -2701,10 +2701,12 @@ function voteResult(q) {
   if (q?.answer && typeof q.answer === "object" && !Array.isArray(q.answer)) return q.answer; // 発表後にスマホへ届いた結果
   const poll = S.polls.get(q?.pollId);
   const options = poll?.options ?? [];
-  const counts = options.map((o) => [...S.votes.values()].filter((v) => v.pollId === poll.id && v.choice === o && isTarget(poll, v.uid)).length);
+  const votes = poll ? [...S.votes.values()].filter((v) => v.pollId === poll.id && isTarget(poll, v.uid)) : [];
+  const pts = poll ? pollScores(poll, votes) : new Map();
+  const counts = options.map((o) => pts.get(o) ?? 0);
   const rank = options.map((_, i) => i).sort((a, b) => counts[b] - counts[a] || a - b);
   const max = Math.max(0, ...counts);
-  return { counts, rank, top: max > 0 ? rank.filter((i) => counts[i] === max) : [], texts: options, total: counts.reduce((x, y) => x + y, 0) };
+  return { counts, rank, top: max > 0 ? rank.filter((i) => counts[i] === max) : [], texts: options, total: votes.length, unit: poll ? pollUnit(poll) : "票" };
 }
 // 並べ替え・順位当ての正解の並び
 const correctSeq = (q) => (q.type === "order" ? (q.choices ?? []).map((_, i) => i) : voteResult(q).rank.slice(0, seqLen(q)));
@@ -2816,12 +2818,12 @@ function answerLabel(q, A) {
       for (let i = 0; i < seqLen(q) && i < A.rank.length;) {
         const c = A.counts[A.rank[i]];
         const g = A.rank.filter((k) => A.counts[k] === c);
-        out.push(`${g.map((k) => A.texts[k]).join("／")}（${c}票）`);
+        out.push(`${g.map((k) => A.texts[k]).join("／")}（${c}${A.unit ?? "票"}）`);
         i += g.length;
       }
       return out.join(" → ");
     }
-    return `${A.top.map((k) => A.texts[k]).join("・")}（${A.counts[A.top[0]]}票）`;
+    return `${A.top.map((k) => A.texts[k]).join("・")}（${A.counts[A.top[0]]}${A.unit ?? "票"}）`;
   }
   return typeof A === "object" ? "" : String(A);
 }
@@ -3311,10 +3313,10 @@ function quizManager({ withTitle = true } = {}) {
             q.voteMode === "rank" ? field(`何位まで当てるか（2〜${maxN}）`, num(seqLen(q), (v) => { q.rankN = Math.max(2, Math.min(maxN, v)); }, { min: "2", max: String(maxN) })) : null,
             q.voteMode === "rank" ? field("部分点（合っている順位の数に応じて）", partial) : null),
           poll ? h("div", { class: "vote-now" },
-            h("div", { class: "cell-sub" }, `いまの集計（${r.total}票${pollOpen(poll) ? "・受付中" : "・締切済み"}）`),
-            r.rank.slice(0, 5).map((k, n) => h("div", { class: "vote-now-row" }, h("span", { class: "seq-no" }, n + 1), h("span", null, r.texts[k]), h("b", null, `${r.counts[k]}票`)))) : null,
+            h("div", { class: "cell-sub" }, `いまの集計（${r.total}人が回答${isRankPoll(poll) ? "・順位投票の点数" : ""}${pollOpen(poll) ? "・受付中" : "・締切済み"}）`),
+            r.rank.slice(0, 5).map((k, n) => h("div", { class: "vote-now-row" }, h("span", { class: "seq-no" }, n + 1), h("span", null, r.texts[k]), h("b", null, `${r.counts[k]}${r.unit}`)))) : null,
           h("div", { class: "cell-sub q-hint" }, [
-            "アンケートの結果が正解になります。同じ票数のものは、どちらを選んでも（どちらの順でも）正解です。",
+            "アンケートの結果が正解になります（順位投票のアンケートは、1位＝多い点…の合計点で順位を決めます）。同じ票数（点数）のものは、どちらを選んでも（どちらの順でも）正解です。",
             poll?.showResults ? "⚠ このアンケートは参加者に集計を見せる設定です。答えがばれるので「集計を参加者に見せない」にしてください。" : null,
             poll && pollOpen(poll) ? "クイズの前にアンケートを締め切っておくと、答えが動きません。" : null,
           ].filter(Boolean).join(" ")));
@@ -3764,7 +3766,7 @@ function paintDisplay(P, L, qz, rem) {
           const hit = n ? pos <= n : r.top.includes(k);
           return h("div", { class: `pr-vote-row${hit ? " hit" : ""}`, style: `--d:${(r.rank.length - i) * 0.25}s` },
             h("span", { class: "pr-vote-no" }, n && pos <= n ? `${pos}位` : ""), h("span", { class: "pr-vote-txt" }, r.texts[k]),
-            h("span", { class: "pr-vote-track" }, h("span", { style: `width:${(r.counts[k] / max) * 100}%` })), h("b", null, `${r.counts[k]}票`));
+            h("span", { class: "pr-vote-track" }, h("span", { style: `width:${(r.counts[k] / max) * 100}%` })), h("b", null, `${r.counts[k]}${r.unit}`));
         }))
         : h("div", { class: "pr-seq-items" }, r.texts.map((c, k) => h("span", null, c, picks && L.phase === "reveal" && L.showAns === "all" ? h("small", null, ` ${picks[k]}人`) : null)));
     }
@@ -4372,7 +4374,7 @@ function paintMemberQuiz(full = true) {
       input = h("div", { class: "ql-options" }, (q.choices ?? []).map((c, k) => h("button", {
         class: `ql-option${mine?.choice === k ? " picked" : ""}${A?.top?.includes(k) ? " correct" : ""}`, disabled: locked,
         onclick: () => quizAnswer({ choice: k }),
-      }, blind ? `${k + 1}` : c, A ? h("small", null, `${A.counts?.[k] ?? 0}票`) : null)));
+      }, blind ? `${k + 1}` : c, A ? h("small", null, `${A.counts?.[k] ?? 0}${A.unit ?? "票"}`) : null)));
     } else if (isSeqType(q)) {
       input = seqBuilder(L, q, mine, locked, blind);
     } else {
@@ -4474,6 +4476,23 @@ const payTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.i
 const pollTargets = payTargets; // アンケートも同じ形（targets: [uid] | null(=全員)）
 const isTarget = (x, uid) => !x.targets || x.targets.includes(uid);
 
+// 順位投票（polls.rank = true）：各自が選択肢に 1位〜depth位 を付けて投票する（votes.order に順番、choice は1位）。
+// 集計は点数（ボルダ式）：depth 位まで付けるとき、1位 = depth 点、2位 = depth−1 点 … depth位 = 1点
+//   optionUids : 選択肢を参加者から選んだとき、選択肢と同じ順の uid（「自分には投票できない」に使う）
+const isRankPoll = (p) => !!p?.rank;
+const selfOption = (p, uid) => { const i = (p.optionUids ?? []).indexOf(uid); return i >= 0 ? p.options[i] : null; };
+const pollDepth = (p) => Math.max(1, Math.min(Number(p.depth) || p.options.length, p.options.length - (p.noSelf && p.optionUids ? 1 : 0)));
+function pollScores(p, votes) {
+  const d = pollDepth(p);
+  const pts = new Map(p.options.map((o) => [o, 0]));
+  for (const v of votes) {
+    if (isRankPoll(p)) (v.order ?? []).slice(0, d).forEach((o, i) => { if (pts.has(o)) pts.set(o, pts.get(o) + d - i); });
+    else if (pts.has(v.choice)) pts.set(v.choice, pts.get(v.choice) + 1);
+  }
+  return pts;
+}
+const pollUnit = (p) => (isRankPoll(p) ? "点" : "票");
+
 // アカウントにチェックを付けて対象者を選ぶ欄。選んだ状態は手元に持つので、描き直してもチェックは消えない
 function memberChecks(initial) {
   const sel = new Set(initial ?? []);
@@ -4564,6 +4583,63 @@ const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((
 const reportLine = (rep) => [rep.method, rep.at ? fmtDate(rep.at) : "送信中…", rep.note].filter(Boolean).join(" ・ ");
 const myUnanswered = (uid) => sortedPolls().filter((p) => isTarget(p, uid) && pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
 
+// 順位投票の集計（点数の多い順）。withVoters なら各自の順番も出す
+function rankPollResult(p, votes, withVoters) {
+  const pts = pollScores(p, votes);
+  const rows = p.options.map((o, i) => ({ o, i, pt: pts.get(o) ?? 0 })).sort((a, b) => b.pt - a.pt || a.i - b.i);
+  const max = Math.max(1, ...rows.map((r) => r.pt));
+  const d = pollDepth(p);
+  return h("div", { class: "poll-bars" },
+    h("div", { class: "cell-sub" }, `順位投票（${d > 1 ? `${d}位まで・1位${d}点 … ${d}位1点` : "1位だけ・1点"}）・${votes.length}人が回答`),
+    rows.map((r) => {
+      const pos = 1 + rows.filter((x) => x.pt > r.pt).length;
+      return h("div", { class: "poll-bar" },
+        h("div", { class: "poll-bar-top" }, h("span", null, h("b", { class: "rank-pos" }, `${pos}位`), r.o), h("b", null, `${r.pt}点`)),
+        h("div", { class: "poll-track" }, h("div", { style: `width:${(r.pt / max) * 100}%` })));
+    }),
+    withVoters && votes.length ? keptFold(`rankv:${p.id}`, `各自の順番（${votes.length}人）`, h("div", { class: "rank-voters" }, votes.map((v) =>
+      h("div", null, h("b", null, memberName(v.uid)), (v.order ?? []).map((o, i) => `${i + 1}.${o}`).join("　"), v.comment ? h("small", null, `「${v.comment}」`) : null)))) : null);
+}
+
+// 順位投票の入力（参加者）：タップした順に 1位・2位… が付き、そろったら「この順で投票」。
+// 並べている途中の順番は手元に持つので、画面が描き直されても消えない
+const rankDrafts = new Map(); // pollId -> { order: [選択肢], key: 最後に合わせた自分の回答 }
+function rankPicker(p, mine, open, vote) {
+  const uid = S.user.uid;
+  const self = p.noSelf ? selfOption(p, uid) : null;
+  const choices = p.options.filter((o) => o !== self);
+  const d = Math.min(pollDepth(p), choices.length);
+  const mineKey = JSON.stringify(mine?.order ?? null);
+  let dr = rankDrafts.get(p.id);
+  if (!dr || (dr.key !== mineKey && !dr.dirty)) { dr = { order: [...(mine?.order ?? [])].filter((o) => choices.includes(o)).slice(0, d), key: mineKey, dirty: false }; rankDrafts.set(p.id, dr); }
+  const redraw = () => scheduleRender();
+  const tap = (o) => {
+    if (!open) return;
+    const at = dr.order.indexOf(o);
+    if (at >= 0) dr.order.splice(at, 1);
+    else if (dr.order.length < d) {
+      dr.order.push(o);
+      // 全部に順位を付けるときは、残り1つを自動で最下位にする
+      if (d === choices.length && dr.order.length === d - 1) dr.order.push(choices.find((x) => !dr.order.includes(x)));
+    }
+    dr.dirty = true;
+    redraw();
+  };
+  const same = mine?.order && JSON.stringify(mine.order) === JSON.stringify(dr.order);
+  return h("div", { class: "rank-pick" },
+    h("div", { class: "cell-sub" }, `${d === choices.length ? "全員" : `上位${d}位まで`}に順位を付けてください（タップした順に1位・2位…。もう一度タップで外せます）${self ? "。自分には投票できません" : ""}`),
+    h("ol", { class: "rank-slots" }, [...Array(d).keys()].map((n) => h("li", { class: dr.order[n] ? "on" : null },
+      h("span", { class: "seq-no" }, n + 1), dr.order[n] ?? h("span", { class: "secondary" }, `${n + 1}位`)))),
+    h("div", { class: "poll-choices" }, choices.map((o) => {
+      const at = dr.order.indexOf(o);
+      return h("button", { class: `poll-choice${at >= 0 ? " ranked" : ""}`, disabled: !open || (at < 0 && dr.order.length >= d), onclick: () => tap(o) },
+        at >= 0 ? h("span", { class: "rank-badge" }, at + 1) : null, o);
+    })),
+    open ? h("div", { class: "rank-actions" },
+      h("button", { class: "text-btn", disabled: !dr.order.length, onclick: () => { dr.order = []; dr.dirty = true; redraw(); } }, "やり直す"),
+      h("button", { class: "btn-small", disabled: dr.order.length !== d || same, onclick: () => { dr.dirty = false; dr.key = JSON.stringify(dr.order); vote([...dr.order]); } }, same ? "投票済み" : mine ? "この順で投票し直す" : "この順で投票")) : null);
+}
+
 // ---- 管理者
 function adminMoney({ withTitle = true } = {}) {
   const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], "polls");
@@ -4575,21 +4651,48 @@ function adminMoney({ withTitle = true } = {}) {
   const q = h("input", { type: "text", class: "plain", placeholder: "例：8/10 のBBQに参加しますか？" });
   const opts = h("input", { type: "text", value: "参加 / 不参加 / 未定" });
   const deadline = h("input", { type: "datetime-local" });
-  const showRes = toggle(true), allowCom = toggle(true), nameOpts = toggle(false), anon = toggle(false);
-  nameOpts.addEventListener("change", () => { opts.disabled = nameOpts.checked; });
+  const showRes = toggle(true), allowCom = toggle(true), nameOpts = toggle(false), anon = toggle(false), rankT = toggle(false), noSelf = toggle(true);
+  const depth = h("input", { type: "number", min: "1", inputmode: "numeric", placeholder: "全部" });
+  const nameChecks = memberChecks([]);
+  const nameCell = h("div", { class: "cell target-wrap" }, h("div", { class: "cell-sub" }, "選択肢にする人"), nameChecks.el);
+  const noSelfCell = field("自分には投票できない", noSelf);
+  const depthCell = field("何位まで付けるか", depth);
+  const optsCell = field("選択肢（/ で区切る）", opts);
+  const paintPollForm = () => {
+    optsCell.hidden = nameOpts.checked;
+    nameCell.hidden = noSelfCell.hidden = !nameOpts.checked;
+    depthCell.hidden = !rankT.checked;
+    if (nameOpts.checked) nameChecks.refresh();
+  };
+  nameOpts.addEventListener("change", () => { if (nameOpts.checked) nameChecks.set(sortedMembers().map((m) => m.id)); paintPollForm(); });
+  rankT.addEventListener("change", paintPollForm);
   const pollWho = targetPicker(null);
+  paintPollForm();
   const pollForm = h("form", { onsubmit: (e) => {
     e.preventDefault();
-    const options = nameOpts.checked ? [...new Set(sortedMembers().map((m) => m.name))] : opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean);
+    let options, optionUids = null;
+    if (nameOpts.checked) {
+      // 選んだ参加者の名前を選択肢にする（同じ名前の人がいたら番号を付けて区別する）
+      const picked = sortedMembers().filter((m) => nameChecks.value().includes(m.id));
+      optionUids = picked.map((m) => m.id);
+      options = [];
+      for (const m of picked) { let n = m.name, k = 2; while (options.includes(n)) n = `${m.name}（${k++}）`; options.push(n); }
+    } else options = [...new Set(opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean))];
     if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
+    if (rankT.checked && nameOpts.checked && noSelf.checked && options.length < 3) return toast("「自分には投票できない」順位投票は、選択肢を3人以上にしてください", true);
     const targets = pollWho.value();
     if (targets && !targets.length) return toast("対象を1人以上選んでください", true);
-    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, anonymous: anon.checked, targets, createdAt: serverTimestamp() }), "アンケートを作りました");
+    fire(addDoc(C("polls"), {
+      question: q.value.trim(), options, optionUids, noSelf: nameOpts.checked && noSelf.checked,
+      rank: rankT.checked, depth: rankT.checked && Math.floor(Number(depth.value)) > 0 ? Math.floor(Number(depth.value)) : null,
+      deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, anonymous: anon.checked, targets, createdAt: serverTimestamp(),
+    }), "アンケートを作りました");
     q.value = ""; deadline.value = ""; pollWho.reset();
   } },
-    group("新しいアンケート", [h("div", { class: "cell" }, q), field("選択肢（/ で区切る）", opts), field("選択肢を参加者の名前にする", nameOpts), field("締切（なしでもOK）", deadline),
+    group("新しいアンケート", [h("div", { class: "cell" }, q), optsCell, field("選択肢を参加者の名前にする", nameOpts), nameCell, noSelfCell,
+      field("順位をつけて投票する", rankT), depthCell, field("締切（なしでもOK）", deadline),
       field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom), field("誰が何に入れたかを出さない", anon)],
-      "「参加者の名前にする」は「誰が一番〇〇？」のような投票向けです。クイズの「投票当て」に使うアンケートは、答えがばれないよう「集計を見せる」をオフにしてください。「出さない」をオンにすると、管理者の画面でも票数だけを表示します。"),
+      "「参加者の名前にする」は「誰が一番〇〇？」のような投票向けで、選択肢にする人を選べます。「順位をつけて投票する」は、1人ずつ「優しいと思う順」のように順位を付けて投票し、1位＝多い点…の合計点で集計します（何位まで付けるかは空欄なら全部）。クイズの「投票当て」に使うアンケートは、答えがばれないよう「集計を見せる」をオフにしてください。「出さない」をオンにすると、管理者の画面でも点数・票数だけを表示します。"),
     group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el)], "「全員」は、あとから追加した参加者も自動で対象になります。"),
     h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
 
@@ -4637,7 +4740,7 @@ function adminMoney({ withTitle = true } = {}) {
     return h("article", { class: "card poll-card" },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
-      h("div", { class: "poll-bars" }, p.options.map((o) => {
+      isRankPoll(p) ? rankPollResult(p, votes, !p.anonymous) : h("div", { class: "poll-bars" }, p.options.map((o) => {
         const vs = votes.filter((v) => v.choice === o);
         return h("div", { class: "poll-bar" },
           h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
@@ -4645,7 +4748,7 @@ function adminMoney({ withTitle = true } = {}) {
           vs.length && !p.anonymous ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
       })),
       none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
-      p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
+      p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : isRankPoll(p) ? null : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
         sel.addEventListener("change", () => setVote(m.id, sel.value));
         return field(m.name, sel);
@@ -4725,7 +4828,7 @@ function adminMoney({ withTitle = true } = {}) {
         setKids(body, keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
       } else {
         if (!payChecksCell.hidden) payChecks.refresh();
-        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
+        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p)).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
         const ps = sortedPayments();
         const pend = pendingReports();
@@ -4801,13 +4904,19 @@ function memberMoney({ compact = false } = {}) {
         let com = drafts.get(p.id);
         if (!com) { com = editableInput({ placeholder: "ひとこと（任意）", maxlength: "60" }); drafts.set(p.id, com); }
         com.sync(mine?.comment ?? "");
-        const vote = (choice) => fire(setDoc(D("votes", `${p.id}_${uid}`), { uid, pollId: p.id, choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
-        const res = p.showResults ? h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, [...S.pollTally.get(p.id) ?? []].filter((v) => v === o).length)))) : null;
+        const rank = isRankPoll(p);
+        const vote = (choice) => fire(setDoc(D("votes", `${p.id}_${uid}`), rank
+          ? { uid, pollId: p.id, choice: choice[0], order: choice, comment: com.value.trim(), at: serverTimestamp() }
+          : { uid, pollId: p.id, choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
+        const tally = S.pollTally.get(p.id) ?? [];
+        const res = !p.showResults ? null : rank ? rankPollResult(p, tally, false)
+          : h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, tally.filter((v) => v.choice === o).length))));
         return h("article", { class: `card poll-card${!mine && open ? " todo" : ""}` },
           h("div", { class: "poll-head" }, h("b", null, p.question), h("span", { class: `tint${open ? "" : " closed"}` }, open ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
-          h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
-          p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(mine.choice); } }, "コメントを送る") : null) : null,
-          h("div", { class: "cell-sub" }, mine ? `あなたの回答：${mine.choice}${mine.byAdmin ? "（管理者が入力）" : ""}${open ? "（締切まで変えられます）" : ""}` : open ? "まだ回答していません" : "回答していません"),
+          rank ? rankPicker(p, mine, open, vote)
+            : h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
+          p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(rank ? mine.order ?? [mine.choice] : mine.choice); } }, "コメントを送る") : null) : null,
+          h("div", { class: "cell-sub" }, mine ? `あなたの回答：${rank ? (mine.order ?? []).map((o, i) => `${i + 1}位 ${o}`).join("・") : mine.choice}${mine.byAdmin ? "（管理者が入力）" : ""}${open ? "（締切まで変えられます）" : ""}` : open ? "まだ回答していません" : "回答していません"),
           res);
       };
       const payEl = (p) => {
@@ -4835,7 +4944,7 @@ function syncPollTally() {
   if (S.isAdmin) return;
   const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
   for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
-  for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => v.choice)); });
+  for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }))); });
 }
 
 // ---------------------------------------------------------------- チェックリスト（持ち物・片付けなど）
