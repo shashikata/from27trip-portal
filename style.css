@@ -869,14 +869,19 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
 /* 下のバー：解答者の状態 */
 .pr-bar {
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 1.6vh 2vw 2.4vh;
-  background: linear-gradient(0deg, rgba(0, 0, 0, .45), rgba(0, 0, 0, 0)); border-top: 1px solid var(--qz-line);
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 1vh 1vw; padding: 2vh 2vw 2.6vh;
+  background: linear-gradient(0deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, .15)); border-top: 1px solid var(--qz-line);
 }
 .pr-chip {
-  display: inline-flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px; border-radius: 999px;
-  background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px var(--qz-line); color: var(--qz-sub);
-  font-size: clamp(13px, 1.1vw, 19px); font-weight: 700; transition: background .3s, color .3s, box-shadow .3s;
+  display: inline-flex; align-items: center; gap: .5em; padding: .4em .45em .4em .9em; border-radius: 999px;
+  background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 0 1.5px var(--qz-line); color: rgba(235, 240, 255, .8);
+  font-size: clamp(17px, 1.75vw, 32px); font-weight: 800; letter-spacing: .02em; transition: background .3s, color .3s, box-shadow .3s;
 }
+.pr-bar.many .pr-chip { font-size: clamp(15px, 1.45vw, 26px); }
+.pr-chip .nm { max-width: 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-chip.turn { color: #fff; background: rgba(255, 159, 10, .3); box-shadow: inset 0 0 0 2px #FF9F0A, 0 0 26px rgba(255, 159, 10, .5); animation: turnGlow 1s ease-in-out infinite; }
+@keyframes turnGlow { 50% { box-shadow: inset 0 0 0 2px #FF9F0A, 0 0 6px rgba(255, 159, 10, .2); } }
+.pr-chip.turn .st { background: #FF9F0A; color: #1c1c1e; font-size: .7em; padding: 0 .6em; }
 .pr-chip .st { min-width: 1.8em; height: 1.8em; padding: 0 6px; border-radius: 999px; display: grid; place-items: center; background: rgba(255, 255, 255, .08); font-family: var(--font-rounded); }
 .pr-chip.done { color: var(--qz-ink); background: rgba(100, 210, 255, .16); box-shadow: inset 0 0 0 1px rgba(100, 210, 255, .55); }
 .pr-chip.done .st { background: var(--qz-accent); color: #04121c; }
@@ -1023,3 +1028,78 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 }
 .group-body > .more-btn { margin: 0; border-radius: 0; border-top: .5px solid var(--separator); }
 .more-btn:active { opacity: .5; }
+
+/* ---- 問題読み（1文字ずつ表示） ---- */
+[data-read] .rd-rest { color: transparent; }
+[data-read].typing .rd-on::after { content: ""; display: inline-block; width: .07em; height: .95em; margin: 0 .03em; vertical-align: -.1em; background: currentColor; animation: caret .8s steps(1) infinite; }
+[data-read].stopped .rd-on::after { content: "／"; color: #FF9F0A; font-weight: 900; }
+@keyframes caret { 50% { opacity: 0; } }
+.pr-text-q[data-read] { text-align: left; text-wrap: pretty; }
+.pr-badge.reading { background: rgba(100, 210, 255, .2); color: var(--qz-accent); }
+.pr-wait { font-size: clamp(22px, 2.6vw, 44px); font-weight: 800; color: var(--qz-sub); animation: livePulse 1.6s infinite; }
+
+/* ---- 早押し：解答権と誤答一覧（表示用） ---- */
+.pr-buzzstage { display: flex; gap: 2vw; align-items: stretch; justify-content: center; width: min(92vw, 1700px); }
+.pr-turn {
+  position: relative; flex: 1 1 0; max-width: 60vw; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1vh;
+  padding: 2.6vh 2vw; border-radius: 28px; text-align: center;
+  background: linear-gradient(135deg, rgba(255, 159, 10, .34), rgba(255, 159, 10, .08)); box-shadow: inset 0 0 0 3px #FF9F0A, 0 0 50px rgba(255, 159, 10, .35);
+}
+.pr-turn.enter { animation: turnIn .5s cubic-bezier(.2, 1.4, .4, 1); }
+@keyframes turnIn { 0% { transform: scale(.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.pr-turn .lbl { font-size: clamp(14px, 1.4vw, 24px); font-weight: 800; letter-spacing: .3em; color: #FFB340; }
+.pr-turn .who { font-size: clamp(34px, 4.6vw, 86px); font-weight: 900; line-height: 1.1; }
+.pr-turn .who small { display: block; font-size: .3em; color: var(--qz-sub); font-family: var(--font-rounded); margin-top: .4em; }
+.pr-turn .ans { font-size: clamp(28px, 3.8vw, 70px); font-weight: 900; color: var(--qz-gold); text-shadow: 0 0 24px rgba(255, 214, 10, .45); animation: riseIn .35s; }
+.pr-turn-count {
+  width: 1.6em; height: 1.6em; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-rounded); font-variant-numeric: tabular-nums;
+  font-size: clamp(36px, 4.4vw, 80px); font-weight: 900; color: #1c1c1e; background: #FF9F0A; box-shadow: 0 0 30px rgba(255, 159, 10, .6);
+}
+.pr-turn-count.hurry { background: var(--qz-ng); color: #fff; animation: livePulse .5s infinite; }
+.pr-turn.ok { background: linear-gradient(135deg, rgba(48, 209, 88, .35), rgba(48, 209, 88, .08)); box-shadow: inset 0 0 0 3px var(--qz-ok), 0 0 60px rgba(48, 209, 88, .45); }
+.pr-turn.ok .lbl { color: var(--qz-ok); }
+.pr-turn .mark-turn { position: absolute; right: 2vw; top: 50%; transform: translateY(-50%); width: clamp(60px, 8vw, 150px); height: clamp(60px, 8vw, 150px); }
+.pr-turn.idle { background: var(--qz-glass); box-shadow: inset 0 0 0 1px var(--qz-line); }
+.pr-turn.idle .lbl { color: var(--qz-sub); letter-spacing: .1em; font-size: clamp(20px, 2.2vw, 38px); animation: livePulse 1.4s infinite; }
+.pr-wrong {
+  flex: 0 1 34vw; min-width: 0; padding: 2vh 1.4vw; border-radius: 24px; text-align: left;
+  background: rgba(255, 69, 58, .1); box-shadow: inset 0 0 0 2px rgba(255, 69, 58, .45);
+}
+.pr-wrong-title { font-size: clamp(14px, 1.3vw, 22px); font-weight: 900; letter-spacing: .25em; color: #FF6961; margin-bottom: 1vh; }
+.pr-wrong ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .8vh; max-height: 34vh; overflow: auto; }
+.pr-wrong li { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: .8vw; align-items: center; padding: .9vh 1vw; border-radius: 14px; background: rgba(0, 0, 0, .2); }
+.pr-wrong li.enter { animation: shakeIn .5s; }
+@keyframes shakeIn { 0% { opacity: 0; transform: translateX(20px); } 50% { opacity: 1; transform: translateX(-6px); } 75% { transform: translateX(4px); } 100% { transform: none; } }
+.pr-wrong .mark-wrong { grid-row: span 2; width: clamp(28px, 2.6vw, 48px); height: clamp(28px, 2.6vw, 48px); }
+.pr-wrong .ans { font-size: clamp(20px, 2.2vw, 40px); font-weight: 900; text-decoration: line-through; text-decoration-color: rgba(255, 69, 58, .8); text-decoration-thickness: .08em; overflow-wrap: anywhere; }
+.pr-wrong .who { font-size: clamp(12px, 1vw, 18px); color: var(--qz-sub); font-weight: 700; }
+
+/* ---- 操作用：次の問題・問題読み・解答権 ---- */
+.op-next { display: grid; gap: 6px; margin: 4px 0 18px; padding: 14px 16px; box-shadow: inset 0 0 0 1px rgba(100, 210, 255, .35); }
+.op-next-head { font-size: 13px; color: var(--qz-sub); font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.op-next-label { padding: 2px 10px; border-radius: 999px; background: rgba(100, 210, 255, .2); color: var(--qz-accent); font-weight: 800; }
+.op-next-text { font-size: 16px; font-weight: 700; line-height: 1.45; }
+.op-next-sub { font-size: 13px; color: var(--qz-gold); font-weight: 700; }
+.op-next-read { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 700; margin-top: 4px; }
+.op-readline { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--qz-sub); font-weight: 700; }
+.op-readprog { flex: 1; min-width: 200px; color: var(--qz-ink); }
+.op-readprog .rd-rest { color: var(--qz-sub); opacity: .4; }
+.op-turn { margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: #FF9F0A; color: #1c1c1e; font-size: 12px; font-weight: 900; }
+.op-turn-count { font-family: var(--font-rounded); font-size: 15px; font-weight: 900; color: #FF9F0A; }
+.op-turn-count.hurry { color: var(--qz-ng); }
+.op-match { margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: rgba(48, 209, 88, .2); color: var(--qz-ok); font-size: 12px; font-weight: 800; }
+.op-ans.turn { background: rgba(255, 159, 10, .14); box-shadow: inset 3px 0 0 #FF9F0A; }
+
+/* ---- 解答者のスマホ：問題読み・解答権 ---- */
+.ql-reading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px; border-radius: 18px; background: var(--qz-glass); color: var(--qz-sub); font-weight: 700; }
+.ql-buzzinfo { text-align: center; line-height: 1.5; max-width: 320px; }
+.ql-turnbox { width: 100%; display: grid; gap: 10px; padding: 14px; border-radius: 20px; background: var(--qz-glass); box-shadow: inset 0 0 0 1px var(--qz-line); }
+.ql-turnbox.mine { background: rgba(255, 159, 10, .16); box-shadow: inset 0 0 0 2px #FF9F0A, 0 0 30px rgba(255, 159, 10, .35); animation: turnIn .35s cubic-bezier(.2, 1.4, .4, 1); }
+.ql-turn-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ql-turn-title { font-size: 15px; font-weight: 800; color: var(--qz-sub); }
+.ql-turnbox.mine .ql-turn-title { font-size: 22px; font-weight: 900; color: #FFB340; }
+.ql-turn-count { min-width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-rounded); font-size: 28px; font-weight: 900; color: #1c1c1e; background: #FF9F0A; }
+.ql-turn-count:empty { display: none; }
+.ql-turn-count.hurry { background: var(--qz-ng); color: #fff; animation: livePulse .5s infinite; }
+.q-hint { padding: 8px 4px 0; line-height: 1.5; }
+.ql-buzzwrap.is-pressed .ql-buzz { width: min(36vw, 150px); font-size: 20px; letter-spacing: .02em; transition: width .25s, font-size .25s; }
