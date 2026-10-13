@@ -1573,7 +1573,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "pwChanged"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -1654,6 +1654,7 @@ function settingsView({ withTitle = true } = {}) {
         guard(btn, async () => {
           await reauthenticateWithCredential(S.user, EmailAuthProvider.credential(S.user.email, cur.value));
           await updatePassword(S.user, next.value);
+          markPasswordChanged();
           cur.value = next.value = "";
           toast("パスワードを変更しました");
         });
@@ -1806,7 +1807,8 @@ function adminMembers({ withTitle = true } = {}) {
     }
     const a2 = getSecondaryAuth();
     const cred = await createUserWithEmailAndPassword(a2, idToEmail(loginId), password);
-    await setDoc(doc(db, "accounts", loginId), { uid: cred.user.uid, name: displayName });
+    // 初期パスワードは accounts（管理者だけが読める）に控えておき、あとから印刷できるようにする
+    await setDoc(doc(db, "accounts", loginId), { uid: cred.user.uid, name: displayName, pw: password });
     await setDoc(D("members", cred.user.uid), { loginId, name: displayName, createdAt: serverTimestamp() });
     await signOut(a2);
     created.push({ loginId, name: displayName, password });
@@ -1821,8 +1823,9 @@ function adminMembers({ withTitle = true } = {}) {
         h("div", { class: "cell-main" }, c.name, h("div", { class: "cell-sub" }, c.loginId)),
         c.password ? h("div", { class: "mono" }, c.password) : h("div", { class: "secondary small-note" }, "既存のID（パスワードは前と同じ）"))),
       h("button", { class: "cell cell-button", onclick: () => navigator.clipboard.writeText(text).then(() => toast("コピーしました")) }, icon("copy"), "すべてコピー"),
+      h("button", { class: "cell cell-button", onclick: () => printCredentials(created.map((c) => ({ name: c.name, loginId: c.loginId, password: c.password, reused: !c.password })), "cards") }, icon("note"), "この人たちのカードを印刷"),
       h("button", { class: "cell cell-button secondary-btn", onclick: () => { if (confirm("パスワードを保存しましたか？表示を消します。")) { created.length = 0; renderResult(); } } }, "表示を消す"),
-    ], h("span", { class: "warn" }, "パスワードはこの画面でしか表示されません。必ずコピーして保存してください。別の旅行で作ったIDは、そのまま追加されます（パスワードは前と同じ）。")));
+    ], h("span", { class: "warn" }, "パスワードは「ID・パスワードを印刷」からあとでも印刷できます（本人が変更した場合は「変更済み」と出ます）。別の旅行で作ったIDは、そのまま追加されます（パスワードは前と同じ）。")));
   }
 
   const el = h("div", null,
@@ -1858,6 +1861,10 @@ function adminMembers({ withTitle = true } = {}) {
         });
       },
     }, group("1人ずつ追加", [field("ID", id), field("名前", name), field("パスワード", pw), addBtn])),
+    group("ID・パスワードを印刷", [
+      h("button", { class: "cell cell-button", onclick: () => guard(null, () => printAllCredentials("cards")) }, icon("note"), "配る用カード（切り取り線つき）"),
+      h("button", { class: "cell cell-button", onclick: () => guard(null, () => printAllCredentials("list")) }, icon("table"), "一覧表（管理者の控え）"),
+    ], "この旅行の参加者全員分を印刷します。この機能を入れる前に作ったIDはパスワードの記録がないので、空欄（手書き用）になります。"),
     listEmpty,
     listGroup,
   );
@@ -4378,6 +4385,85 @@ function syncPollTally() {
   const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
   for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
   for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => v.choice)); });
+}
+
+// ---------------------------------------------------------------- ID・パスワードの印刷
+//
+// パスワードは Firebase から読み出せないので、作成したときに accounts/{loginId}.pw（管理者だけが読める）に控えておく。
+// 参加者が自分でパスワードを変えたら pwChanged/{uid} を書き、印刷物には「変更済み」と出す（古いパスワードを配らないように）。
+
+function markPasswordChanged() {
+  const uid = S.user.uid;
+  const data = { uid, at: serverTimestamp() };
+  // 入っているすべての旅行に書く（管理者がどの旅行を開いていても分かるように）
+  const pids = S.myProfiles.length ? S.myProfiles.map((p) => p.id) : [S.pid];
+  for (const pid of pids) fire(setDoc(pid === ROOT ? doc(db, "pwChanged", uid) : doc(db, "profiles", pid, "pwChanged", uid), data));
+}
+
+const QR_SRC = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js";
+const QR_SRI = "sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k";
+let qrLoading = null;
+function loadQr() {
+  if (window.qrcode) return Promise.resolve(window.qrcode);
+  qrLoading ??= new Promise((resolve) => {
+    const sc = h("script", { src: QR_SRC, integrity: QR_SRI, crossorigin: "anonymous" });
+    sc.onload = () => resolve(window.qrcode ?? null);
+    sc.onerror = () => { qrLoading = null; resolve(null); }; // 読めなくても QR なしで印刷する
+    document.head.append(sc);
+  });
+  return qrLoading;
+}
+
+async function printAllCredentials(mode) {
+  if (!navigator.onLine) return toast("印刷の準備は電波のある場所で行ってください", true);
+  const [accs, changed] = await Promise.all([getDocs(collection(db, "accounts")), getDocs(C("pwChanged"))]);
+  const byLogin = new Map(accs.docs.map((d) => [d.id, d.data()]));
+  const changedSet = new Set(changed.docs.map((d) => d.id));
+  const rows = sortedMembers().map((m) => {
+    const a = byLogin.get(m.loginId);
+    return { name: m.name, loginId: m.loginId, password: a?.pw ?? null, changed: changedSet.has(m.id), missing: !a?.pw };
+  });
+  if (!rows.length) return toast("参加者がいません", true);
+  await printCredentials(rows, mode);
+}
+
+async function printCredentials(rows, mode) {
+  const url = `${location.origin}${location.pathname}`;
+  const qr = await loadQr();
+  let qrSvg = "";
+  if (qr) { const q = qr(0, "M"); q.addData(url); q.make(); qrSvg = q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); }
+  const title = S.config.title || APP_TITLE;
+  const pwText = (r) => (r.changed ? "本人が変更済み" : r.password ? r.password : r.reused ? "（前の旅行と同じ）" : "");
+  const root = h("div", { id: "print-root", class: `print-${mode}` });
+  if (mode === "list") {
+    root.append(h("h1", null, `${title}　ID・パスワード一覧（管理者の控え）`),
+      h("p", null, `ログインする場所：${url}　　印刷：${new Date().toLocaleString("ja-JP")}　　${rows.length}人`),
+      h("table", null, h("tr", null, h("th", null, "#"), h("th", null, "名前"), h("th", null, "ID"), h("th", null, "パスワード"), h("th", null, "渡した")),
+        rows.map((r, i) => h("tr", null, h("td", null, i + 1), h("td", null, r.name), h("td", { class: "mono" }, r.loginId),
+          h("td", { class: `mono${r.password && !r.changed ? "" : " muted"}` }, pwText(r) || "記録なし"), h("td", null, "□")))),
+      h("p", { class: "note" }, "この紙は他の人に見せないでください。パスワードを本人が変えた人は「変更済み」と表示されます。"));
+  } else {
+    root.append(...rows.map((r) => h("div", { class: "pcard" },
+      h("div", { class: "pcard-main" },
+        h("div", { class: "pcard-title" }, title),
+        h("div", { class: "pcard-name" }, `${r.name} さん`),
+        h("div", { class: "pcard-row" }, h("span", null, "ID"), h("b", { class: "mono" }, r.loginId)),
+        h("div", { class: "pcard-row" }, h("span", null, "パスワード"), pwText(r) ? h("b", { class: `mono${r.password && !r.changed ? "" : " muted"}` }, pwText(r)) : h("b", { class: "blank" })),
+        h("ol", { class: "pcard-steps" },
+          h("li", null, "QRコードか下のURLを開く"),
+          h("li", null, "IDとパスワードでログイン"),
+          h("li", null, "共有 →「ホーム画面に追加」")),
+        h("div", { class: "pcard-url mono" }, url)),
+      qrSvg ? (() => { const box = h("div", { class: "pcard-qr" }); box.innerHTML = qrSvg; return box; })() : null)));
+  }
+  document.getElementById("print-root")?.remove();
+  document.body.append(root);
+  document.body.classList.add("printing");
+  const done = () => { root.remove(); document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  // 画像（QR）の描画を待ってから印刷画面を開く
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  window.print();
 }
 
 // ---------------------------------------------------------------- 画面の組み立て

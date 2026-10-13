@@ -1326,3 +1326,35 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .pay-badge.exempt { background: var(--fill); color: var(--label-2); }
 .todo-banner { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; border: none; border-radius: 12px; padding: 12px 14px; font-size: 15px; font-weight: 700; text-align: left; color: #fff; background: var(--orange); }
 .todo-banner .icon:last-child { margin-left: auto; }
+
+/* ---- ID・パスワードの印刷 ---- */
+#print-root { display: none; }
+@media print {
+  @page { size: A4; margin: 10mm; }
+  body.printing > *:not(#print-root) { display: none !important; }
+  body.printing { background: #fff !important; }
+  body.printing #print-root { display: block; color: #000; font-family: var(--font); }
+  #print-root .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Courier New", monospace; letter-spacing: .04em; }
+  #print-root .muted { color: #666; font-family: var(--font); letter-spacing: 0; font-weight: 500; }
+  body.printing #print-root.print-cards { display: grid; grid-template-columns: 1fr 1fr; }
+  .pcard { display: flex; gap: 3mm; align-items: center; height: 54mm; padding: 4mm 5mm; border: .3mm dashed #999; break-inside: avoid; box-sizing: border-box; overflow: hidden; }
+  .pcard-main { flex: 1; min-width: 0; display: grid; gap: 1.2mm; }
+  .pcard-title { font-size: 8pt; color: #555; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pcard-name { font-size: 12pt; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pcard-row { display: flex; align-items: baseline; gap: 2mm; }
+  .pcard-row span { width: 15mm; font-size: 8pt; color: #555; flex: none; }
+  .pcard-row b { font-size: 13pt; white-space: nowrap; }
+  .pcard-row b.muted { font-size: 8.5pt; }
+  .pcard-row b.blank { flex: 1; border-bottom: .3mm solid #000; height: 6mm; }
+  .pcard-steps { margin: 0; padding-left: 4mm; font-size: 7pt; color: #333; line-height: 1.45; white-space: nowrap; }
+  .pcard-url { font-size: 6.5pt; color: #333; overflow-wrap: anywhere; }
+  .pcard-qr { width: 23mm; height: 23mm; flex: none; }
+  .pcard-qr svg { width: 100%; height: 100%; }
+  .print-list h1 { font-size: 15pt; margin: 0 0 2mm; }
+  .print-list p { font-size: 9pt; margin: 0 0 4mm; color: #333; }
+  .print-list table { width: 100%; border-collapse: collapse; font-size: 11pt; }
+  .print-list th, .print-list td { border: .3mm solid #999; padding: 2mm 3mm; text-align: left; }
+  .print-list th { background: #eee; font-size: 9pt; }
+  .print-list tr { break-inside: avoid; }
+  .print-list .note { margin-top: 4mm; }
+}
