@@ -1637,7 +1637,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -4612,6 +4612,8 @@ function syncPollTally() {
 //     "team:{teamId}"    チーム内チャット（発表済みのチームのメンバー）
 //     "admin:{uid}"      その参加者と管理者の1対1（管理者は誰でも読み書きできる）
 //     "dm:{uid}_{uid}"   参加者どうしのDM（uid は小さい順）。管理者は閲覧のみ
+//   chatImages/{id}  { uid, chat, data(縮小した画像) }   … 写真はメッセージとは別に置き、表示するときだけ読む
+//                    （メッセージに直接入れると、アプリを開くたびに写真の分まで読み込まれて重くなるため）
 //
 // 読み取り回数を抑えるため、ふだんは「新しい順に80件」だけ受け取り（未読の数に使う）、
 // 開いているチャットだけ、そのチャットの全メッセージを受け取る。
@@ -4620,6 +4622,14 @@ const dmKey = (a, b) => `dm:${[a, b].sort().join("_")}`;
 const chatParts = (key) => { const [type, rest = ""] = key.split(/:(.*)/s); return { type, rest }; };
 const sortedMsgs = (map) => [...map.values()].sort((a, b) => (ts(a.at) || Date.now()) - (ts(b.at) || Date.now()) || (a.id < b.id ? -1 : 1));
 const senderName = (m) => m.from || memberName(m.uid);
+const msgPreview = (m) => m.text || (m.image ? "📷 写真" : "");
+
+// 写真は一度読んだら覚えておく（同じ写真を何度も読まない）
+const chatImageCache = new Map(); // id -> Promise<dataURL | null>
+function chatImage(id) {
+  if (!chatImageCache.has(id)) chatImageCache.set(id, getDoc(D("chatImages", id)).then((d) => d.data()?.data ?? null).catch(() => null));
+  return chatImageCache.get(id);
+}
 
 // 参加者がそのチャットに入れるか（管理者はすべて）
 function canSeeChat(key) {
@@ -4700,21 +4710,41 @@ function chatView() {
   const title = h("div", { class: "chat-title" });
   const input = h("textarea", { class: "chat-input", rows: "1", placeholder: "メッセージ", maxlength: "1000", enterkeyhint: "send" });
   const sendBtn = h("button", { class: "chat-send", "aria-label": "送信" }, "送信");
+  const photoInput = h("input", { type: "file", accept: "image/*", hidden: true });
+  const photoBtn = h("label", { class: "chat-photo", title: "写真を送る", "aria-label": "写真を送る" }, icon("photo"), photoInput);
   const readonly = h("div", { class: "chat-readonly" }, "参加者どうしのDMです（閲覧のみ）");
-  const composer = h("div", { class: "chat-composer" }, input, sendBtn);
+  const composer = h("div", { class: "chat-composer" }, photoBtn, input, sendBtn);
   const room = h("div", { class: "chat-room" },
     h("div", { class: "chat-room-head" }, h("button", { class: "text-btn", onclick: () => leave() }, "‹ 一覧"), title),
     msgs, readonly, composer);
 
-  const send = () => {
-    const text = input.value.trim();
-    if (!text || !current || !canPost(current)) return;
+  const baseMsg = (extra) => {
     const { type, rest } = chatParts(current);
-    const data = { uid: S.user.uid, chat: current, text, at: serverTimestamp() };
+    const data = { uid: S.user.uid, chat: current, at: serverTimestamp(), ...extra };
     if (type === "dm") data.parties = rest.split("_");
     if (type === "admin") data.parties = [rest];
     if (S.isAdmin) data.from = adminName(S.user.email);
-    fire(addDoc(C("messages"), data));
+    return data;
+  };
+  // 写真：選んだらすぐ送る（端末で縮小してから、写真とメッセージを1回の書き込みで送る）
+  photoInput.addEventListener("change", () => guard(null, async () => {
+    const f = photoInput.files?.[0];
+    photoInput.value = "";
+    if (!f || !current || !canPost(current)) return;
+    const dataUrl = await compressImage(f);
+    const imgRef = doc(C("chatImages"));
+    chatImageCache.set(imgRef.id, Promise.resolve(dataUrl));
+    const b = writeBatch(db);
+    b.set(imgRef, { uid: S.user.uid, chat: current, data: dataUrl });
+    b.set(doc(C("messages")), baseMsg({ text: "", image: imgRef.id }));
+    fire(b.commit());
+    rememberThread(current);
+    stick = true;
+  }));
+  const send = () => {
+    const text = input.value.trim();
+    if (!text || !current || !canPost(current)) return;
+    fire(addDoc(C("messages"), baseMsg({ text })));
     input.value = "";
     autosize();
     rememberThread(current);
@@ -4750,7 +4780,7 @@ function chatView() {
       h("div", { class: "group-body" }, items.map((c) => h("button", { class: "cell cell-button chat-row", onclick: () => open(c.key) },
         h("span", { class: `chat-ic ${chatParts(c.key).type}` }, icon(chatParts(c.key).type === "dm" ? "chat" : chatParts(c.key).type === "admin" ? "lock" : chatParts(c.key).type === "team" ? "flag" : "people")),
         h("span", { class: "cell-main" }, h("b", null, chatTitle(c.key)),
-          h("small", null, c.last ? `${senderName(c.last)}：${c.last.text}` : "まだメッセージはありません")),
+          h("small", null, c.last ? `${senderName(c.last)}：${msgPreview(c.last)}` : "まだメッセージはありません")),
         c.unread ? h("span", { class: "chat-unread" }, c.unread) : null))));
   }
 
@@ -4771,15 +4801,29 @@ function chatView() {
       if (r.day) { row.el.className = "chat-day"; row.el.textContent = r.day; return; }
       const mine = r.uid === S.user.uid;
       const d = r.at?.toDate ? r.at.toDate() : null;
-      const sig = `${r.text}|${d?.getTime()}|${mine}`;
+      const sig = `${r.text}|${r.image}|${d?.getTime()}|${mine}`;
       if (row.sig === sig) return;
       row.sig = sig;
       row.el.className = `chat-msg${mine ? " mine" : ""}${r.from ? " admin" : ""}`;
       setKids(row.el,
         mine ? null : h("div", { class: "chat-name" }, senderName(r)),
-        h("div", { class: "chat-bubble" }, r.text),
+        r.image ? (() => {
+          const img = h("img", { class: "chat-img", alt: "写真", onclick: () => { if (img.src) openLightbox(img.src); } });
+          const box = h("div", { class: "chat-imgbox loading" }, img);
+          chatImage(r.image).then((src) => {
+            if (src) { img.src = src; box.classList.remove("loading"); img.onload = () => { if (stick) msgs.scrollTop = msgs.scrollHeight; }; } else box.replaceChildren(h("span", { class: "secondary" }, "写真を読み込めませんでした"));
+          });
+          return box;
+        })() : null,
+        r.text ? h("div", { class: "chat-bubble" }, r.text) : null,
         h("div", { class: "chat-time" }, d ? `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}` : "送信中…",
-          S.isAdmin ? h("button", { class: "chat-del", title: "削除", onclick: () => { if (confirm("このメッセージを削除しますか？")) fire(deleteDoc(D("messages", r.id)), "削除しました"); } }, "削除") : null));
+          S.isAdmin ? h("button", { class: "chat-del", title: "削除", onclick: () => {
+            if (!confirm("このメッセージを削除しますか？")) return;
+            const b = writeBatch(db);
+            b.delete(D("messages", r.id));
+            if (r.image) b.delete(D("chatImages", r.image));
+            fire(b.commit(), "削除しました");
+          } }, "削除") : null));
     });
     if (!list.length && !msgs.querySelector(".chat-empty")) msgs.append(h("div", { class: "chat-empty" }, "まだメッセージはありません"));
     if (list.length) msgs.querySelector(".chat-empty")?.remove();
