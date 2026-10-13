@@ -80,6 +80,9 @@ const S = {
   payments: new Map(),       // 集金 payments/{id}
   msgRecent: new Map(),      // チャット：新しい順に80件（未読の数・一覧に使う）
   chatMsgs: new Map(),       // チャット：開いているチャットの全メッセージ
+  expenses: new Map(),       // 立て替えと支払いの記録 expenses/{id}
+  checklists: new Map(),     // チェックリストのセクション checklists/{id}
+  checks: new Map(),         // チェック checks/{listId}_{itemId}_{uid|shared}（参加者は自分の分と共有の分）
   payReports: new Map(),     // 参加者からの「送金しました」 payReports/{paymentId}_{uid}（参加者は自分の分だけ）
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
@@ -200,6 +203,9 @@ function startAdmin() {
   listen("votes", C("votes"), (s) => { S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { S.payments = toMap(s); });
   listen("payReports", C("payReports"), (s) => { S.payReports = toMap(s); });
+  listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
+  listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
+  listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
   listenLiveQuiz();
 }
@@ -287,6 +293,12 @@ function startMemberData(uid) {
   listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { if (s) S.payments = toMap(s); });
   listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) S.payReports = toMap(s); });
+  listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
+  listen("checklists", C("checklists"), (s) => { if (s) S.checklists = toMap(s); });
+  // チェックは「自分の分」と「共有の分」だけ受け取る（全員分を受け取ると、項目数×人数分の読み取りになるため）
+  const mergeChecks = () => { S.checks = new Map([...(S.checkSrc?.mine ?? []), ...(S.checkSrc?.shared ?? [])]); };
+  listen("checksMine", query(C("checks"), where("uid", "==", uid)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, mine: toMap(s) }; mergeChecks(); } });
+  listen("checksShared", query(C("checks"), where("shared", "==", true)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, shared: toMap(s) }; mergeChecks(); } });
   // チャットは新しい順に80件だけ（自分に関係するものだけ使う。開いているチャットは別に全部受け取る）
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) S.msgRecent = toMap(s); }); // 見てよいかは使うときに判定（チームの所属が後から届くため）
   listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
@@ -384,7 +396,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -642,6 +654,7 @@ const ICONS = {
   quiz: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
   play: '<path d="M8 5.5v13l10.5-6.5L8 5.5Z"/>',
   arrows: '<path d="M4 8h15l-3.5-3.5M20 16H5l3.5 3.5"/>',
+  list: '<path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="m3.5 6.5 1.2 1.2L7 5.3M3.5 12l1.2 1.2L7 10.8M3.5 17.5l1.2 1.2L7 16.3"/>',
   chat: '<path d="M4.5 5.5h15a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H10l-4.5 3.5V16.5h-1a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z"/><path d="M8 10h8M8 13h5"/>',
 };
 
@@ -1637,7 +1650,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2474,12 +2487,12 @@ const READ_SPEED = 6;        // 問題読みの速さ（文字/秒）の初期�
 // 妨害の種類を増やすときは、SABO_TYPES に1行足して、効果（effectOn を見ている所）を書く。
 // for はその妨害が使える問題の種類、needsTime は「4択・記述では制限時間がある問題だけ」。
 const SABO_TYPES = {
-  seal: { label: "封印", mark: "封", desc: "その問題に解答できない", price: 10, for: ["choice", "text", "buzz"], on: true },
-  time: { label: "時間短縮", mark: "短", desc: "解答できる時間が半分になる（早押しは入力6秒→3秒）", price: 5, for: ["choice", "text", "buzz"], needsTime: true, on: true },
-  blind: { label: "目隠し", mark: "隠", desc: "スマホに問題文と選択肢の文字が出ない", price: 3, for: ["choice", "text", "buzz"], on: true },
-  late: { label: "出遅れ", mark: "遅", desc: "出題から5秒間は解答できない（早押しも押せない）", price: 4, for: ["choice", "text", "buzz"], on: false },
+  seal: { label: "封印", mark: "封", desc: "その問題に解答できない", price: 10, for: ["choice", "text", "buzz", "order", "vote"], on: true },
+  time: { label: "時間短縮", mark: "短", desc: "解答できる時間が半分になる（早押しは入力6秒→3秒）", price: 5, for: ["choice", "text", "buzz", "order", "vote"], needsTime: true, on: true },
+  blind: { label: "目隠し", mark: "隠", desc: "スマホに問題文と選択肢の文字が出ない", price: 3, for: ["choice", "text", "buzz", "order", "vote"], on: true },
+  late: { label: "出遅れ", mark: "遅", desc: "出題から5秒間は解答できない（早押しも押せない）", price: 4, for: ["choice", "text", "buzz", "order", "vote"], on: false },
   shuffle: { label: "シャッフル", mark: "混", desc: "スマホの選択肢の並びがバラバラ・色が全部灰色になる", price: 3, for: ["choice"], on: false },
-  flip: { label: "逆さま", mark: "逆", desc: "スマホの問題と解答欄が上下逆さまになる", price: 2, for: ["choice", "text", "buzz"], on: false },
+  flip: { label: "逆さま", mark: "逆", desc: "スマホの問題と解答欄が上下逆さまになる", price: 2, for: ["choice", "text", "buzz", "order", "vote"], on: false },
 };
 const SABO_KEYS = Object.keys(SABO_TYPES);
 const LATE_SEC = 5;
@@ -2623,7 +2636,11 @@ function settleBets(bets, rows, cfg) {
   }
   return out;
 }
-const QTYPE = { choice: "4択", text: "記述", buzz: "早押し" };
+const QTYPE = { choice: "4択", text: "記述", buzz: "早押し", order: "並べ替え", vote: "投票当て" };
+// 並べ替え（order）：q.choices を「正しい順番」で登録しておき、スマホにはバラバラに出す。答えは元の番号の並び（正解は 0,1,2…）
+// 投票当て（vote） ：事前のアンケート（q.pollId）の結果が正解。voteMode "top" は1位を当てる、"rank" は上位 rankN 位までの順番を当てる
+const isSeqType = (q) => q?.type === "order" || (q?.type === "vote" && q.voteMode === "rank");
+const seqLen = (q) => (q.type === "order" ? (q.choices ?? []).length : Math.max(2, Math.min(5, Number(q.rankN) || 3)));
 const CHOICE_COLORS = ["#FF3B30", "#007AFF", "#FF9500", "#34C759"];
 const CHOICE_MARKS = ["A", "B", "C", "D"];
 
@@ -2679,11 +2696,35 @@ function syncQuizAnswers() {
 const normAnswer = (t) => String(t ?? "").normalize("NFKC").toLowerCase().replace(/[\s　]+/g, "");
 const acceptedAnswers = (q) => String(q.answer ?? "").split(/[/／,、]/).map(normAnswer).filter(Boolean);
 
+// 投票の結果（管理者の端末で、アンケートの回答から数える）。同票は選択肢の順で並べる
+function voteResult(q) {
+  if (q?.answer && typeof q.answer === "object" && !Array.isArray(q.answer)) return q.answer; // 発表後にスマホへ届いた結果
+  const poll = S.polls.get(q?.pollId);
+  const options = poll?.options ?? [];
+  const counts = options.map((o) => [...S.votes.values()].filter((v) => v.pollId === poll.id && v.choice === o && isTarget(poll, v.uid)).length);
+  const rank = options.map((_, i) => i).sort((a, b) => counts[b] - counts[a] || a - b);
+  const max = Math.max(0, ...counts);
+  return { counts, rank, top: max > 0 ? rank.filter((i) => counts[i] === max) : [], texts: options, total: counts.reduce((x, y) => x + y, 0) };
+}
+// 並べ替え・順位当ての正解の並び
+const correctSeq = (q) => (q.type === "order" ? (q.choices ?? []).map((_, i) => i) : voteResult(q).rank.slice(0, seqLen(q)));
+// 順位当ては、同じ票数どうしならどちらの順でも合っているとする（例：3位が同票なら、どちらを3位にしても正解）
+function seqMarks(q, order) {
+  const c = correctSeq(q);
+  const r = q.type === "vote" ? voteResult(q) : null;
+  return (order ?? []).map((x, i) => c[i] != null && (r ? r.counts[x] === r.counts[c[i]] : x === c[i]));
+}
+const seqHits = (q, a) => seqMarks(q, a?.order).filter(Boolean).length;
+// 票数での順位（同じ票数は同じ順位）
+const voteRankOf = (r, k) => 1 + r.counts.filter((n) => n > r.counts[k]).length;
+
 // 自動採点（早押しは管理者が判定するので null）
 function autoJudge(q, a) {
   if (!q || !a) return null;
   if (q.type === "choice") return a.choice === q.answer;
   if (q.type === "text") return acceptedAnswers(q).includes(normAnswer(a.text));
+  if (isSeqType(q)) return Array.isArray(a.order) && a.order.length === seqLen(q) && seqHits(q, a) === seqLen(q);
+  if (q.type === "vote") return typeof a.choice === "number" && voteResult(q).top.includes(a.choice);
   return null;
 }
 // 早押しで時間切れ（6秒以内に送れなかった）は誤答扱い
@@ -2692,6 +2733,8 @@ const buzzText = (a) => (a.text ? a.text : a.timeout ? "時間切れ" : "");
 function answerPoints(q, a) {
   const j = judged(q, a);
   if (j === true) return Number(q.points ?? 10) || 0;
+  // 部分点（並べ替え・順位当て）：合っている位置の数に応じて（切り捨て）
+  if (j === false && q.partial && isSeqType(q) && typeof a.judge !== "boolean") return Math.floor(((Number(q.points ?? 10) || 0) * seqHits(q, a)) / seqLen(q));
   if (j === false && q.type === "buzz") return -(Number(q.penalty ?? 0) || 0);
   return 0;
 }
@@ -2732,10 +2775,65 @@ function quizScores(qz) {
   return [...scores.entries()].map(([uid, score]) => ({ uid, name: memberName(uid), score })).sort((a, b) => b.score - a.score);
 }
 
-const publicQuestion = (q) => ({
-  type: q.type, text: q.text ?? "", choices: q.type === "choice" ? q.choices ?? [] : [],
-  time: Number(q.time) || 0, points: Number(q.points ?? 10) || 0, phone: q.phone !== false, speed: Number(q.speed) || READ_SPEED,
-});
+// 並べ替えの選択肢をバラバラにする順番（正しい順と同じにはしない）
+function shuffledIdx(n) {
+  const a = [...Array(n).keys()];
+  for (let tries = 0; tries < 10; tries++) {
+    for (let i = n - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    if (n < 2 || a.some((x, i) => x !== i)) break;
+  }
+  return a;
+}
+// スマホに渡す問題（正解は入れない）。並べ替えはバラバラの順（perm[表示の位置] = 元の番号）、投票当てはアンケートの選択肢
+function publicQuestion(q) {
+  const base = {
+    type: q.type, text: q.text ?? "", choices: q.type === "choice" ? q.choices ?? [] : [],
+    time: Number(q.time) || 0, points: Number(q.points ?? 10) || 0, phone: q.phone !== false, speed: Number(q.speed) || READ_SPEED,
+  };
+  if (q.type === "order") {
+    const list = (q.choices ?? []).filter((c) => c !== undefined);
+    const perm = shuffledIdx(list.length);
+    Object.assign(base, { choices: perm.map((i) => list[i]), perm, partial: !!q.partial });
+  }
+  if (q.type === "vote") Object.assign(base, { choices: S.polls.get(q.pollId)?.options ?? [], voteMode: q.voteMode === "rank" ? "rank" : "top", rankN: seqLen(q), partial: !!q.partial });
+  return base;
+}
+// 発表のときに全員へ渡す正解（並べ替えは正しい順の文字、投票当ては集計結果）
+function revealAnswerOf(q) {
+  if (q?.type === "order") return { order: (q.choices ?? []).map((_, i) => i), texts: q.choices ?? [] };
+  if (q?.type === "vote") return voteResult(q);
+  return q?.answer ?? null;
+}
+// 正解を文字にする（A は revealAnswerOf の形。スマホでは発表で届いたもの）
+function answerLabel(q, A) {
+  if (A == null || A === "") return "";
+  if (q?.type === "order") return (A.texts ?? []).join(" → ");
+  if (q?.type === "vote") {
+    if (!A.total) return "（まだ投票がありません）";
+    if (q.voteMode === "rank") {
+      // 同じ票数のものは「／」でまとめる（どちらの順でも正解なので）
+      const out = [];
+      for (let i = 0; i < seqLen(q) && i < A.rank.length;) {
+        const c = A.counts[A.rank[i]];
+        const g = A.rank.filter((k) => A.counts[k] === c);
+        out.push(`${g.map((k) => A.texts[k]).join("／")}（${c}票）`);
+        i += g.length;
+      }
+      return out.join(" → ");
+    }
+    return `${A.top.map((k) => A.texts[k]).join("・")}（${A.counts[A.top[0]]}票）`;
+  }
+  return typeof A === "object" ? "" : String(A);
+}
+// 1人の回答を文字にする（管理者側。並べ替えは元の番号で入っている）
+function answerTextOf(q, a) {
+  if (!a) return "";
+  const texts = q.type === "vote" ? voteResult(q).texts : q.choices ?? [];
+  if (isSeqType(q)) return (a.order ?? []).map((k) => texts[k] ?? "?").join(" → ");
+  if (q.type === "vote") return texts[a.choice] ?? "?";
+  if (q.type === "choice") return `${CHOICE_MARKS[a.choice] ?? "?"}：${q.choices?.[a.choice] ?? ""}`;
+  return a.text ?? "";
+}
 
 // ---- 問題読み（問題文を1文字ずつ出す）
 
@@ -2986,7 +3084,7 @@ function quizReveal(patch) {
   if (!qz) return;
   const first = L.phase !== "reveal";
   fire(updateDoc(liveRef(), {
-    phase: "reveal", answer: qz.questions[L.index]?.answer ?? null,
+    phase: "reveal", answer: revealAnswerOf(qz.questions[L.index]),
     ...(first ? { showAns: [], shown: [], answerShown: false } : {}),
     ...patch,
   }));
@@ -3034,7 +3132,8 @@ function quizToPoints(qz) {
 // ---- 問題の作成（管理者）
 
 const newQuestion = (type = "choice") => ({
-  type, text: "", choices: ["", "", "", ""], answer: type === "choice" ? 0 : "", points: 10, time: type === "buzz" ? 0 : 20, penalty: 0, phone: true,
+  type, text: "", choices: ["", "", "", ""], answer: type === "choice" ? 0 : "", points: 10, time: type === "buzz" ? 0 : type === "order" || type === "vote" ? 30 : 20, penalty: 0, phone: true,
+  ...(type === "order" ? { partial: false } : {}), ...(type === "vote" ? { pollId: null, voteMode: "top", rankN: 3, partial: false } : {}),
 });
 
 function quizManager({ withTitle = true } = {}) {
@@ -3155,6 +3254,9 @@ function quizManager({ withTitle = true } = {}) {
         if (q.type === "choice" && typeof q.answer !== "number") q.answer = 0;
         if (q.type !== "choice" && typeof q.answer === "number") q.answer = "";
         if (q.type === "buzz" && !q.time) q.time = 0;
+        if (q.type === "order") { q.choices = (q.choices ?? []).filter((c) => String(c ?? "").trim()); while (q.choices.length < 3) q.choices.push(""); q.partial ??= false; }
+        if (q.type === "vote") { q.pollId ??= null; q.voteMode ??= "top"; q.rankN ??= 3; q.partial ??= false; }
+        if (isSeqType(q) || q.type === "vote") { q.answer = ""; if (!q.time) q.time = 30; }
         touch(); paintQuestions();
       });
       const text = h("textarea", { class: "plain", rows: "2", placeholder: "問題文" });
@@ -3175,6 +3277,47 @@ function quizManager({ withTitle = true } = {}) {
           radio.addEventListener("change", () => { q.answer = k; touch(); });
           return h("label", { class: "choice-row" }, h("span", { class: "mark", style: `--c:${CHOICE_COLORS[k]}` }, CHOICE_MARKS[k]), inp, radio, h("span", { class: "radio-label" }, "正解"));
         }));
+      } else if (q.type === "order") {
+        if (!Array.isArray(q.choices)) q.choices = ["", "", ""];
+        const partial = toggle(!!q.partial);
+        partial.addEventListener("change", () => { q.partial = partial.checked; touch(); });
+        body = h("div", { class: "seq-edit" },
+          h("div", { class: "cell-sub q-hint" }, "正しい順番で上から入れてください（2〜8個）。スマホにはバラバラの順で表示され、タップした順が答えになります。"),
+          q.choices.map((c, k) => {
+            const inp = h("input", { type: "text", value: c, placeholder: `${k + 1}番目` });
+            inp.addEventListener("input", () => { q.choices[k] = inp.value; touch(); });
+            return h("div", { class: "seq-row" }, h("span", { class: "seq-no" }, k + 1), inp,
+              h("button", { class: "icon-btn", title: "上へ", disabled: k === 0, onclick: () => { [q.choices[k - 1], q.choices[k]] = [q.choices[k], q.choices[k - 1]]; touch(); paintQuestions(); } }, "↑"),
+              q.choices.length > 2 ? h("button", { class: "text-btn destructive", onclick: () => { q.choices.splice(k, 1); touch(); paintQuestions(); } }, "削除") : null);
+          }),
+          q.choices.length < 8 ? h("button", { class: "btn-small ghost", onclick: () => { q.choices.push(""); touch(); paintQuestions(); } }, icon("plus"), "項目を追加") : null,
+          h("div", { class: "group-body" }, field("部分点（合っている位置の数に応じて）", partial)));
+      } else if (q.type === "vote") {
+        const polls = sortedPolls();
+        const poll = S.polls.get(q.pollId);
+        const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "アンケートを選ぶ"),
+          polls.map((p) => h("option", { value: p.id, selected: p.id === q.pollId }, p.question.length > 24 ? `${p.question.slice(0, 24)}…` : p.question)));
+        sel.addEventListener("change", () => { q.pollId = sel.value || null; touch(); paintQuestions(); });
+        const mode = segmented([{ value: "top", label: "1位を当てる" }, { value: "rank", label: "上位の順番を当てる" }], q.voteMode === "rank" ? "rank" : "top");
+        mode.addEventListener("change", () => { q.voteMode = mode.value; touch(); paintQuestions(); });
+        const partial = toggle(!!q.partial);
+        partial.addEventListener("change", () => { q.partial = partial.checked; touch(); });
+        const r = poll ? voteResult(q) : null;
+        const maxN = Math.max(2, Math.min(5, poll?.options?.length ?? 5));
+        body = h("div", { class: "vote-edit" },
+          h("div", { class: "group-body" },
+            field("もとにするアンケート", polls.length ? sel : h("span", { class: "secondary" }, "アンケートがありません（「出欠・集金」で作れます）")),
+            h("div", { class: "cell" }, mode),
+            q.voteMode === "rank" ? field(`何位まで当てるか（2〜${maxN}）`, num(seqLen(q), (v) => { q.rankN = Math.max(2, Math.min(maxN, v)); }, { min: "2", max: String(maxN) })) : null,
+            q.voteMode === "rank" ? field("部分点（合っている順位の数に応じて）", partial) : null),
+          poll ? h("div", { class: "vote-now" },
+            h("div", { class: "cell-sub" }, `いまの集計（${r.total}票${pollOpen(poll) ? "・受付中" : "・締切済み"}）`),
+            r.rank.slice(0, 5).map((k, n) => h("div", { class: "vote-now-row" }, h("span", { class: "seq-no" }, n + 1), h("span", null, r.texts[k]), h("b", null, `${r.counts[k]}票`)))) : null,
+          h("div", { class: "cell-sub q-hint" }, [
+            "アンケートの結果が正解になります。同じ票数のものは、どちらを選んでも（どちらの順でも）正解です。",
+            poll?.showResults ? "⚠ このアンケートは参加者に集計を見せる設定です。答えがばれるので「集計を参加者に見せない」にしてください。" : null,
+            poll && pollOpen(poll) ? "クイズの前にアンケートを締め切っておくと、答えが動きません。" : null,
+          ].filter(Boolean).join(" ")));
       } else {
         const ans = h("input", { type: "text", value: q.answer ?? "", placeholder: q.type === "text" ? "正解（「/」で区切ると複数OK）" : "正解のメモ（自分用）" });
         ans.addEventListener("input", () => { q.answer = ans.value; touch(); });
@@ -3341,6 +3484,13 @@ function paintPresenter(full = true) {
   if (L?.phase === "off") { closePresenter(); return; }
   // 開いた直後で、進行状態やクイズがまだ届いていない
   if (!L || !qz) {
+    // 通知が届かないまま待ち続けないように、3秒たったら直接読みに行く
+    if (P.dataset.state !== "wait") QZ.waitSince = Date.now();
+    if (!L && Date.now() - (QZ.waitSince ?? 0) > 3000 && !QZ.waitFetch) {
+      QZ.waitFetch = true;
+      getDoc(liveRef()).then((d) => { if (!S.live && d.exists()) { S.live = d.data({ serverTimestamps: "estimate" }); syncQuizAnswers(); paintQuizLive(); } })
+        .catch(() => {}).finally(() => { QZ.waitFetch = false; QZ.waitSince = Date.now(); });
+    }
     P.dataset.state = "wait";
     P.replaceChildren(h("div", { class: "pr-lobby" }, h("div", { class: "pr-sub" }, "準備中…"),
       h("button", { class: "pr-btn ghost", onclick: closePresenter }, "閉じる")));
@@ -3376,7 +3526,8 @@ function answerBar(L, qz) {
     const rank = q?.type === "buzz" && a ? order.indexOf(a) + 1 : 0;
     const ansShown = a && isAnsShown(L, m.id);
     const pop = (revealed && a && firstTime(`chip:${L.seq}:${m.id}`)) || (ansShown && firstTime(`ansv:${L.seq}:${m.id}`)) || (a && !revealed && firstTime(`ans:${L.seq}:${m.id}`));
-    const ansLabel = q.type === "choice" ? CHOICE_MARKS[a?.choice] ?? "?" : q.type === "text" ? a?.text : rank ? `${rank}番` : "✓";
+    const ansLabel = q.type === "choice" ? CHOICE_MARKS[a?.choice] ?? "?" : q.type === "text" ? a?.text
+      : isSeqType(q) ? `${seqHits(q, a)}/${seqLen(q)}` : q.type === "vote" ? answerTextOf(q, a) : rank ? `${rank}番` : "✓";
     const fx = effectOn(L, m.id);
     return h("div", { class: `pr-chip${a ? " done" : ""}${ok === true ? " ok" : ok === false ? " ng" : ""}${turn ? " turn" : ""}${pop ? " pop" : ""}${fx ? " fx" : ""}` },
       fx ? h("span", { class: "mk2", title: SABO_TYPES[fx]?.label }, SABO_TYPES[fx]?.mark ?? "!") : null,
@@ -3598,6 +3749,24 @@ function paintDisplay(P, L, qz, rem) {
       }));
     } else if (q.type === "buzz") {
       detail = buzzStage(L, q);
+    } else if (q.type === "order") {
+      detail = revealed
+        ? h("ol", { class: `pr-seq correct${firstTime(`so:${L.seq}`) ? " enter" : ""}` }, (q.choices ?? []).map((c, k) => h("li", { style: `--d:${k * 0.35}s` }, h("span", { class: "seq-no" }, k + 1), h("span", null, c))))
+        : h("div", { class: "pr-seq-items" }, (L.q?.choices ?? []).map((c) => h("span", null, c)));
+    } else if (q.type === "vote") {
+      const r = voteResult(q);
+      const n = q.voteMode === "rank" ? seqLen(q) : 0;
+      const picks = q.voteMode === "rank" ? null : r.texts.map((_, k) => answers.filter((a) => a.choice === k).length);
+      const max = Math.max(1, ...r.counts);
+      detail = revealed
+        ? h("div", { class: `pr-vote${firstTime(`sv:${L.seq}`) ? " enter" : ""}` }, r.rank.map((k, i) => {
+          const pos = voteRankOf(r, k);
+          const hit = n ? pos <= n : r.top.includes(k);
+          return h("div", { class: `pr-vote-row${hit ? " hit" : ""}`, style: `--d:${(r.rank.length - i) * 0.25}s` },
+            h("span", { class: "pr-vote-no" }, n && pos <= n ? `${pos}位` : ""), h("span", { class: "pr-vote-txt" }, r.texts[k]),
+            h("span", { class: "pr-vote-track" }, h("span", { style: `width:${(r.counts[k] / max) * 100}%` })), h("b", null, `${r.counts[k]}票`));
+        }))
+        : h("div", { class: "pr-seq-items" }, r.texts.map((c, k) => h("span", null, c, picks && L.phase === "reveal" && L.showAns === "all" ? h("small", null, ` ${picks[k]}人`) : null)));
     }
     body = h("div", { class: "pr-q" },
       readTextEl(L, `pr-text-q${firstTime(`dq:${L.seq}`) ? " enter" : ""}`),
@@ -3635,7 +3804,7 @@ function paintOperator(P, L, qz, rem) {
       h("div", { class: "op-next-text" }, nq.text || "（問題文なし）"),
       nq.type === "choice"
         ? h("div", { class: "op-next-sub" }, (nq.choices ?? []).map((c, k2) => `${CHOICE_MARKS[k2]} ${c}`).join("　"), "　→ 正解 ", CHOICE_MARKS[nq.answer] ?? "?")
-        : h("div", { class: "op-next-sub" }, "正解：", nq.answer || "（未設定）"),
+        : h("div", { class: "op-next-sub" }, "正解：", (nq.type === "order" || nq.type === "vote" ? answerLabel(nq, revealAnswerOf(nq)) : nq.answer) || "（未設定）"),
       h("label", { class: "op-next-read" }, t, h("span", null, "問題読み画面を入れる")));
   })() : null;
 
@@ -3656,7 +3825,7 @@ function paintOperator(P, L, qz, rem) {
       const ok = judged(q, a);
       const hasTurn = isBuzz && L.phase === "question" && L.turn?.uid === a.uid && ok !== false;
       const match = isBuzz && a.text && acceptedAnswers(q).includes(normAnswer(a.text));
-      const shown = q.type === "choice" ? `${CHOICE_MARKS[a.choice] ?? "?"}：${q.choices?.[a.choice] ?? ""}` : q.type === "text" ? a.text
+      const shown = q.type !== "buzz" ? answerTextOf(q, a) + (isSeqType(q) ? `（${seqHits(q, a)}/${seqLen(q)}）` : "")
         : buzzText(a) ? `「${buzzText(a)}」` : hasTurn ? "入力中…" : "待機";
       return h("div", { class: `cell op-ans${ok === true ? " ok" : ok === false ? " ng" : ""}${hasTurn ? " turn" : ""}` },
         order ? h("span", { class: "op-rank" }, i + 1) : null,
@@ -3684,7 +3853,9 @@ function paintOperator(P, L, qz, rem) {
           h("button", { class: "btn-small ghost", onclick: () => quizSetPhase(L.phase, { fullText: true }) }, "全文を表示")) : null,
         q.type === "choice" ? h("div", { class: "op-choices" }, (q.choices ?? []).map((c, k) =>
           h("div", { class: `op-choice${q.answer === k ? " correct" : ""}`, style: `--c:${CHOICE_COLORS[k]}` }, `${CHOICE_MARKS[k]} ${c}`))) : null,
-        q.type !== "choice" ? h("div", { class: "op-correct" }, "正解：", q.answer || "（未設定）") : null,
+        isSeqType(q) || q.type === "vote" ? h("div", { class: "op-correct" }, "正解：", answerLabel(q, revealAnswerOf(q)) || "（アンケートを選んでください）",
+          q.type === "vote" ? h("small", null, `（アンケート「${S.polls.get(q.pollId)?.question ?? "なし"}」の今の集計）`) : null)
+          : q.type !== "choice" ? h("div", { class: "op-correct" }, "正解：", q.answer || "（未設定）") : null,
         h("div", { class: "cell-sub" }, [
           q.phone !== false ? "スマホに問題文を表示しています" : "スマホには問題文を表示していません",
           L.read ? "問題読みあり" : "問題読みなし",
@@ -3738,6 +3909,47 @@ function quizAnswer(data) {
   fire(setDoc(D("quizAnswers", `${L.quizId}_${L.index}_${uid}`), {
     uid, quizId: L.quizId, index: L.index, reactionMs, at: serverTimestamp(), ...data,
   }));
+}
+
+// 並べ替え・順位当て：項目をタップした順に番号が付き、そろったら送信する。
+// 並べ替えはスマホにバラバラの順（q.perm[表示の位置] = 元の番号）で出ているので、送るときに元の番号へ戻す
+QZ.seqDraft = { key: null, seq: [] };
+function seqBuilder(L, q, mine, locked, blind) {
+  const need = seqLen(q);
+  const toVal = (p) => (q.type === "order" ? q.perm?.[p] ?? p : p);
+  const toPos = (v) => (q.type === "order" ? (q.perm ?? []).indexOf(v) : v);
+  const D0 = QZ.seqDraft;
+  if (D0.key !== L.seq) { D0.key = L.seq; D0.seq = (mine?.order ?? []).map(toPos).filter((p) => p >= 0); }
+  const seq = D0.seq;
+  const repaint = () => paintMemberQuiz(true);
+  const tap = (p) => {
+    if (locked) return;
+    const at = seq.indexOf(p);
+    if (at >= 0) seq.splice(at, 1);
+    else if (seq.length < need) {
+      seq.push(p);
+      // 並べ替えで残り1つになったら、最後は自動で入れる
+      if (q.type === "order" && seq.length === need - 1) seq.push([...Array(need).keys()].find((x) => !seq.includes(x)));
+    }
+    repaint();
+  };
+  const sent = mine?.order && mine.order.length === seq.length && mine.order.every((v, i) => v === toVal(seq[i]));
+  const label = (p) => (blind ? `${p + 1}` : q.choices?.[p] ?? "");
+  const unit = q.type === "order" ? "番目" : "位";
+  // 正解の発表後は、送った答えの各位置に ○× を付ける
+  const marks = answerVisible(L) && L.answer && sent ? seqMarks({ ...q, answer: L.answer }, mine.order) : null;
+  return h("div", { class: "ql-seq" },
+    h("ol", { class: "ql-seq-slots" }, [...Array(need).keys()].map((n) =>
+      h("li", { class: `${seq[n] != null ? "on" : ""}${marks ? (marks[n] ? " ok" : " ng") : ""}` }, h("span", { class: "seq-no" }, n + 1), seq[n] != null ? label(seq[n]) : h("span", { class: "secondary" }, `${n + 1}${unit}をタップ`),
+        marks ? h("span", { class: "seq-mark" }, marks[n] ? "○" : "×") : null))),
+    h("div", { class: "ql-seq-items" }, (q.choices ?? []).map((c, p) => {
+      const at = seq.indexOf(p);
+      return h("button", { class: `ql-seq-item${at >= 0 ? " picked" : ""}`, disabled: locked || (at < 0 && seq.length >= need), onclick: () => tap(p) },
+        at >= 0 ? h("span", { class: "seq-badge" }, at + 1) : null, label(p));
+    })),
+    h("div", { class: "ql-seq-actions" },
+      h("button", { class: "ql-seq-reset", disabled: locked || !seq.length, onclick: () => { seq.length = 0; repaint(); } }, "やり直す"),
+      h("button", { class: "ql-send", disabled: locked || seq.length !== need || sent, onclick: () => quizAnswer({ order: seq.map(toVal) }) }, sent ? "送信済み" : mine ? "送り直す" : "送信")));
 }
 
 // 早押しのボタンと解答欄（問題ごとに1回だけ作って使い回す）。
@@ -3846,7 +4058,9 @@ function ruleSlides(L) {
   slides.push({ title: "答え方", body: h("div", { class: "sl-cards" },
     types.has("choice") ? h("div", { class: "sl-card" }, h("b", null, "4択"), "スマホで A〜D を選ぶ。締切までは変えられる") : null,
     types.has("text") ? h("div", { class: "sl-card" }, h("b", null, "記述"), "スマホに答えを入力して送信。締切までは送り直せる") : null,
-    types.has("buzz") ? h("div", { class: "sl-card" }, h("b", null, "早押し"), `問題を読んでいる途中でも押せる。押した順に解答権 → ${BUZZ_ANSWER_SEC}秒以内に答えを入力。間違い・時間切れは次の人へ（減点あり）`) : null) });
+    types.has("buzz") ? h("div", { class: "sl-card" }, h("b", null, "早押し"), `問題を読んでいる途中でも押せる。押した順に解答権 → ${BUZZ_ANSWER_SEC}秒以内に答えを入力。間違い・時間切れは次の人へ（減点あり）`) : null,
+    types.has("order") ? h("div", { class: "sl-card" }, h("b", null, "並べ替え"), "バラバラに出る項目を、正しいと思う順にタップして送信。全部合って正解（部分点の問題もある）") : null,
+    types.has("vote") ? h("div", { class: "sl-card" }, h("b", null, "投票当て"), "事前のアンケートで多かった答えを当てる。1位を選ぶ問題と、上位の順番をタップで並べる問題がある") : null) });
   const sb = L.sabo;
   if (sb?.on) {
     const on = SABO_KEYS.filter((k) => sb.types[k]?.on);
@@ -4127,6 +4341,7 @@ function paintMemberQuiz(full = true) {
     const correctNow = myShown ? (q.type === "buzz" ? (typeof mine?.judge === "boolean" ? mine.judge : mine?.timeout ? false : null) : autoJudge({ ...q, answer: L.answer }, mine ?? {}) && !!mine) : null;
     const judgeOverride = typeof mine?.judge === "boolean" ? mine.judge : null;
     const verdict = myShown ? (judgeOverride ?? correctNow) : null;
+    const partialHits = myShown && isSeqType(q) && mine && L.answer && judgeOverride == null ? seqHits({ ...q, answer: L.answer }, mine) : 0;
     const blind = fx === "blind";
     let input;
     if (readingNow) {
@@ -4152,11 +4367,19 @@ function paintMemberQuiz(full = true) {
       ta.disabled = locked;
       input = h("div", { class: "ql-textbox" }, ta,
         h("button", { class: "ql-send", disabled: locked, onclick: () => { if (ta.value.trim()) quizAnswer({ text: ta.value.trim() }); } }, mine ? "送り直す" : "送信"));
+    } else if (q.type === "vote" && q.voteMode !== "rank") {
+      const A = answerVisible(L) ? L.answer : null;
+      input = h("div", { class: "ql-options" }, (q.choices ?? []).map((c, k) => h("button", {
+        class: `ql-option${mine?.choice === k ? " picked" : ""}${A?.top?.includes(k) ? " correct" : ""}`, disabled: locked,
+        onclick: () => quizAnswer({ choice: k }),
+      }, blind ? `${k + 1}` : c, A ? h("small", null, `${A.counts?.[k] ?? 0}票`) : null)));
+    } else if (isSeqType(q)) {
+      input = seqBuilder(L, q, mine, locked, blind);
     } else {
       input = buzzPanel(L);
     }
     const status = q.type === "buzz" ? (L.phase === "closed" ? "締め切りました。正解発表を待っています…" : "") : L.phase === "question"
-      ? (mine ? (q.type === "choice" ? "回答しました（締切まで変えられます）" : q.type === "text" ? "送信しました（締切まで送り直せます）" : "") : rem === 0 ? "時間切れ" : "")
+      ? (mine ? (q.type === "choice" || q.type === "vote" ? "回答しました（締切まで変えられます）" : q.type === "text" || isSeqType(q) ? "送信しました（締切まで送り直せます）" : "") : rem === 0 ? "時間切れ" : "")
       : L.phase === "closed" ? "締め切りました。正解発表を待っています…" : "";
     body = h("div", { class: "ql-q" },
       effectBanner(L),
@@ -4167,8 +4390,9 @@ function paintMemberQuiz(full = true) {
       status ? h("div", { class: "ql-status" }, status) : null,
       L.phase === "reveal" ? h("div", { class: `ql-verdict${verdict === true ? " ok" : verdict === false ? " ng" : ""}${firstTime(`mv:${L.seq}:${myShown}`) ? " enter" : ""}` },
         myShown ? markSvg(verdict, firstTime(`me:${L.seq}:${verdict}`), "mark-phone") : null,
-        h("div", { class: "ql-vtext" }, !myShown ? "発表を待っています…" : verdict === true ? "正解！" : verdict === false ? "不正解…" : mine ? "判定を待っています" : "未回答"),
-        answerVisible(L) && q.type !== "choice" && L.answer ? h("div", { class: "ql-ans" }, `正解：${L.answer}`) : null) : null);
+        h("div", { class: "ql-vtext" }, !myShown ? "発表を待っています…" : verdict === true ? "正解！" : verdict === false ? (partialHits ? `おしい！ ${partialHits}/${seqLen(q)}` : "不正解…") : mine ? "判定を待っています" : "未回答"),
+        myShown && partialHits && verdict === false && q.partial ? h("div", { class: "ql-sub" }, `部分点 ${Math.floor(((Number(q.points) || 0) * partialHits) / seqLen(q))}点`) : null,
+        answerVisible(L) && q.type !== "choice" && answerLabel(q, L.answer) ? h("div", { class: "ql-ans" }, `正解：${answerLabel(q, L.answer)}`) : null) : null);
   }
   setKids(el, head, timer, body, panels);
   el.scrollTop = scroll;
@@ -4342,7 +4566,8 @@ const myUnanswered = (uid) => sortedPolls().filter((p) => isTarget(p, uid) && po
 
 // ---- 管理者
 function adminMoney({ withTitle = true } = {}) {
-  const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }], "polls");
+  const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], "polls");
+  const exp = expenseView({ admin: true });
   tab.addEventListener("change", () => scheduleRender());
   const body = h("div");
 
@@ -4350,19 +4575,21 @@ function adminMoney({ withTitle = true } = {}) {
   const q = h("input", { type: "text", class: "plain", placeholder: "例：8/10 のBBQに参加しますか？" });
   const opts = h("input", { type: "text", value: "参加 / 不参加 / 未定" });
   const deadline = h("input", { type: "datetime-local" });
-  const showRes = toggle(true), allowCom = toggle(true);
+  const showRes = toggle(true), allowCom = toggle(true), nameOpts = toggle(false), anon = toggle(false);
+  nameOpts.addEventListener("change", () => { opts.disabled = nameOpts.checked; });
   const pollWho = targetPicker(null);
   const pollForm = h("form", { onsubmit: (e) => {
     e.preventDefault();
-    const options = opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean);
+    const options = nameOpts.checked ? [...new Set(sortedMembers().map((m) => m.name))] : opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean);
     if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
     const targets = pollWho.value();
     if (targets && !targets.length) return toast("対象を1人以上選んでください", true);
-    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, targets, createdAt: serverTimestamp() }), "アンケートを作りました");
+    fire(addDoc(C("polls"), { question: q.value.trim(), options, deadline: deadline.value || null, open: true, showResults: showRes.checked, allowComment: allowCom.checked, anonymous: anon.checked, targets, createdAt: serverTimestamp() }), "アンケートを作りました");
     q.value = ""; deadline.value = ""; pollWho.reset();
   } },
-    group("新しいアンケート", [h("div", { class: "cell" }, q), field("選択肢（/ で区切る）", opts), field("締切（なしでもOK）", deadline),
-      field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom)]),
+    group("新しいアンケート", [h("div", { class: "cell" }, q), field("選択肢（/ で区切る）", opts), field("選択肢を参加者の名前にする", nameOpts), field("締切（なしでもOK）", deadline),
+      field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom), field("誰が何に入れたかを出さない", anon)],
+      "「参加者の名前にする」は「誰が一番〇〇？」のような投票向けです。クイズの「投票当て」に使うアンケートは、答えがばれないよう「集計を見せる」をオフにしてください。「出さない」をオンにすると、管理者の画面でも票数だけを表示します。"),
     group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el)], "「全員」は、あとから追加した参加者も自動で対象になります。"),
     h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
 
@@ -4415,10 +4642,10 @@ function adminMoney({ withTitle = true } = {}) {
         return h("div", { class: "poll-bar" },
           h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
           h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (vs.length / ms.length) * 100 : 0}%` })),
-          vs.length ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
+          vs.length && !p.anonymous ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
       })),
       none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
-      keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
+      p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
         sel.addEventListener("change", () => setVote(m.id, sel.value));
         return field(m.name, sel);
@@ -4490,12 +4717,15 @@ function adminMoney({ withTitle = true } = {}) {
     el,
     update() {
       if (typingIn(el)) return;
-      if (tab.value === "polls") {
+      if (tab.value === "exp") {
+        if (body.firstChild !== exp.el) body.replaceChildren(exp.el);
+        exp.update();
+      } else if (tab.value === "polls") {
         const ps = sortedPolls();
         setKids(body, keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
       } else {
         if (!payChecksCell.hidden) payChecks.refresh();
-        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
+        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
         const ps = sortedPayments();
         const pend = pendingReports();
@@ -4515,6 +4745,8 @@ function memberMoney({ compact = false } = {}) {
   const body = h("div");
   const el = h("div", null, sectionTitle("出欠・集金", compact), body);
   const drafts = new Map(); // pollId -> コメント入力欄
+  const exp = expenseView();
+  const expGroup = h("section", { class: "expense-section" }, h("h3", { class: "sub-title" }, "立て替えの精算"), exp.el);
   redrawOnLeave(el);
   // 「送金しました」の入力欄（集金ごとに作って使い回す。描き直しても選んだ画像や入力が消えないように）
   const forms = new Map();
@@ -4589,9 +4821,11 @@ function memberMoney({ compact = false } = {}) {
       };
       const owe = myUnpaid(uid);
       setKids(body,
-        polls.length || pays.length ? null : emptyState("check", "まだありません", "出欠のアンケートや集金があるとここに表示されます。"),
+        null,
         polls.length ? h("div", { class: "stack" }, polls.map(pollEl)) : null,
-        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "送金したら「送金しました」を押してください（スクリーンショットも付けられます）。管理者が確認すると「入金済み」になります。") : null);
+        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "送金したら「送金しました」を押してください（スクリーンショットも付けられます）。管理者が確認すると「入金済み」になります。") : null,
+        expGroup);
+      exp.update();
     },
   };
 }
@@ -4602,6 +4836,260 @@ function syncPollTally() {
   const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
   for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
   for (const id of want) listen(`tally:${id}`, query(C("votes"), where("pollId", "==", id)), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => v.choice)); });
+}
+
+// ---------------------------------------------------------------- チェックリスト（持ち物・片付けなど）
+//
+//   checklists/{id}  { title, order, items: [{ id, text, kind: "each" | "shared", assignee: uid | null }], createdAt }
+//                    … セクション（例：持ち物、片付け）。作れるのは管理者
+//     each   ：全員が各自でチェックする（例：寝袋）
+//     shared ：誰か1人がやればよい（例：テント、ゴミ袋）。担当者を決めておける
+//   checks/{listId}_{itemId}_{uid}     { uid, listId, itemId, shared: false, at }   … 各自のチェック
+//   checks/{listId}_{itemId}_shared    { uid, listId, itemId, shared: true, at }    … 共有のチェック（チェックした人が uid）
+
+const sortedChecklists = () => [...S.checklists.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || ts(a.createdAt) - ts(b.createdAt));
+const checkId = (l, it, uid) => `${l.id}_${it.id}_${it.kind === "shared" ? "shared" : uid}`;
+const isChecked = (l, it, uid) => S.checks.has(checkId(l, it, uid));
+function toggleCheck(l, it, on) {
+  const uid = S.user.uid;
+  const id = checkId(l, it, uid);
+  fire(on ? setDoc(D("checks", id), { uid, listId: l.id, itemId: it.id, shared: it.kind === "shared", at: serverTimestamp() }) : deleteDoc(D("checks", id)));
+}
+// 自分がやること（各自の項目＋自分が担当の共有項目）の進み具合
+function myCheckProgress(l, uid) {
+  const items = l.items.filter((it) => it.kind !== "shared" || !it.assignee || it.assignee === uid);
+  return { done: items.filter((it) => isChecked(l, it, uid)).length, total: items.length };
+}
+
+function checklistAdmin({ withTitle = true } = {}) {
+  const el = h("div", { class: "checklists" });
+  const newTitle = h("input", { type: "text", class: "plain", placeholder: "例：持ち物 / 片付け / 出発前", maxlength: "30" });
+  const addSection = h("form", { class: "cl-add-section", onsubmit: (e) => {
+    e.preventDefault();
+    if (!newTitle.value.trim()) return;
+    fire(addDoc(C("checklists"), { title: newTitle.value.trim(), order: Date.now(), items: [], createdAt: serverTimestamp() }), "セクションを作りました");
+    newTitle.value = "";
+  } }, h("div", { class: "group-body" }, h("div", { class: "cell" }, newTitle), h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "セクションを追加")));
+  const body = h("div");
+  el.append(withTitle ? largeTitle("チェックリスト") : null, body, group(null, addSection, "持ち物・片付け・出発前の確認など、セクションはいくつでも作れます。"));
+  redrawOnLeave(el);
+  const forms = new Map(); // セクションごとの「項目を追加」欄（描き直しても入力が消えないように使い回す）
+
+  function addForm(l) {
+    let f = forms.get(l.id);
+    if (f) { fillSelect(f.assignee, [{ value: "", label: "担当なし（誰でも）" }, ...sortedMembers().map((m) => ({ value: m.id, label: m.name }))]); return f.el; }
+    const text = h("input", { type: "text", class: "plain", placeholder: "項目（例：寝袋）", maxlength: "40" });
+    const kind = segmented([{ value: "each", label: "各自" }, { value: "shared", label: "共有（誰か1人）" }], "each");
+    const assignee = h("select", { class: "inline-select" });
+    const aCell = field("担当", assignee);
+    const paintKind = () => { aCell.hidden = kind.value !== "shared"; };
+    kind.addEventListener("change", paintKind);
+    const form = h("form", { class: "cl-add", onsubmit: (e) => {
+      e.preventDefault();
+      if (!text.value.trim()) return;
+      const cur = S.checklists.get(l.id);
+      const item = { id: Math.random().toString(36).slice(2, 10), text: text.value.trim(), kind: kind.value, assignee: kind.value === "shared" ? assignee.value || null : null };
+      fire(updateDoc(D("checklists", l.id), { items: [...(cur?.items ?? []), item] }));
+      text.value = "";
+      text.focus();
+    } }, h("div", { class: "cell" }, text), h("div", { class: "cell" }, kind), aCell, h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "項目を追加"));
+    paintKind();
+    f = { el: form, assignee };
+    forms.set(l.id, f);
+    fillSelect(assignee, [{ value: "", label: "担当なし（誰でも）" }, ...sortedMembers().map((m) => ({ value: m.id, label: m.name }))]);
+    return form;
+  }
+
+  function sectionCard(l) {
+    const ms = sortedMembers();
+    const saveItems = (items) => fire(updateDoc(D("checklists", l.id), { items }));
+    const rows = l.items.map((it, i) => {
+      let status;
+      if (it.kind === "shared") {
+        const c = S.checks.get(checkId(l, it, ""));
+        status = h("span", { class: `cl-stat${c ? " ok" : ""}` }, c ? `✓ ${memberName(c.uid)}` : "まだ");
+      } else {
+        const done = ms.filter((m) => isChecked(l, it, m.id));
+        const not = ms.filter((m) => !isChecked(l, it, m.id));
+        status = h("span", { class: `cl-stat${not.length ? "" : " ok"}`, title: not.length ? `まだ：${not.map((m) => m.name).join("・")}` : "全員チェック済み" }, `${done.length}/${ms.length}`);
+      }
+      const move = (d) => { const j = i + d; if (j < 0 || j >= l.items.length) return; const a = [...l.items]; [a[i], a[j]] = [a[j], a[i]]; saveItems(a); };
+      const notYet = it.kind === "each" ? ms.filter((m) => !isChecked(l, it, m.id)) : [];
+      return h("div", { class: "cell cl-row" },
+        h("div", { class: "cell-main" }, h("b", null, it.text),
+          h("div", { class: "cell-sub" }, it.kind === "shared" ? `共有${it.assignee ? `・担当：${memberName(it.assignee)}` : "・誰でも"}` : notYet.length && notYet.length < ms.length ? `まだ：${notYet.map((m) => m.name).join("・")}` : "各自")),
+        status,
+        h("button", { class: "icon-btn", title: "上へ", onclick: () => move(-1) }, "↑"),
+        h("button", { class: "icon-btn", title: "下へ", onclick: () => move(1) }, "↓"),
+        h("button", { class: "icon-btn", title: "削除", onclick: () => { if (confirm(`「${it.text}」を削除しますか？`)) saveItems(l.items.filter((x) => x.id !== it.id)); } }, icon("xmark")));
+    });
+    const titleIn = editableInput({ class: "plain cl-title", "aria-label": "セクション名" });
+    titleIn.sync(l.title);
+    return h("article", { class: "card cl-card" },
+      h("div", { class: "cl-head" }, titleIn,
+        h("button", { class: "text-btn", onclick: () => { fire(updateDoc(D("checklists", l.id), { title: titleIn.value.trim() || l.title }), "名前を保存しました"); titleIn.saved(); } }, "名前を保存"),
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(`セクション「${l.title}」を削除しますか？チェックの記録も消えます。`)) return;
+          const b = writeBatch(db);
+          b.delete(D("checklists", l.id));
+          [...S.checks.values()].filter((c) => c.listId === l.id).forEach((c) => b.delete(D("checks", c.id)));
+          fire(b.commit(), "削除しました");
+        } }, "削除")),
+      h("div", { class: "group-body" }, rows.length ? rows : none("まだ項目がありません")),
+      keptFold(`cladd:${l.id}`, "＋ 項目を追加", addForm(l), !l.items.length));
+  }
+  return {
+    el,
+    update() {
+      // 「項目を追加」欄は使い回すので、続けて入力している最中でも描き直す（足した項目がすぐ一覧に出るように）。終わったら入力欄に戻す
+      const act = el.contains(document.activeElement) ? document.activeElement : null;
+      const inAdd = act?.closest(".cl-add, .cl-add-section");
+      if (typingIn(el) && !inAdd) return;
+      const ls = sortedChecklists();
+      setKids(body, ls.length ? ls.map(sectionCard) : emptyState("check", "まだセクションがありません", "下の「セクションを追加」から、持ち物・片付けなどのリストを作れます。"));
+      if (inAdd && act.isConnected && document.activeElement !== act) act.focus({ preventScroll: true });
+    },
+  };
+}
+
+function checklistMember({ compact = false } = {}) {
+  const body = h("div");
+  const el = h("div", null, sectionTitle("チェックリスト", compact), body);
+  return {
+    el,
+    update() {
+      const uid = S.user.uid;
+      const ls = sortedChecklists();
+      setKids(body, ls.length ? ls.map((l) => {
+        const p = myCheckProgress(l, uid);
+        return h("article", { class: "card cl-card" },
+          h("div", { class: "cl-head" }, h("b", { class: "cl-title" }, l.title), h("span", { class: `cl-stat${p.total && p.done === p.total ? " ok" : ""}` }, `${p.done}/${p.total}`)),
+          h("div", { class: "poll-track" }, h("div", { style: `width:${p.total ? (p.done / p.total) * 100 : 0}%` })),
+          h("div", { class: "cl-items" }, l.items.map((it) => {
+            const on = isChecked(l, it, uid);
+            const c = it.kind === "shared" ? S.checks.get(checkId(l, it, uid)) : null;
+            // 共有の項目を他の人がチェックしたときは、その人（か管理者）しか外せない
+            const cb = h("input", { type: "checkbox", checked: on, disabled: !!(c && c.uid !== uid) });
+            cb.addEventListener("change", () => toggleCheck(l, it, cb.checked));
+            const mineToDo = it.kind !== "shared" || !it.assignee || it.assignee === uid;
+            return h("label", { class: `cl-item${on ? " on" : ""}${mineToDo ? "" : " other"}` }, cb,
+              h("span", { class: "cl-text" }, it.text,
+                it.kind === "shared" ? h("small", null, c ? `${memberName(c.uid)} がチェック` : it.assignee ? `担当：${it.assignee === uid ? "あなた" : memberName(it.assignee)}` : "誰か1人でOK") : null));
+          })));
+      }) : emptyState("check", "まだありません", "持ち物や片付けのチェックリストがあるとここに表示されます。"));
+    },
+  };
+}
+
+// ---------------------------------------------------------------- 立て替えの精算
+//
+//   expenses/{自動}  { uid(登録した人), kind: "expense", payer, title, amount, split: [uid] | null(=全員), createdAt }
+//                    { uid, kind: "settle", from, to, amount, createdAt }   … 「払った」の記録（精算が進むと残りが減る）
+//   参加者は「uid が自分」のものだけ書ける（自分が立て替えた分・自分が払った記録）。管理者は誰の分でも登録・削除できる。
+//
+// 精算の計算：各人の「立て替えた額 − 負担する額（割り勘）」を出し、払う人と受け取る人を大きい順に組み合わせる。
+// この方法だと、やり取りの回数は最大でも（人数 − 1）回になる。
+
+const sortedExpenses = () => [...S.expenses.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+const splitOf = (e) => (e.split?.length ? e.split : sortedMembers().map((m) => m.id));
+
+// 1件の割り勘：1円単位で、端数は先頭の人から1円ずつ多く負担する
+function shares(e) {
+  const ids = splitOf(e);
+  const n = ids.length || 1;
+  const base = Math.floor(e.amount / n), rest = e.amount - base * n;
+  return new Map(ids.map((id, i) => [id, base + (i < rest ? 1 : 0)]));
+}
+
+// 各人の差し引き（＋なら受け取る側、−なら払う側）
+function balances() {
+  const bal = new Map(sortedMembers().map((m) => [m.id, 0]));
+  const add = (id, v) => bal.set(id, (bal.get(id) ?? 0) + v);
+  for (const e of S.expenses.values()) {
+    if (e.kind === "settle") { add(e.from, e.amount); add(e.to, -e.amount); continue; }
+    add(e.payer, e.amount);
+    for (const [id, v] of shares(e)) add(id, -v);
+  }
+  return bal;
+}
+
+// 誰が誰にいくら払えばよいか
+function settlements() {
+  const bal = [...balances()].filter(([, v]) => v !== 0);
+  const pay = bal.filter(([, v]) => v < 0).map(([id, v]) => ({ id, v: -v })).sort((a, b) => b.v - a.v);
+  const get = bal.filter(([, v]) => v > 0).map(([id, v]) => ({ id, v })).sort((a, b) => b.v - a.v);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < pay.length && j < get.length) {
+    const x = Math.min(pay[i].v, get[j].v);
+    if (x > 0) out.push({ from: pay[i].id, to: get[j].id, amount: x });
+    pay[i].v -= x; get[j].v -= x;
+    if (!pay[i].v) i++;
+    if (!get[j].v) j++;
+  }
+  return out;
+}
+
+function expenseView({ admin = false } = {}) {
+  const el = h("div", { class: "expense" });
+  const title = h("input", { type: "text", class: "plain", placeholder: "例：食材（スーパー）", maxlength: "40" });
+  const amount = h("input", { type: "number", min: "1", inputmode: "numeric", placeholder: "5400" });
+  const payer = h("select", { class: "inline-select" });
+  const who = targetPicker(null);
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const amt = Math.floor(Number(amount.value) || 0);
+    if (!title.value.trim() || amt <= 0) return toast("内容と金額を入れてください", true);
+    const split = who.value();
+    if (split && !split.length) return toast("割る人を1人以上選んでください", true);
+    const pid = admin ? payer.value : S.user.uid;
+    if (!pid) return toast("立て替えた人を選んでください", true);
+    fire(addDoc(C("expenses"), { uid: admin ? S.user.uid : pid, kind: "expense", payer: pid, title: title.value.trim(), amount: amt, split, createdAt: serverTimestamp() }), "登録しました");
+    title.value = ""; amount.value = ""; who.reset();
+  } },
+    group("立て替えを登録", [h("div", { class: "cell" }, title), field("金額（円）", amount), admin ? field("立て替えた人", payer) : null,
+      h("div", { class: "cell" }, h("div", { class: "target-wrap" }, h("div", { class: "cell-sub" }, "割る人"), who.el))],
+      admin ? "参加者の代わりに登録できます。" : "自分が立て替えた分を登録します。「割る人」で選んだ人で同じ額ずつ負担します（1円の端数は最初の人から）。"),
+    h("button", { class: "btn-filled", type: "submit" }, "登録する"));
+  const result = h("div");
+  const list = h("div");
+  el.append(keptFold(`newExpense:${admin}`, "＋ 立て替えを登録", form, !S.expenses.size), result, list);
+  redrawOnLeave(el);
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      fillSelect(payer, sortedMembers().map((m) => ({ value: m.id, label: m.name })), "選択");
+      who.refresh();
+      const uid = S.user.uid;
+      const st = settlements();
+      const mine = st.filter((t) => t.from === uid || t.to === uid);
+      const bal = balances();
+      const settleBtn = (t) => (admin || t.from === uid) ? h("button", { class: "btn-small", onclick: () => {
+        if (!confirm(`${memberName(t.from)} → ${memberName(t.to)} に ${yen(t.amount)} 払ったことにしますか？`)) return;
+        fire(addDoc(C("expenses"), { uid: admin ? uid : t.from, kind: "settle", from: t.from, to: t.to, amount: t.amount, createdAt: serverTimestamp() }), "記録しました");
+      } }, "払った") : null;
+      setKids(result,
+        !admin && st.length ? group("あなたの精算", mine.length ? mine.map((t) => h("div", { class: "cell settle-row" },
+          h("div", { class: "cell-main" }, t.from === uid ? h("b", null, `${memberName(t.to)} に払う`) : h("b", null, `${memberName(t.from)} から受け取る`)),
+          h("b", { class: t.from === uid ? "owe" : "get" }, yen(t.amount)), t.from === uid ? settleBtn(t) : null)) : cell("精算はありません（差し引きゼロ）"),
+          "払ったら「払った」を押してください。受け取る側の人が押す必要はありません。") : null,
+        group(`精算（${st.length ? `${st.length}回のやり取りで完了` : "すべて精算済み"}）`, st.length ? st.map((t) => h("div", { class: "cell settle-row" },
+          h("div", { class: "cell-main" }, h("b", null, `${memberName(t.from)} → ${memberName(t.to)}`)), h("b", null, yen(t.amount)), settleBtn(t))) : cell("精算するものはありません"),
+          "支払いの回数ができるだけ少なくなるように組み合わせています。"),
+        admin ? group("人ごとの差し引き", sortedMembers().map((m) => cell(m.name, h("b", { class: (bal.get(m.id) ?? 0) < 0 ? "owe" : (bal.get(m.id) ?? 0) > 0 ? "get" : "" }, `${(bal.get(m.id) ?? 0) > 0 ? "+" : (bal.get(m.id) ?? 0) < 0 ? "−" : ""}${yen(Math.abs(bal.get(m.id) ?? 0))}`))), "＋は受け取る額、−は払う額です。") : null);
+      const items = sortedExpenses();
+      setKids(list, items.length ? group("記録", items.map((e) => {
+        const canDel = admin || e.uid === uid;
+        const del = canDel ? h("button", { class: "text-btn destructive", onclick: () => { if (confirm("この記録を削除しますか？")) fire(deleteDoc(D("expenses", e.id)), "削除しました"); } }, "削除") : null;
+        if (e.kind === "settle") return h("div", { class: "cell settle-row done" }, h("div", { class: "cell-main" }, h("span", null, `${memberName(e.from)} → ${memberName(e.to)} 支払い済み`), h("div", { class: "cell-sub" }, fmtDate(e.createdAt))), h("span", null, yen(e.amount)), del);
+        const sp = splitOf(e);
+        return h("div", { class: "cell" }, h("div", { class: "cell-main" }, h("b", null, e.title),
+          h("div", { class: "cell-sub" }, `${memberName(e.payer)} が立て替え ・ ${e.split?.length ? `${sp.length}人で割る（${sp.map(memberName).join("・")}）` : `全員（${sp.length}人）で割る`} ・ 1人 約${yen(Math.round(e.amount / (sp.length || 1)))}`)),
+          h("b", null, yen(e.amount)), del);
+      })) : emptyState("check", "まだありません", "誰かが立て替えたら、ここに登録すると最後にまとめて精算できます。"));
+    },
+  };
 }
 
 // ---------------------------------------------------------------- チャット
@@ -4941,6 +5429,7 @@ const MEMBER_TABS = [
   { key: "points", icon: "trophy", label: "ポイント", view: memberPoints },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
   { key: "money", icon: "check", label: "出欠・集金", view: memberMoney, sheet: true, desktopOnly: true }, // スマホは1ページの中の欄
+  { key: "checklist", icon: "list", label: "チェック", view: checklistMember, sheet: true, desktopOnly: true },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
@@ -4954,6 +5443,7 @@ const ADMIN_TABS = [
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
+  { key: "checklist", icon: "list", label: "チェック", view: checklistAdmin, sheet: true },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
@@ -5159,6 +5649,7 @@ function buildMemberPageShell() {
     { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
     { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
     { key: "money", label: "出欠", view: memberMoney({ compact: true }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
+    { key: "checklist", label: "チェック", view: checklistMember({ compact: true }) },
   ];
   const summary = memberSummary();
   const chip = meChip();
