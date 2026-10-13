@@ -76,6 +76,7 @@ const S = {
   votes: new Map(),          // 回答 votes/{pollId}_{uid}（参加者は自分の分だけ）
   pollTally: new Map(),      // 参加者：集計を見せるアンケートの回答（pollId -> [choice]）
   payments: new Map(),       // 集金 payments/{id}
+  payReports: new Map(),     // 参加者からの「送金しました」 payReports/{paymentId}_{uid}（参加者は自分の分だけ）
   quizzes: new Map(),        // 管理者：クイズ quizzes/{id}
   live: null,                // 進行中のクイズ live/quiz
   quizAnswers: new Map(),    // 表示中の問題への解答 quizAnswers/{quizId}_{index}_{uid}
@@ -194,6 +195,7 @@ function startAdmin() {
   listen("polls", C("polls"), (s) => { S.polls = toMap(s); });
   listen("votes", C("votes"), (s) => { S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { S.payments = toMap(s); });
+  listen("payReports", C("payReports"), (s) => { S.payReports = toMap(s); });
   listenLiveQuiz();
 }
 
@@ -279,6 +281,7 @@ function startMemberData(uid) {
   listen("polls", C("polls"), (s) => { if (s) S.polls = toMap(s); syncPollTally(); });
   listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) S.votes = toMap(s); });
   listen("payments", C("payments"), (s) => { if (s) S.payments = toMap(s); });
+  listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) S.payReports = toMap(s); });
   listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
   listenRecent(uid);
 }
@@ -374,7 +377,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), mapPins: new Map(),
+    polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), mapPins: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -1573,7 +1576,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "pwChanged"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -4165,11 +4168,14 @@ setInterval(() => {
 //   payments/{id}    { title, amount, due, note, targets: [uid] | null(=全員), createdAt,
 //                      records: { uid: { status: "paid" | "unpaid" | "exempt", method, amount, at } } }   … 入金済みなどは管理者が付ける
 //
+//   payReports/{paymentId}_{uid}  { uid, paymentId, method, note, image(縮小した画像) | null, at }
+//                    … 参加者の「送金しました」の報告。入金済みにするのは管理者（報告はあくまで確認のきっかけ）
+//
 // 1件のアンケート・集金に参加者全員分がぶら下がるだけなので、件数は少ない（読み取り回数も少ない）。
 
 // 入力中（文字を打っている最中）は描き直さない。描き直すと入力欄が入れ替わって、打った内容やキーボードが消えるため。
 // 入力欄から離れたら描き直す
-const typingIn = (root) => root.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && document.activeElement.type !== "checkbox";
+const typingIn = (root) => root.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && !["checkbox", "file"].includes(document.activeElement.type);
 const redrawOnLeave = (root) => root.addEventListener("focusout", () => setTimeout(() => scheduleRender(), 0));
 const yen = (n) => `¥${(Number(n) || 0).toLocaleString("ja-JP")}`;
 const PAY_METHODS = ["現金", "振込", "PayPay", "その他"];
@@ -4198,6 +4204,11 @@ function payTotals(p) {
 // 自分の未入金の合計
 const myUnpaid = (uid) => sortedPayments().filter((p) => !p.targets || p.targets.includes(uid))
   .reduce((s, p) => s + (recordOf(p, uid).status === "unpaid" ? amountOf(p, uid) : 0), 0);
+const reportOf = (p, uid) => S.payReports.get(`${p.id}_${uid}`) ?? null;
+// 報告はあるが、まだ入金済みにしていないもの（管理者の確認待ち）
+const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
+  .filter((x) => x.rep && recordOf(x.p, x.m.id).status === "unpaid");
+const reportLine = (rep) => [rep.method, rep.at ? fmtDate(rep.at) : "送信中…", rep.note].filter(Boolean).join(" ・ ");
 const myUnanswered = (uid) => sortedPolls().filter((p) => pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
 
 // ---- 管理者
@@ -4304,12 +4315,24 @@ function adminMoney({ withTitle = true } = {}) {
         method.addEventListener("change", () => setRec(m.id, { method: method.value }));
         const amt = h("input", { type: "number", class: "pay-amount", min: "0", inputmode: "numeric", value: String(amountOf(p, m.id)) });
         amt.addEventListener("change", () => setRec(m.id, { amount: Math.max(0, Number(amt.value) || 0) }));
-        return h("div", { class: `cell pay-row ${r.status}` },
-          h("div", { class: "cell-main" }, h("b", null, m.name), h("div", { class: "cell-sub" }, r.status === "paid" ? `${r.method ?? ""} ${r.at ? fmtDate(r.at) : ""}` : "")),
+        const rep = reportOf(p, m.id);
+        const confirmPaid = () => setRec(m.id, { status: "paid", at: serverTimestamp(), method: PAY_METHODS.includes(rep?.method) ? rep.method : "その他" });
+        return h("div", { class: `cell pay-row ${r.status}${rep && r.status === "unpaid" ? " reported" : ""}` },
+          h("div", { class: "cell-main" }, h("b", null, m.name), h("div", { class: "cell-sub" }, r.status === "paid" ? `${r.method ?? ""} ${r.at ? fmtDate(r.at) : ""}` : ""),
+            rep ? h("div", { class: "pay-report" },
+              h("span", { class: "pay-report-badge" }, r.status === "unpaid" ? "送金の報告あり" : "報告あり"), reportLine(rep),
+              rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null,
+              r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
       h("div", { class: "poll-actions" },
-        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${p.title}」を削除しますか？`)) fire(deleteDoc(D("payments", p.id)), "削除しました"); } }, "削除")));
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
+          const b = writeBatch(db);
+          b.delete(D("payments", p.id));
+          [...S.payReports.values()].filter((x) => x.paymentId === p.id).forEach((x) => b.delete(D("payReports", x.id)));
+          fire(b.commit(), "削除しました");
+        } }, "削除")));
   }
 
   // 人ごとの未入金
@@ -4330,7 +4353,13 @@ function adminMoney({ withTitle = true } = {}) {
         const opts2 = [{ value: "all", label: "全員" }, ...sortedPolls().flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
         const ps = sortedPayments();
-        setKids(body, fold("＋ 新しい集金", payForm, !ps.length), ps.length ? [byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
+        const pend = pendingReports();
+        const pendGroup = pend.length ? group(`確認待ちの送金報告 ${pend.length}件`, pend.map(({ p, m, rep }) => h("div", { class: "cell pay-row reported" },
+          h("div", { class: "cell-main" }, h("b", null, `${m.name}：${p.title}（${yen(amountOf(p, m.id))}）`), h("div", { class: "cell-sub" }, reportLine(rep)),
+            rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null),
+          h("button", { class: "btn-small", onclick: () => fire(updateDoc(D("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
+          "参加者が「送金しました」を押したものです。入金を確かめてから「入金済みにする」を押してください。") : null;
+        setKids(body, fold("＋ 新しい集金", payForm, !ps.length), ps.length ? [pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
       }
     },
   };
@@ -4342,6 +4371,46 @@ function memberMoney({ compact = false } = {}) {
   const el = h("div", null, sectionTitle("出欠・集金", compact), body);
   const drafts = new Map(); // pollId -> コメント入力欄
   redrawOnLeave(el);
+  // 「送金しました」の入力欄（集金ごとに作って使い回す。描き直しても選んだ画像や入力が消えないように）
+  const forms = new Map();
+  function reportBox(p, rep) {
+    const uid = S.user.uid;
+    if (rep) {
+      return h("div", { class: "pay-report mine" },
+        h("span", { class: "pay-report-badge" }, "送金しましたと報告済み"), reportLine(rep),
+        rep.image ? h("img", { src: rep.image, alt: "", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null,
+        h("button", { class: "text-btn", onclick: () => { if (confirm("報告を取り消しますか？")) fire(deleteDoc(D("payReports", rep.id)), "取り消しました"); } }, "取り消す"));
+    }
+    let f = forms.get(p.id);
+    if (!f) {
+      const method = h("select", { class: "inline-select" }, PAY_METHODS.map((x) => h("option", { value: x }, x)));
+      const note = h("input", { type: "text", placeholder: "メモ（任意）例：10/13 に PayPay で送りました", maxlength: "80" });
+      const file = h("input", { type: "file", accept: "image/*", hidden: true });
+      const preview = h("div", { class: "pay-preview" });
+      const pick = h("label", { class: "pill" }, icon("photo"), "スクショを付ける（任意）", file);
+      const send = h("button", { class: "btn-small" }, "報告する");
+      f = { open: false, image: null, method, note, file, preview, pick, send };
+      const paintPreview = () => setKids(preview, f.image ? [h("img", { src: f.image, alt: "", class: "pay-shot" }), h("button", { class: "text-btn", onclick: () => { f.image = null; paintPreview(); } }, "外す")] : null);
+      file.addEventListener("change", () => guard(null, async () => {
+        const fl = file.files?.[0];
+        file.value = "";
+        if (!fl) return;
+        f.image = await compressImage(fl);
+        paintPreview();
+      }));
+      // 電波が弱くても待たせない（送信予約にして、電波が戻ったら自動で送られる）
+      send.addEventListener("click", () => {
+        fire(setDoc(D("payReports", `${p.id}_${uid}`), { uid, paymentId: p.id, method: method.value, note: note.value.trim(), image: f.image, at: serverTimestamp() }),
+          "送金を報告しました。管理者の確認を待ってください");
+        f.open = false; f.image = null; note.value = ""; paintPreview();
+        scheduleRender();
+      });
+      f.box = h("div", { class: "pay-form" }, field("払い方", method), h("div", { class: "pay-note-input" }, note), h("div", { class: "pay-pick" }, pick, preview),
+        h("div", { class: "pay-form-actions" }, h("button", { class: "text-btn", onclick: () => { f.open = false; scheduleRender(); } }, "やめる"), send));
+      forms.set(p.id, f);
+    }
+    return f.open ? f.box : h("button", { class: "btn-small pay-sent-btn", onclick: () => { f.open = true; scheduleRender(); } }, icon("check"), "送金しました");
+  }
   return {
     el,
     update() {
@@ -4366,15 +4435,18 @@ function memberMoney({ compact = false } = {}) {
       };
       const payEl = (p) => {
         const r = recordOf(p, uid);
-        return h("div", { class: `cell pay-mine ${r.status}` },
-          h("div", { class: "cell-main" }, h("b", null, p.title), h("div", { class: "cell-sub" }, [p.due ? `期限 ${p.due.replaceAll("-", "/")}` : null, p.note].filter(Boolean).join(" ・ "))),
-          h("div", { class: "pay-right" }, h("b", null, yen(amountOf(p, uid))), h("span", { class: `pay-badge ${r.status}` }, r.status === "paid" ? "入金済み ✓" : PAY_STATUS[r.status])));
+        const rep = reportOf(p, uid);
+        const badge = r.status === "paid" ? "入金済み ✓" : r.status === "exempt" ? PAY_STATUS.exempt : rep ? "確認待ち" : PAY_STATUS.unpaid;
+        return h("div", { class: `cell pay-mine ${r.status}${rep && r.status === "unpaid" ? " reported" : ""}` },
+          h("div", { class: "cell-main" }, h("b", null, p.title), h("div", { class: "cell-sub" }, [p.due ? `期限 ${p.due.replaceAll("-", "/")}` : null, p.note].filter(Boolean).join(" ・ ")),
+            r.status === "unpaid" ? reportBox(p, rep) : null),
+          h("div", { class: "pay-right" }, h("b", null, yen(amountOf(p, uid))), h("span", { class: `pay-badge ${r.status}${rep && r.status === "unpaid" ? " wait" : ""}` }, badge)));
       };
       const owe = myUnpaid(uid);
       setKids(body,
         polls.length || pays.length ? null : emptyState("check", "まだありません", "出欠のアンケートや集金があるとここに表示されます。"),
         polls.length ? h("div", { class: "stack" }, polls.map(pollEl)) : null,
-        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "入金の確認は管理者が行います。払ったのに「未入金」のままなら管理者に伝えてください。") : null);
+        pays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), "送金したら「送金しました」を押してください（スクリーンショットも付けられます）。管理者が確認すると「入金済み」になります。") : null);
     },
   };
 }
