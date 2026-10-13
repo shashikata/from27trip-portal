@@ -1,6 +1,6 @@
 {
-  "name": "無人島ポータル",
-  "short_name": "無人島",
+  "name": "旅行ポータル",
+  "short_name": "旅行ポータル",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
