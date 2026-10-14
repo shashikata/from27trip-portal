@@ -1670,3 +1670,27 @@ input.cl-title { padding: 2px 0; }
   .rp-rank td:first-child, .rp-rank th:first-child { width: 14mm; }
   .rp-table th { white-space: nowrap; }
 }
+
+/* ---- ポイントQR ---- */
+.pt-qr-admin { margin-top: 24px; }
+.pt-qr-row { gap: 10px; flex-wrap: wrap; }
+.pt-qr-row.off { opacity: .55; }
+.pt-qr-row .tint { font-weight: 800; }
+.pt-qr-actions { display: flex; align-items: center; gap: 10px; }
+.pt-login-note { color: var(--blue); font-weight: 600; }
+.pt-result { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .45); animation: fade .2s; }
+.pt-result-card { width: min(360px, 100%); background: var(--cell); border-radius: 24px; padding: 28px 22px 20px; text-align: center; display: grid; gap: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
+.pt-result-card .btn-filled { margin: 8px 0 0; }
+.pt-result-big { font-family: var(--font-rounded); font-size: 64px; font-weight: 900; line-height: 1; color: var(--green); animation: popIn .5s cubic-bezier(.2, 1.4, .4, 1); }
+.pt-result-big small { font-size: 24px; margin-left: 4px; }
+.pt-result-ng { font-size: 56px; font-weight: 900; line-height: 1; color: var(--red); }
+.pt-result-title { font-size: 18px; font-weight: 800; }
+.pt-result-sub { color: var(--label-2); font-size: 15px; }
+@media print {
+  body.printing #print-root.print-ptqr { display: flex; flex-wrap: wrap; gap: 6mm; align-content: flex-start; }
+  .ptq { width: calc(var(--qr) + 8mm); padding: 4mm; border: .3mm dashed #999; text-align: center; break-inside: avoid; box-sizing: border-box; }
+  .ptq-code svg { width: var(--qr); height: var(--qr); display: block; margin: 0 auto; }
+  .ptq-title { font-weight: 800; font-size: calc(var(--qr) * .09 + 6pt); margin-top: 2mm; word-break: break-all; }
+  .ptq-pt { font-weight: 700; font-size: calc(var(--qr) * .07 + 5pt); }
+  .ptq-sub { font-size: 7.5pt; color: #555; }
+}

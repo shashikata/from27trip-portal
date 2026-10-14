@@ -7,7 +7,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
-  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit,
+  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
 
@@ -128,6 +128,8 @@ const S = {
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
+  ptQrs: new Map(),          // ポイントQR ptQrs/{id}（管理者）
+  ptClaims: new Map(),       // ポイントQRの受け取り記録 ptClaims/{id}（管理者）
   locGroups: new Map(),      // 位置の共有グループ locGroups/{id} { name, members: [uid] }（管理者が作る）
   mapPins: new Map(),        // 管理者が地図に刺したピン mapPins/{id}
   polls: new Map(),          // 出欠などのアンケート polls/{id}
@@ -276,6 +278,8 @@ function startAdmin() {
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
+  listen("ptQrs", C("ptQrs"), (s) => { if (s) S.ptQrs = toMap(s); });
+  listen("ptClaims", C("ptClaims"), (s) => { if (s) S.ptClaims = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
@@ -482,12 +486,16 @@ function statsOf(logs, sign = 1) {
 }
 
 // バッチに「合計の増減」を追加する
-function addStats(b, logs, sign = 1) {
+function statsPatch(logs, sign = 1) {
   const acc = statsOf(logs, sign);
-  if (!Object.keys(acc).length) return;
+  if (!Object.keys(acc).length) return null;
   const patch = {};
   for (const k in acc) for (const id in acc[k]) for (const v in acc[k][id]) ((patch[k] ??= {})[id] ??= {})[v] = increment(acc[k][id][v]);
-  b.set(D("stats", "points"), patch, { merge: true });
+  return patch;
+}
+function addStats(b, logs, sign = 1) {
+  const patch = statsPatch(logs, sign);
+  if (patch) b.set(D("stats", "points"), patch, { merge: true });
 }
 
 const statsKey = (st) => JSON.stringify(["u", "t"].flatMap((k) => Object.entries(st?.[k] ?? {}).flatMap(([id, e]) =>
@@ -522,7 +530,7 @@ function resetProfileData() {
   DATA_VER++;
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
@@ -601,8 +609,23 @@ function takeQrLogin() {
   } catch { return null; }
 }
 let qrLogin = takeQrLogin();
+// ポイントQR：「アプリのURL#pt=<旅行>.<QRのid>」。ログインしていなくても覚えておき、旅行を開いたら受け取る
+let ptPending = null;
+function takePtHash() {
+  const m = location.hash.match(/^#pt=([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
+  if (m) {
+    history.replaceState(null, "", location.pathname + location.search);
+    ptPending = { pid: m[1], id: m[2] };
+    try { sessionStorage.setItem("island.pt", JSON.stringify(ptPending)); } catch { /* なし */ }
+    return;
+  }
+  try { ptPending ??= JSON.parse(sessionStorage.getItem("island.pt") ?? "null"); } catch { /* なし */ }
+}
+takePtHash();
 // すでにアプリを開いているタブで QR の URL を開いたとき（ページは読み直されず「#」だけ変わる）
 window.addEventListener("hashchange", () => {
+  takePtHash();
+  scheduleRender();
   qrLogin = takeQrLogin();
   if (qrLogin) handleQrLogin(auth.currentUser);
 });
@@ -1706,6 +1729,7 @@ function loginView() {
   return h("div", { class: "login", "data-view": "login" },
     h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
     h("h1", null, "旅行ポータル"),
+    ptPending ? h("p", { class: "pt-login-note" }, "ポイントQRを読み取りました。ログインするとポイントを受け取れます。") : null,
     h("p", { class: "secondary" }, switchTarget ? `参加者アカウント（${switchTarget}）でログインしてください。次からはログインしたまま切り替えられます。` : "配られたIDとパスワードでログインしてください。"),
     h("form", {
       onsubmit: (e) => {
@@ -1867,7 +1891,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2493,6 +2517,7 @@ function adminTeams() {
 }
 
 function adminPoints() {
+  const ptAdmin = ptQrAdmin();
   const kind = segmented([{ value: "team", label: "チーム" }, { value: "user", label: "個人" }]);
   const target = h("select", { "aria-label": "対象" });
   const delta = h("input", { type: "number", step: "any", placeholder: "0", inputmode: "decimal", class: "delta-input" });
@@ -2695,6 +2720,7 @@ function adminPoints() {
     fold("ポイント交換", transferForm, false),
     summary,
     h("section", { class: "group" }, h("div", { class: "group-header" }, "履歴"), list),
+    ptAdmin.el,
   );
 
   const breakdown = (ls, keys) => keys.map((k) => `${{ public: "公開", team: "チーム内", private: "本人" }[k]} ${sum(ls.filter((l) => l.visibility === k))}`).join(" · ");
@@ -2705,6 +2731,7 @@ function adminPoints() {
   return {
     el,
     update() {
+      ptAdmin.update();
       refreshForm();
       refreshTransfer();
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
@@ -5893,6 +5920,144 @@ async function printCredentials(rows, mode) {
   window.print();
 }
 
+// ---------------------------------------------------------------- ポイントQR
+//   ptQrs/{id}     { title, points, kind: "user" | "team", setId, mode: "once" | "first" | "perUser", limit, active, createdAt }
+//                  once：全体で1回だけ / first：先着 limit 人（1人1回）/ perUser：1人1回（人数の上限なし）
+//   ptClaims/{qrId}_u_{uid}  { uid, qrId, at }        … その人が受け取った記録（1人1回）
+//   ptClaims/{qrId}_s{k}     { uid, qrId, at, slot }  … 先着の枠（k 番目）。トランザクションで「まだ無い枠」だけ取るので、同時に読んでも人数を超えない
+// 受け取りは参加者の端末で行い、同じトランザクションでポイント履歴と合計（stats）にも書く
+const PT_MODES = { once: "全体で1回だけ", first: "先着○人（1人1回）", perUser: "1人1回ずつ（人数制限なし）" };
+const ptQrUrl = (q) => `${location.origin}${location.pathname}#pt=${S.pid}.${q.id}`;
+const ptLimitOf = (q) => (q.mode === "once" ? 1 : q.mode === "first" ? Math.max(1, Number(q.limit) || 1) : 0);
+const ptClaimsOf = (q) => [...S.ptClaims.values()].filter((c) => c.qrId === q.id && !c.slot).sort((a, b) => ts(a.at) - ts(b.at));
+const ptModeText = (q) => (q.mode === "first" ? `先着${ptLimitOf(q)}人（1人1回）` : PT_MODES[q.mode] ?? "");
+
+let ptBusy = false;
+async function maybeClaimPt() {
+  const p = ptPending;
+  if (!p || ptBusy || !S.user || !S.authReady) return;
+  if (S.isAdmin) { ptPending = null; sessionStorage.removeItem("island.pt"); return showPtResult({ ng: "管理者のアカウントではポイントを受け取れません（参加者のアカウントで読み取ってください）" }); }
+  if (!S.pid || !S.me) return; // 旅行を開くまで待つ
+  if (p.pid !== S.pid) {
+    if (S.myProfiles.some((x) => x.id === p.pid)) return switchProfile(p.pid);
+    ptPending = null; sessionStorage.removeItem("island.pt");
+    return showPtResult({ ng: "このQRコードは、あなたが参加している旅行のものではありません" });
+  }
+  ptPending = null;
+  try { sessionStorage.removeItem("island.pt"); } catch { /* なし */ }
+  ptBusy = true;
+  try { showPtResult(await claimPt(p.id)); } catch (e) { showPtResult({ ng: navigator.onLine ? errMsg(e) : "電波のある所でもう一度読み取ってください" }); } finally { ptBusy = false; }
+}
+async function claimPt(qrId) {
+  const uid = S.user.uid;
+  return runTransaction(db, async (tx) => {
+    const qs = await tx.get(D("ptQrs", qrId));
+    if (!qs.exists()) return { ng: "このQRコードは使えません（削除されています）" };
+    const q = { id: qs.id, ...qs.data() };
+    if (q.active === false) return { ng: `「${q.title}」は今は受け取れません（停止中）`, q };
+    const mineRef = D("ptClaims", `${qrId}_u_${uid}`);
+    if ((await tx.get(mineRef)).exists()) return { ng: `「${q.title}」はもう受け取っています`, q };
+    const n = ptLimitOf(q);
+    let slotRef = null;
+    for (let k = 0; k < n; k++) {
+      const r = D("ptClaims", `${qrId}_s${k}`);
+      if (!(await tx.get(r)).exists()) { slotRef = r; break; }
+    }
+    if (n && !slotRef) return { ng: `「${q.title}」は${n === 1 ? "もう受け取られました" : `先着${n}人に達しました`}`, q };
+    let log = { kind: "user", target: uid, teamId: null };
+    if (q.kind === "team") {
+      const teamId = teamOfIn(uid, q.setId);
+      if (!teamId) return { ng: "チームに入っていないので受け取れません", q };
+      log = { kind: "team", target: teamId, teamId, contributor: uid };
+    }
+    Object.assign(log, { visibility: "public", delta: Number(q.points) || 0, reason: `QR「${q.title}」`, createdAt: serverTimestamp(), author: "QR", uid });
+    tx.set(mineRef, { uid, qrId, at: serverTimestamp() });
+    if (slotRef) tx.set(slotRef, { uid, qrId, at: serverTimestamp(), slot: true });
+    tx.set(doc(C("pointLogs")), log);
+    const patch = statsPatch([log]);
+    if (patch) tx.set(D("stats", "points"), { ...patch, uid }, { merge: true }); // uid 欄は参加者が書き込むためのもの（合計の計算には使わない）
+    return { ok: true, q, team: log.kind === "team" ? teamName(log.target) : null };
+  });
+}
+function showPtResult(r) {
+  document.querySelector(".pt-result")?.remove();
+  const close = () => box.remove();
+  const box = h("div", { class: "pt-result", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: `pt-result-card${r.ok ? " ok" : ""}` },
+      r.ok ? h("div", { class: "pt-result-big" }, `+${r.q.points}`, h("small", null, "pt")) : h("div", { class: "pt-result-ng" }, "×"),
+      h("div", { class: "pt-result-title" }, r.ok ? `「${r.q.title}」` : "受け取れませんでした"),
+      h("div", { class: "pt-result-sub" }, r.ok ? (r.team ? `${r.team} にポイントが入りました` : "ポイントをゲットしました！") : r.ng),
+      h("button", { class: "btn-filled", onclick: close }, "閉じる")));
+  document.body.append(box);
+}
+
+// 管理者：ポイントQRの作成・一覧・印刷
+function ptQrAdmin() {
+  const title = h("input", { type: "text", class: "plain", placeholder: "例：宝探し① / ゴミ拾いボーナス", maxlength: "30" });
+  const points = h("input", { type: "number", inputmode: "numeric", value: "10" });
+  const mode = segmented(Object.entries(PT_MODES).map(([value, label]) => ({ value, label: label.replace("（1人1回）", "").replace("（人数制限なし）", "") })), "perUser");
+  const lim = h("input", { type: "number", inputmode: "numeric", value: "3", min: "1" });
+  const limCell = field("先着何人まで", lim);
+  const kind = segmented([{ value: "user", label: "読んだ人の個人ポイント" }, { value: "team", label: "読んだ人のチーム" }], "user");
+  const setSel = h("select", { class: "inline-select" });
+  const setCell = field("どのチーム表のチームか", setSel);
+  const paint = () => { limCell.hidden = mode.value !== "first"; setCell.hidden = kind.value !== "team"; fillSelect(setSel, sortedSets().map((x) => ({ value: x.id, label: x.name }))); };
+  mode.addEventListener("change", paint); kind.addEventListener("change", paint);
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const pts = Math.round(Number(points.value) || 0);
+    if (!title.value.trim() || !pts) return toast("名前とポイントを入れてください", true);
+    if (kind.value === "team" && !setSel.value) return toast("チーム表を選んでください", true);
+    fire(addDoc(C("ptQrs"), { title: title.value.trim(), points: pts, mode: mode.value, limit: mode.value === "first" ? Math.max(1, Math.round(Number(lim.value) || 1)) : null,
+      kind: kind.value, setId: kind.value === "team" ? setSel.value : null, active: true, createdAt: serverTimestamp() }), "ポイントQRを作りました");
+    title.value = "";
+  } },
+    h("div", { class: "group-body" }, h("div", { class: "cell" }, title), field("もらえるポイント", points), h("div", { class: "cell" }, mode), limCell, h("div", { class: "cell" }, kind), setCell,
+      h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "ポイントQRを作る")));
+  const list = h("div");
+  const size = segmented([{ value: "30", label: "小 3cm" }, { value: "50", label: "中 5cm" }, { value: "80", label: "大 8cm" }, { value: "150", label: "特大 15cm" }], "50");
+  const el = h("section", { class: "pt-qr-admin" }, h("div", { class: "group-header" }, "ポイントQR"),
+    keptFold("ptqr-new", "＋ 新しいポイントQR", form, false), list,
+    group("印刷するQRの大きさ", h("div", { class: "cell" }, size), "読み取ると、その人（またはその人のチーム）にポイントが入ります。カメラアプリで読み取ってもらってください（ログインしていない人はログイン後に受け取れます）。"));
+  return {
+    el,
+    update() {
+      paint();
+      const qs = [...S.ptQrs.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+      setKids(list, qs.length ? group(null, qs.map((q) => {
+        const cl = ptClaimsOf(q);
+        const n = ptLimitOf(q);
+        return h("div", { class: `cell pt-qr-row${q.active === false ? " off" : ""}` },
+          h("div", { class: "cell-main" }, h("b", null, q.title, h("span", { class: "tint" }, ` +${q.points}pt`)),
+            h("div", { class: "cell-sub" }, `${ptModeText(q)} ・ ${q.kind === "team" ? `チーム（${S.sets.get(q.setId)?.name ?? "チーム表"}）` : "個人"} ・ 受け取り ${cl.length}${n ? `/${n}` : ""}人${q.active === false ? " ・ 停止中" : ""}`),
+            cl.length ? h("div", { class: "cell-sub" }, cl.map((c) => memberName(c.uid)).join("・")) : null),
+          h("div", { class: "pt-qr-actions" },
+            h("button", { class: "btn-small", onclick: () => guard(null, () => printPtQrs([q], Number(size.value))) }, "印刷"),
+            h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("ptQrs", q.id), { active: q.active === false })) }, q.active === false ? "再開" : "停止"),
+            h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${q.title}」を削除しますか？（付いたポイントは残ります）`)) fire(deleteDoc(D("ptQrs", q.id)), "削除しました"); } }, "削除")));
+      })) : null, qs.length > 1 ? h("button", { class: "btn-small ghost", onclick: () => guard(null, () => printPtQrs(qs.filter((q) => q.active !== false), Number(size.value))) }, "停止中以外をまとめて印刷") : null);
+    },
+  };
+}
+async function printPtQrs(qs, mm) {
+  if (!qs.length) return;
+  const qr = window.qrcode ?? await loadQr();
+  if (!qr) return toast("QRコードの部品を読み込めませんでした。電波を確認してください", true);
+  const svg = (text) => { const q = qr(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); };
+  const root = h("div", { id: "print-root", class: "print-ptqr", style: `--qr:${mm}mm` }, qs.map((q) => h("div", { class: "ptq" },
+    (() => { const b = h("div", { class: "ptq-code" }); b.innerHTML = svg(ptQrUrl(q)); return b; })(),
+    h("div", { class: "ptq-title" }, q.title),
+    h("div", { class: "ptq-pt" }, `読み取ると +${q.points}pt`),
+    mm >= 50 ? h("div", { class: "ptq-sub" }, `${ptModeText(q)}${q.kind === "team" ? " ・ チームに加算" : ""}`) : null)));
+  document.getElementById("print-root")?.remove();
+  document.body.append(root);
+  document.body.classList.add("printing");
+  const done = () => { root.remove(); document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  window.print();
+}
+
 // ---------------------------------------------------------------- データを PDF で出力（管理者）
 // 印刷画面を開き、「PDF に保存」で保存する。明朝体（Noto Serif JP）で、項目ごとに改ページする
 const EXPORT_PARTS = [
@@ -6436,6 +6601,7 @@ function paintMapButtons() {
 }
 
 function render(kinds) {
+  if (ptPending) setTimeout(maybeClaimPt, 0);
   if (!S.authReady) return;
   // 位置・クイズだけが変わったときは、開いている小窓とクイズの画面だけ描き直す
   if (kinds && !kinds.has("all") && shell && S.user) {
