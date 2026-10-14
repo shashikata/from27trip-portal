@@ -74,6 +74,16 @@ const CX = (name, id) => (isL(id) ? collection(db, "profiles", LOBBY, name) : C(
 const LC = (name) => collection(db, "profiles", LOBBY, name);
 const LD = (name, id) => doc(db, "profiles", LOBBY, name, id);
 const tripsOf = (m) => m?.trips ?? {};
+// 旅行の分と確定前ページの分を合わせて S.polls などに入れる
+const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [part]: val }; S[key] = new Map([...(S.lobbySrc[key].trip ?? []), ...(S.lobbySrc[key].lobby ?? [])]); };
+// 管理者：旅行のページに出す確定前ページの集金・アンケートは、この旅行の参加者が対象に入っているものだけ
+// 管理者：旅行のページに出す確定前ページのお知らせ（全員宛てと、この旅行の参加者宛てのもの）
+function refreshAdminLobbyAnn() {
+  if (!S.lobbyAnnRaw) return;
+  S.annSrc.lobby = new Map([...S.lobbyAnnRaw].filter(([, a]) => a.scope === "all" || (a.scope === "user" && S.members.has(a.target))));
+  DATA_VER++;
+}
+const relevantHere = (x) => !x.fromLobby || !x.targets || x.targets.some((uid) => S.members.has(uid));
 const confirmedTrips = (m) => Object.keys(tripsOf(m)).filter((k) => tripsOf(m)[k] === true);
 // 確定前ページのデータを合流用に読み込む（id と、ほかのデータを指す欄に "L:" を付ける）
 const toMapL = (snap, refs = []) => {
@@ -235,20 +245,32 @@ function startAdmin() {
     .then(backfillAccounts)
     .catch((e) => console.warn(e));
   listen("config", D("config", "app"), (s) => { if (s?.exists()) S.config = { ...S.config, ...s.data() }; });
-  listen("members", C("members"), (s) => { S.members = toMap(s); });
+  listen("members", C("members"), (s) => { S.members = toMap(s); refreshAdminLobbyAnn(); });
   listen("sets", C("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", C("teams"), (s) => { S.teams = toMap(s); });
   listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
   listen("logs", C("pointLogs"), (s) => { S.logSrc.all = toMap(s); scheduleStatsHeal(); });
   listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; scheduleStatsHeal(); });
-  listen("acks", C("acks"), (s) => { S.acks = toMap(s); });
+  listen("acks", C("acks"), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
   listen("quizzes", C("quizzes"), (s) => { S.quizzes = toMap(s); });
-  listen("polls", C("polls"), (s) => { S.polls = toMap(s); });
-  listen("votes", C("votes"), (s) => { S.votes = toMap(s); });
-  listen("payments", C("payments"), (s) => { S.payments = toMap(s); });
-  listen("payReports", C("payReports"), (s) => { S.payReports = toMap(s); });
+  listen("polls", C("polls"), (s) => { if (s) mergeSrc("polls", "trip", toMap(s)); });
+  listen("votes", C("votes"), (s) => { if (s) mergeSrc("votes", "trip", toMap(s)); });
+  listen("payments", C("payments"), (s) => { if (s) mergeSrc("payments", "trip", toMap(s)); });
+  listen("payReports", C("payReports"), (s) => { if (s) mergeSrc("payReports", "trip", toMap(s)); });
+  // 旅行のページでも、確定前ページの集金・出欠を（この旅行の参加者の分だけ）見て管理できるようにする。書き込みは確定前ページへ
+  if (pid !== LOBBY) {
+    const quiet = (fn) => (s, err) => { if (!err && s) fn(s); };
+    listen("lPolls", LC("polls"), quiet((s) => mergeSrc("polls", "lobby", toMapL(s))));
+    listen("lVotes", LC("votes"), quiet((s) => mergeSrc("votes", "lobby", toMapL(s, ["pollId"]))));
+    listen("lPayments", LC("payments"), quiet((s) => mergeSrc("payments", "lobby", toMapL(s))));
+    listen("lPayReports", LC("payReports"), quiet((s) => mergeSrc("payReports", "lobby", toMapL(s, ["paymentId"]))));
+    // 確定前ページのお知らせ（この旅行の参加者が宛先のもの）と「見ました」、参加者の確定状況
+    listen("lAnn", LC("announcements"), quiet((s) => { S.lobbyAnnRaw = toMapL(s); refreshAdminLobbyAnn(); }));
+    listen("lAcks", LC("acks"), quiet((s) => mergeSrc("acks", "lobby", toMapL(s, ["annId"]))));
+    listen("lMembers", LC("members"), quiet((s) => { S.lobbyMembers = toMap(s); }));
+  }
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
@@ -363,7 +385,6 @@ function startMemberData(uid) {
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
-  const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [part]: val }; S[key] = new Map([...(S.lobbySrc[key].trip ?? []), ...(S.lobbySrc[key].lobby ?? [])]); };
   listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
@@ -503,7 +524,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
 }
@@ -1089,7 +1110,8 @@ function announcementCard(a, { admin = false } = {}) {
       ? h("div", { class: `ann-images n${a.images.length}` }, a.images.map((src) => h("img", { src, alt: "", loading: "lazy", onclick: () => openLightbox(src) })))
       : null,
     ackBox(a, admin),
-    admin ? h("div", { class: "ann-actions" },
+    admin && a.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのお知らせ（固定・削除は確定前ページで）") : null,
+    admin && !a.fromLobby ? h("div", { class: "ann-actions" },
       h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
       h("button", { class: "text-btn destructive", onclick: () => deleteAnnouncement(a) }, "削除"),
     ) : null,
@@ -2126,8 +2148,14 @@ function adminMembers({ withTitle = true } = {}) {
     ], h("span", { class: "warn" }, "パスワードは「ID・パスワードを印刷」からあとでも印刷できます（本人が変更した場合は「変更済み」と出ます）。別の旅行で作ったIDは、そのまま追加されます（パスワードは前と同じ）。")));
   }
 
+  // 確定前ページがあるときは、IDの作成・追加は確定前ページだけで行い、旅行には確定した人だけを入れる
+  const lobbyNote = h("div");
+  const createBox = h("div");
   const el = h("div", null,
     withTitle ? largeTitle("参加者") : null,
+    lobbyNote,
+    createBox);
+  createBox.append(
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
@@ -2158,7 +2186,8 @@ function adminMembers({ withTitle = true } = {}) {
           toast("追加しました");
         });
       },
-    }, group("1人ずつ追加", [field("ID", id), field("名前", name), field("パスワード", pw), addBtn])),
+    }, group("1人ずつ追加", [field("ID", id), field("名前", name), field("パスワード", pw), addBtn])));
+  el.append(
     group("ID・パスワードを印刷", [
       h("button", { class: "cell cell-button", onclick: () => guard(null, () => printAllCredentials("cards")) }, icon("note"), "配る用カード（切り取り線つき）"),
       h("button", { class: "cell cell-button", onclick: () => guard(null, () => printAllCredentials("list")) }, icon("table"), "一覧表（管理者の控え）"),
@@ -2174,6 +2203,23 @@ function adminMembers({ withTitle = true } = {}) {
       // 印刷の準備を、画面が落ち着いてから先に済ませておく
       if (!prefetched) { prefetched = true; (window.requestIdleCallback ?? setTimeout)(() => prefetchPrint(), { timeout: 3000 }); }
       const ms = sortedMembers();
+      const lobbyMode = !inLobby() && S.profiles.has(LOBBY);
+      createBox.hidden = lobbyMode;
+      if (lobbyMode) {
+        const notYet = S.lobbyMembers ? ms.filter((m) => tripsOf(S.lobbyMembers.get(m.id))[S.pid] !== true) : [];
+        setKids(lobbyNote, group(null, [
+          cell(h("span", { class: "secondary" }, "参加者のID は確定前ページで作成・管理します。この旅行には、確定前ページで割り当てて「確定」した人が自動で追加されます。")),
+          notYet.length ? h("button", { class: "cell cell-button destructive", onclick: () => {
+            if (!confirm(`この旅行で確定していない ${notYet.length}人（${notYet.map((m) => m.name).join("・")}）を、この旅行の参加者から外しますか？\nIDは確定前ページに残ります。あとで割り当てて確定すれば、また追加されます（チームの振り分けは外れます）。`)) return;
+            const b = writeBatch(db);
+            for (const m of notYet) {
+              b.delete(D("members", m.id));
+              membershipsOf((x) => x.uid === m.id).forEach((x) => b.delete(D("memberships", x.id)));
+            }
+            fire(b.commit(), `${notYet.length}人を外しました`);
+          } }, `確定していない人をこの旅行から外す（${notYet.length}人）`) : null,
+        ]));
+      } else lobbyNote.replaceChildren();
       listEmpty.hidden = ms.length > 0;
       listGroup.hidden = ms.length === 0;
       keyedList(listBody, ms, (m) => {
@@ -4781,7 +4827,7 @@ function targetEditor(item, coll) {
   const save = () => {
     const v = picker.value();
     if (v && !v.length) return toast("1人以上選んでください", true);
-    fire(updateDoc(D(coll, item.id), { targets: v }), v ? `対象を ${v.length}人にしました` : "対象を全員にしました");
+    fire(updateDoc(DX(coll, item.id), { targets: v }), v ? `対象を ${v.length}人にしました` : "対象を全員にしました");
   };
   const labelText = (it) => `対象者を変える・追加する（いま：${it.targets ? `${it.targets.length}人` : "全員"}）`;
   const el = fold(labelText(item),
@@ -4819,7 +4865,7 @@ const myUnpaid = (uid) => sortedPayments().filter((p) => !p.targets || p.targets
   .reduce((s, p) => s + (recordOf(p, uid).status === "unpaid" ? amountOf(p, uid) : 0), 0);
 const reportOf = (p, uid) => S.payReports.get(`${p.id}_${uid}`) ?? null;
 // 報告はあるが、まだ入金済みにしていないもの（管理者の確認待ち）
-const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
+const pendingReports = () => sortedPayments().filter(relevantHere).flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
   .filter((x) => x.rep && recordOf(x.p, x.m.id).status === "unpaid");
 const reportLine = (rep) => [rep.method, rep.at ? fmtDate(rep.at) : "送信中…", rep.note].filter(Boolean).join(" ・ ");
 const myUnanswered = (uid) => sortedPolls().filter((p) => isTarget(p, uid) && pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
@@ -4997,8 +5043,8 @@ function adminMoney({ withTitle = true } = {}) {
     const votes = [...S.votes.values()].filter((v) => v.pollId === p.id && isTarget(p, v.uid));
     const none = ms.filter((m) => !votes.some((v) => v.uid === m.id));
     const setVote = (uid, choice) => fire(choice
-      ? setDoc(D("votes", `${p.id}_${uid}`), { uid, pollId: p.id, choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), byAdmin: true })
-      : deleteDoc(D("votes", `${p.id}_${uid}`)));
+      ? setDoc(DX("votes", `${p.id}_${uid}`), { uid, pollId: rawId(p.id), choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), byAdmin: true })
+      : deleteDoc(DX("votes", `${p.id}_${uid}`)));
     return h("article", { class: "card poll-card" },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
@@ -5010,16 +5056,17 @@ function adminMoney({ withTitle = true } = {}) {
           vs.length && !p.anonymous ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
       })),
       none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
+      p.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのアンケートです（この旅行の参加者の分だけ表示）。対象者の変更・削除は確定前ページで行ってください。") : null,
       p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : isRankPoll(p) ? null : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
         sel.addEventListener("change", () => setVote(m.id, sel.value));
         return field(m.name, sel);
       }))),
-      targetEditor(p, "polls"),
+      p.fromLobby ? null : targetEditor(p, "polls"),
       h("div", { class: "poll-actions" },
-        h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
-        h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
-        h("button", { class: "text-btn destructive", onclick: () => {
+        h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
+        h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
+        p.fromLobby ? null : h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.question}」を削除しますか？回答も消えます。`)) return;
           const b = writeBatch(db);
           b.delete(D("polls", p.id));
@@ -5033,7 +5080,7 @@ function adminMoney({ withTitle = true } = {}) {
     const filterKey = `payfilter:${p.id}`;
     const onlyUnpaid = SHOWN.get(filterKey) === 1;
     const ms = payTargets(p).filter((m) => !onlyUnpaid || recordOf(p, m.id).status === "unpaid");
-    const setRec = (uid, patch) => fire(updateDoc(D("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
+    const setRec = (uid, patch) => fire(updateDoc(DX("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
     return h("article", { class: "card pay-card" },
       h("div", { class: "poll-head" }, h("b", null, p.title, h("small", { class: "target-count" }, p.targets ? `対象 ${p.targets.length}人` : "対象 全員")), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
       p.note ? h("div", { class: "cell-sub pay-note" }, p.note) : null,
@@ -5060,8 +5107,8 @@ function adminMoney({ withTitle = true } = {}) {
               r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
-      targetEditor(p, "payments"),
-      h("div", { class: "poll-actions" },
+      p.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページの集金です（この旅行の参加者の分だけ表示）。入金の記録はここでも付けられます。対象者の変更・削除は確定前ページで行ってください。") : targetEditor(p, "payments"),
+      p.fromLobby ? null : h("div", { class: "poll-actions" },
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
@@ -5087,21 +5134,22 @@ function adminMoney({ withTitle = true } = {}) {
         if (body.firstChild !== exp.el) body.replaceChildren(exp.el);
         exp.update();
       } else if (tab.value === "polls") {
-        const ps = sortedPolls();
+        const ps = sortedPolls().filter(relevantHere);
         setKids(body, keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
       } else {
         if (!payChecksCell.hidden) payChecks.refresh();
-        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p)).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
+        const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p) && !p.fromLobby).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
-        const ps = sortedPayments();
+        const ps = sortedPayments().filter(relevantHere);
         const pend = pendingReports();
         const pendGroup = pend.length ? group(`確認待ちの送金報告 ${pend.length}件`, pend.map(({ p, m, rep }) => h("div", { class: "cell pay-row reported" },
           h("div", { class: "cell-main" }, h("b", null, `${m.name}：${p.title}（${yen(amountOf(p, m.id))}）`), h("div", { class: "cell-sub" }, reportLine(rep)),
             rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null),
-          h("button", { class: "btn-small", onclick: () => fire(updateDoc(D("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
+          h("button", { class: "btn-small", onclick: () => fire(updateDoc(DX("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
           "参加者が「送金しました」を押したものです。入金を確かめてから「入金済みにする」を押してください。") : null;
-        const moveAll = ps.length && !inLobby() && S.profiles.has(LOBBY)
-          ? group(null, h("button", { class: "cell cell-button", onclick: () => guard(null, () => movePaymentsToLobby(ps.map((x) => x.id))) }, icon("check"), `この旅行の集金をすべて確定前ページへ移す（${ps.length}件）`),
+        const own = ps.filter((x) => !x.fromLobby);
+        const moveAll = own.length && !inLobby() && S.profiles.has(LOBBY)
+          ? group(null, h("button", { class: "cell cell-button", onclick: () => guard(null, () => movePaymentsToLobby(own.map((x) => x.id))) }, icon("check"), `この旅行の集金をすべて確定前ページへ移す（${own.length}件）`),
             "入金済みなどの記録と送金の報告も一緒に移ります。移したあとは確定前ページで管理し、確定した人には旅行のページにも表示されます。")
           : null;
         setKids(body, keptFold("newPay", "＋ 新しい集金", payForm, !ps.length), ps.length ? [moveAll, pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));

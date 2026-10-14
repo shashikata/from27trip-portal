@@ -1623,3 +1623,4 @@ input.cl-title { padding: 2px 0; }
 .loc-group-head input { flex: 1; min-width: 0; font-weight: 700; font-size: 16px; }
 .loc-group .pick-list { margin: 0; }
 .map-groups { font-size: 13px; color: var(--label-2); padding: 6px 4px 0; }
+.from-lobby { color: var(--blue); }
