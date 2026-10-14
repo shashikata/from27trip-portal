@@ -4882,6 +4882,26 @@ function rankPicker(p, mine, open, vote) {
       h("button", { class: "btn-small", disabled: dr.order.length !== d || same, onclick: () => { dr.dirty = false; dr.key = JSON.stringify(dr.order); vote([...dr.order]); } }, same ? "投票済み" : mine ? "この順で投票し直す" : "この順で投票")) : null);
 }
 
+// 旅行の集金を確定前ページへ移す（入金の記録・送金の報告もそのまま。移した後は確定前ページで管理し、確定した人には旅行のページにも出る）
+async function movePaymentsToLobby(ids) {
+  if (!ids.length) return;
+  if (!S.profiles.has(LOBBY)) return toast("確定前ページがまだありません（設定から作れます）", true);
+  const names = ids.map((id) => `「${S.payments.get(id)?.title ?? id}」`).join("");
+  if (!confirm(`${names}を確定前ページへ移しますか？\n入金済みなどの記録と送金の報告もそのまま移ります。この旅行の「集金」からは消えます。`)) return;
+  toast("移しています…");
+  const [pays, reps] = await Promise.all([getDocs(C("payments")), getDocs(C("payReports"))]);
+  let n = 0;
+  for (const d of pays.docs.filter((x) => ids.includes(x.id))) {
+    const b = writeBatch(db);
+    b.set(LD("payments", d.id), d.data());
+    b.delete(d.ref);
+    for (const r of reps.docs.filter((x) => x.data().paymentId === d.id)) { b.set(LD("payReports", r.id), r.data()); b.delete(r.ref); }
+    await b.commit(); // 送金の画像があると大きくなるので、集金1件ずつ書く
+    n++;
+  }
+  toast(`${n}件を確定前ページへ移しました`);
+}
+
 // ---- 管理者
 function adminMoney({ withTitle = true } = {}) {
   const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], "polls");
@@ -5042,6 +5062,7 @@ function adminMoney({ withTitle = true } = {}) {
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
       targetEditor(p, "payments"),
       h("div", { class: "poll-actions" },
+        !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
           const b = writeBatch(db);
@@ -5079,7 +5100,11 @@ function adminMoney({ withTitle = true } = {}) {
             rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null),
           h("button", { class: "btn-small", onclick: () => fire(updateDoc(D("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
           "参加者が「送金しました」を押したものです。入金を確かめてから「入金済みにする」を押してください。") : null;
-        setKids(body, keptFold("newPay", "＋ 新しい集金", payForm, !ps.length), ps.length ? [pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
+        const moveAll = ps.length && !inLobby() && S.profiles.has(LOBBY)
+          ? group(null, h("button", { class: "cell cell-button", onclick: () => guard(null, () => movePaymentsToLobby(ps.map((x) => x.id))) }, icon("check"), `この旅行の集金をすべて確定前ページへ移す（${ps.length}件）`),
+            "入金済みなどの記録と送金の報告も一緒に移ります。移したあとは確定前ページで管理し、確定した人には旅行のページにも表示されます。")
+          : null;
+        setKids(body, keptFold("newPay", "＋ 新しい集金", payForm, !ps.length), ps.length ? [moveAll, pendGroup, byPerson(), ...ps.map(payCard)] : emptyState("check", "集金はまだありません", "旅費などの集金と、誰が払ったかを管理できます。"));
       }
     },
   };
