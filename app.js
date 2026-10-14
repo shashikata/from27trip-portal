@@ -1265,8 +1265,16 @@ function noteEditor(n) {
   moveBtn.addEventListener("click", () => fire(updateDoc(D("notes", n.id), { shared: !n.shared }), n.shared ? "管理者用に移しました" : "全体公開に移しました"));
   const body = h("textarea", { class: "plain note-textarea", rows: "12", placeholder: "例：ビーチフラッグ 1位 +10 / 2位 +6 / 3位 +3" });
   // 書いた分だけ縦に伸ばす（スクロールしないと読めない狭い欄にしない）
-  const grow = () => { body.style.height = "auto"; body.style.height = `${Math.max(body.scrollHeight + 4, 0)}px`; };
+  const grow = () => {
+    if (!body.isConnected || !body.offsetWidth) return; // 見えていない間は測れないので、見えたとき（下の監視）に伸ばす
+    body.style.height = "auto";
+    body.style.height = `${body.scrollHeight + 4}px`;
+  };
   body.addEventListener("input", grow);
+  body.addEventListener("focus", grow);
+  // 画面に出たとき・横幅が変わったとき（折り返しが変わる）にも伸ばし直す
+  let lastW = 0;
+  if (window.ResizeObserver) new ResizeObserver(() => { if (body.offsetWidth && body.offsetWidth !== lastW) { lastW = body.offsetWidth; grow(); } }).observe(body);
   const grid = h("div", { class: "table-wrap" });
   const saveBtn = h("button", { class: "text-btn", disabled: true }, "保存");
   const markDirty = () => { dirty = true; saveBtn.disabled = false; el.classList.add("dirty"); };
@@ -2025,7 +2033,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト")),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v47"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
