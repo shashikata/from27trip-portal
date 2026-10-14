@@ -80,7 +80,8 @@ const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [
 // 管理者：旅行のページに出す確定前ページのお知らせ（全員宛てと、この旅行の参加者宛てのもの）
 function refreshAdminLobbyAnn() {
   if (!S.lobbyAnnRaw) return;
-  S.annSrc.lobby = new Map([...S.lobbyAnnRaw].filter(([, a]) => a.scope === "all" || (a.scope === "user" && S.members.has(a.target))));
+  // この旅行にまだ誰も確定していないときは出さない（関係する人がいないため）
+  S.annSrc.lobby = S.members.size ? new Map([...S.lobbyAnnRaw].filter(([, a]) => a.scope === "all" || (a.scope === "user" && S.members.has(a.target)))) : new Map();
   DATA_VER++;
 }
 const relevantHere = (x) => !x.fromLobby || !x.targets || x.targets.some((uid) => S.members.has(uid));
@@ -269,7 +270,7 @@ function startAdmin() {
     // 確定前ページのお知らせ（この旅行の参加者が宛先のもの）と「見ました」、参加者の確定状況
     listen("lAnn", LC("announcements"), quiet((s) => { S.lobbyAnnRaw = toMapL(s); refreshAdminLobbyAnn(); }));
     listen("lAcks", LC("acks"), quiet((s) => mergeSrc("acks", "lobby", toMapL(s, ["annId"]))));
-    listen("lMembers", LC("members"), quiet((s) => { S.lobbyMembers = toMap(s); }));
+    listen("lMembers", LC("members"), quiet((s) => { S.lobbyMembers = toMap(s); DATA_VER++; }));
   }
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
@@ -1054,6 +1055,11 @@ const none = (text = "まだありません") => cell(h("span", { class: "second
 
 // 「見ました」の対象者（宛先に合わせる）
 function ackAudience(a) {
+  // 確定前ページのお知らせを旅行のページで見るときは、確定前ページの参加者全員で数える
+  if (a.fromLobby && S.lobbyMembers) {
+    const lm = [...S.lobbyMembers.values()].sort((x, y) => byNatural(x.loginId, y.loginId));
+    return a.scope === "user" ? lm.filter((m) => m.id === a.target) : lm;
+  }
   if (a.scope === "team") return membersOfTeam(a.target, { includeHidden: true });
   if (a.scope === "user") return sortedMembers().filter((m) => m.id === a.target);
   return sortedMembers();
@@ -1078,7 +1084,7 @@ function ackBox(a, admin) {
   const seen = audience.filter((m) => S.acks.has(`${a.id}_${m.id}`));
   const notYet = audience.filter((m) => !S.acks.has(`${a.id}_${m.id}`));
   const details = h("details", { class: "ack-list", open: openAckLists.has(a.id) },
-    h("summary", null, icon("check"), `見た人 ${seen.length} / ${audience.length}人`),
+    h("summary", null, icon("check"), `見た人 ${seen.length} / ${audience.length}人${a.fromLobby ? "（確定前ページ全体）" : ""}`),
     h("div", { class: "ack-names" },
       h("div", null, h("b", null, "見た："), seen.length ? seen.map((m) => m.name).join("・") : "まだいません"),
       h("div", null, h("b", null, "まだ："), notYet.length ? notYet.map((m) => m.name).join("・") : "全員見ました")));
