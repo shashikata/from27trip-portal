@@ -29,6 +29,19 @@ function switchAccount(toAlt, fromId) {
   location.reload();
 }
 
+// 起動時、Firebase は保存済みのログインを「アカウント情報の再取得（＋期限切れならトークン更新）」の通信が終わるまで使わせない。
+// 電波が弱いとここで最大30秒ぐるぐるするので、起動直後のこの2つだけは通信せずに失敗扱いにして、保存済みのログインですぐ始める。
+// （通信の失敗は Firebase が「ログインはそのまま」と扱う。トークンは、データを取りに行くときに Firebase が改めて更新する）
+let authBooting = true;
+{
+  const realFetch = self.fetch.bind(self);
+  self.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input?.url ?? String(input);
+    if (authBooting && /accounts:lookup|securetoken\.googleapis\.com/.test(url)) return Promise.reject(new TypeError("skipped at startup"));
+    return realFetch(input, init);
+  };
+}
+
 const fbApp = altSession ? initializeApp(firebaseConfig, "switch-alt") : initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
 // 一度受信したデータを端末に保存し、電波がなくても表示できるようにする
@@ -194,6 +207,9 @@ function listen(key, ref, onData) {
       const changed = typeof snap.docChanges === "function" ? snap.docChanges({ includeMetadataChanges: false }).length > 0 : true;
       const metaChanged = !prev || prev.cache !== meta.cache || prev.pending !== meta.pending;
       if (!changed && !metaChanged && prev) return;
+      // 中身は同じで「端末の保存分 → サーバーで確認済み」に変わっただけなら、上の通信状態の表示だけ直す
+      // （起動直後は受信の数だけこれが届くので、毎回すべて描き直すと重い）
+      if (!changed && prev && prev.pending === meta.pending) { onData(snap); scheduleRender("status"); return; }
       DATA_VER++;
       onData(snap);
       scheduleRender(metaChanged ? "all" : RENDER_KIND[key] ?? "all");
@@ -355,7 +371,7 @@ function startMember(uid) {
         const pid = added[0];
         resolveMemberProfiles(uid).then((list) => {
           if (S.user?.uid !== uid || !inLobby()) return;
-          S.myProfiles = list;
+          setMyProfiles(list);
           if (list.some((x) => x.id === pid)) { toast("旅行が確定しました"); switchProfile(pid); }
         });
       }
@@ -369,7 +385,7 @@ function startMember(uid) {
       const pid = S.pid;
       resolveMemberProfiles(uid).then((list) => {
         if (S.user?.uid !== uid || S.pid !== pid || S.me) return;
-        S.myProfiles = list;
+        setMyProfiles(list);
         const other = list.filter((x) => x.id !== pid);
         if (other.length === 1) switchProfile(other[0].id);
         else if (other.length > 1) { S.pid = null; shell = null; scheduleRender(); }
@@ -394,9 +410,9 @@ function startMemberData(uid) {
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
   listen("membershipsMine", query(memRef, where("published", "==", true), where("uid", "==", uid)), (s) => { S.memSrc.mine = toMap(s); memUpdate(); });
-  listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
-  listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
-  listenLiveQuiz();
+  // 端末に保存したデータの読み出しは1つずつ順番に行われるので、最初の画面に出るもの（お知らせ・合計・出欠・集金）を先に頼む
+  listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
+  listenRecent(uid);
   listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; });
   listen("polls", C("polls"), (s) => { if (s) mergeSrc("polls", "trip", toMap(s)); syncPollTally(); });
   listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("votes", "trip", toMap(s)); });
@@ -414,7 +430,7 @@ function startMemberData(uid) {
       if (want !== have || tripsOf(L)[S.pid] !== true) {
         resolveMemberProfiles(uid).then((list) => {
           if (S.user?.uid !== uid) return;
-          S.myProfiles = list;
+          setMyProfiles(list);
           scheduleRender();
           if (!list.some((x) => x.id === S.pid)) { toast("旅行の割り当てが変わりました"); switchProfile(list[0]?.id ?? LOBBY); }
         });
@@ -429,6 +445,9 @@ function startMemberData(uid) {
     listen("lPayments", LC("payments"), quiet((s) => mergeSrc("payments", "lobby", toMapL(s))));
     listen("lPayReports", query(LC("payReports"), where("uid", "==", uid)), quiet((s) => mergeSrc("payReports", "lobby", toMapL(s, ["paymentId"]))));
   }
+  listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
+  listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
+  listenLiveQuiz();
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { if (s) S.checklists = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
@@ -438,8 +457,6 @@ function startMemberData(uid) {
   listen("checksShared", query(C("checks"), where("shared", "==", true)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, shared: toMap(s) }; mergeChecks(); } });
   // チャットは新しい順に80件だけ（自分に関係するものだけ使う。開いているチャットは別に全部受け取る）
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) S.msgRecent = toMap(s); }); // 見てよいかは使うときに判定（チームの所属が後から届くため）
-  listen("annPinned", query(ann, where("pinned", "==", true)), (s) => { S.feedRaw.pinned = toMap(s); refreshFeed(uid); });
-  listenRecent(uid);
 }
 
 // 参加者：お知らせとポイント履歴は「新しい順に N 件」だけ受け取る。
@@ -526,8 +543,20 @@ function ptTotal(kind, id, vis) {
     const e = S.stats[kind === "team" ? "t" : "u"]?.[id] ?? {};
     return vis ? Number(e[vis]) || 0 : Object.values(e).reduce((x, n) => x + (Number(n) || 0), 0);
   }
-  return sum(merged(S.logSrc).filter((l) => l.kind === kind && l.target === id && (!vis || l.visibility === vis)));
+  // 管理者：履歴が増えても人数×履歴の計算にならないよう、データが変わったときに1回だけ集計しておく
+  if (ptIndex.ver !== DATA_VER) {
+    const m = new Map();
+    const add = (k, d) => m.set(k, (m.get(k) ?? 0) + d);
+    for (const l of merged(S.logSrc)) {
+      const d = Number(l.delta) || 0;
+      add(`${l.kind}|${l.target}|`, d);
+      add(`${l.kind}|${l.target}|${l.visibility}`, d);
+    }
+    Object.assign(ptIndex, { ver: DATA_VER, m });
+  }
+  return ptIndex.m.get(`${kind}|${id}|${vis || ""}`) ?? 0;
 }
+const ptIndex = { ver: -1, m: new Map() };
 
 // 旅行ごとに持つデータを空に戻す（旅行を切り替えるとき・ログアウトしたとき）
 function resetProfileData() {
@@ -540,10 +569,23 @@ function resetProfileData() {
     lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
+  TALLY_ONCE.clear();
 }
 
 const pidKey = () => `island.pid.${S.user?.uid}`;
 const savedPid = () => { try { return localStorage.getItem(pidKey()); } catch { return null; } };
+// 入っている旅行の一覧も端末に覚えておき、次に開いたとき通信を待たずに使う
+const profsKey = () => `island.profiles.${S.user?.uid}`;
+function cachedProfiles() {
+  try {
+    const v = JSON.parse(localStorage.getItem(profsKey()));
+    return Array.isArray(v) && v.length && v.every((p) => p && typeof p.id === "string") ? v : null;
+  } catch { return null; }
+}
+function setMyProfiles(list) {
+  S.myProfiles = list;
+  try { if (list.length) localStorage.setItem(profsKey(), JSON.stringify(list)); } catch { /* 保存できなくても動く */ }
+}
 const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { /* 保存できなくても動く */ } };
 
 function startProfile() {
@@ -556,7 +598,6 @@ function startProfile() {
 }
 
 // 旅行を切り替える（管理者も参加者も）
-if (USE_EMULATOR) window.__switch = (pid) => switchProfile(pid); // テスト用
 if (USE_EMULATOR) window.__switch = (pid) => switchProfile(pid); // テスト用
 function switchProfile(pid) {
   if (!pid || pid === S.pid) return;
@@ -657,6 +698,7 @@ async function handleQrLogin(user) {
 }
 
 onAuthStateChanged(auth, async (user) => {
+  authBooting = false;
   // QRコードから開いたときは、先にそのアカウントでログインする（ログインし直すと、この関数がもう一度呼ばれる）
   if (qrLogin && await handleQrLogin(user)) return;
   unlistenAll();
@@ -670,23 +712,46 @@ onAuthStateChanged(auth, async (user) => {
     startProfile();
     return scheduleRender();
   }
-  scheduleRender(); // 「読み込み中」を出す
+  // 前回調べた「入っている旅行」が端末にあれば、それですぐ開く（確認の通信は裏で行い、変わっていたら切り替える）
+  const cached = cachedProfiles();
+  if (cached) {
+    S.myProfiles = cached;
+    S.pid = pickPid(cached);
+    if (S.pid) startProfile();
+  }
+  scheduleRender(); // 端末に何もないときは「読み込み中」を出す
   const list = await resolveMemberProfiles(user.uid);
   if (S.user !== user) return; // 途中でログアウトした
-  S.myProfiles = list;
-  const saved = savedPid();
-  // 確定した旅行があれば、確定前ページより旅行を先に開く
-  const trips = list.filter((p) => p.id !== LOBBY);
-  if (list.some((p) => p.id === LOBBY)) S.pid = trips.some((p) => p.id === saved) ? saved : trips.length > 1 ? null : trips[0]?.id ?? LOBBY;
-  else if (list.some((p) => p.id === saved)) S.pid = saved;
-  else if (list.length === 1) S.pid = list[0].id;
-  else if (list.length === 0) {
-    // 電波がなくて調べられないときは、前回開いていた旅行で試す
-    S.pid = saved || ROOT;
-  } else S.pid = null; // 複数あるので選んでもらう
-  if (S.pid) startProfile();
+  if (!cached) {
+    setMyProfiles(list);
+    S.pid = pickPid(list);
+    if (S.pid) startProfile();
+    return scheduleRender();
+  }
+  if (!list.length) return; // 調べられなかった（電波がない等）：前回の一覧のまま使う
+  setMyProfiles(list);
+  if (S.pid && list.some((p) => p.id === S.pid)) return scheduleRender(); // 今の旅行はそのまま（切り替えの一覧だけ新しくする）
+  // 今の旅行から外れていた・選ぶ画面だった：改めて選び直す
+  const next = pickPid(list);
+  if (next) return switchProfile(next);
+  unlistenAll();
+  resetProfileData();
+  S.pid = null;
+  shell = null;
   scheduleRender();
 });
+
+// 参加者が最初に開く旅行を決める
+function pickPid(list) {
+  const saved = savedPid();
+  const trips = list.filter((p) => p.id !== LOBBY);
+  // 確定した旅行があれば、確定前ページより旅行を先に開く
+  if (list.some((p) => p.id === LOBBY)) return trips.some((p) => p.id === saved) ? saved : trips.length > 1 ? null : trips[0]?.id ?? LOBBY;
+  if (list.some((p) => p.id === saved)) return saved;
+  if (list.length === 1) return list[0].id;
+  if (list.length === 0) return saved || ROOT; // 電波がなくて調べられないときは、前回開いていた旅行で試す
+  return null; // 複数あるので選んでもらう
+}
 
 window.addEventListener("online", () => scheduleRender());
 window.addEventListener("offline", () => scheduleRender());
@@ -696,7 +761,9 @@ window.addEventListener("offline", () => scheduleRender());
 // replaceChildren と同じだが、null / false は飛ばす（そのまま渡すと "null" という文字が出てしまう）
 const setKids = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
 
-const byNatural = (a, b) => String(a).localeCompare(String(b), "ja", { numeric: true });
+// 並べ替えの比較器は1つ作って使い回す（localeCompare に言語を渡すと毎回作り直すので、人数が多いと重い）
+const jaCollator = new Intl.Collator("ja", { numeric: true });
+const byNatural = (a, b) => jaCollator.compare(String(a), String(b));
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name);
 const sortedMembersMemo = memo(() => [...S.members.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId)));
 const sortedMembers = () => [...sortedMembersMemo()];
@@ -2033,7 +2100,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v47"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v48"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2858,17 +2925,21 @@ function adminPoints() {
       refreshForm();
       refreshTransfer();
       const logs = merged(S.logSrc).sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+      // 人・チームごとの履歴を1回で振り分けておく（人数×履歴件数の繰り返しにしない）
+      const byTarget = new Map();
+      for (const l of logs) { const k = `${l.kind}|${l.target}`; if (!byTarget.has(k)) byTarget.set(k, []); byTarget.get(k).push(l); }
+      const logsOf = (kind, id) => byTarget.get(`${kind}|${id}`) ?? [];
       const setGroups = sortedSets().map((s) => {
         const teams = teamsInSet(s.id);
         return group(`${s.name} の集計`, teams.length
-          ? teams.map((t) => totalCell(h("span", { class: "team-label" }, dot(t.color), t.name), logs.filter((l) => l.kind === "team" && l.target === t.id), ["public", "team"]))
+          ? teams.map((t) => totalCell(h("span", { class: "team-label" }, dot(t.color), t.name), logsOf("team", t.id), ["public", "team"]))
           : none("チームがありません"));
       });
       const ms = sortedMembers();
       summary.replaceChildren(
         ...setGroups,
         group("個人の集計", ms.length
-          ? ms.map((m) => totalCell(m.name, logs.filter((l) => l.kind === "user" && l.target === m.id), ["public", "team", "private"]))
+          ? ms.map((m) => totalCell(m.name, logsOf("user", m.id), ["public", "team", "private"]))
           : none("参加者がいません"), "集計は管理者にだけ表示されます。"),
       );
       const page = paged("adminLogs", logs, 50);
@@ -5438,9 +5509,26 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
 function syncPollTally() {
   if (S.isAdmin) return;
   const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
-  for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); }
-  for (const id of want) listen(`tally:${id}`, query(CX("votes", id), where("pollId", "==", rawId(id))), (s) => { if (s) S.pollTally.set(id, [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }))); });
+  for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); TALLY_ONCE.delete(id); }
+  const tallyOf = (s) => [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }));
+  for (const id of want) {
+    const q = query(CX("votes", id), where("pollId", "==", rawId(id)));
+    const p = S.polls.get(id);
+    // 受付中の分だけ常に受信する。締め切った分は結果が変わらないので1回読むだけ（出欠が増えても受信し続ける数が増えない）
+    if (p && pollOpen(p)) { TALLY_ONCE.delete(id); listen(`tally:${id}`, q, (s) => { if (s) S.pollTally.set(id, tallyOf(s)); }); continue; }
+    if (subs.has(`tally:${id}`)) unlisten(`tally:${id}`);
+    if (TALLY_ONCE.has(id)) continue;
+    TALLY_ONCE.add(id);
+    const pid = S.pid;
+    getDocs(q).then((s) => {
+      if (S.pid !== pid || !TALLY_ONCE.has(id)) return;
+      S.pollTally.set(id, tallyOf(s));
+      DATA_VER++;
+      scheduleRender();
+    }).catch(() => TALLY_ONCE.delete(id));
+  }
 }
+const TALLY_ONCE = new Set();
 
 // ---------------------------------------------------------------- チェックリスト（持ち物・片付けなど）
 //
@@ -5598,24 +5686,26 @@ const sortedExpenses = () => [...S.expenses.values()].sort((a, b) => ts(b.create
 const splitOf = (e) => (e.split?.length ? e.split : sortedMembers().map((m) => m.id));
 
 // 1件の割り勘：1円単位で、端数は先頭の人から1円ずつ多く負担する
-function shares(e) {
-  const ids = splitOf(e);
+function shares(e, all) {
+  const ids = e.split?.length ? e.split : all ?? splitOf(e);
   const n = ids.length || 1;
   const base = Math.floor(e.amount / n), rest = e.amount - base * n;
   return new Map(ids.map((id, i) => [id, base + (i < rest ? 1 : 0)]));
 }
 
-// 各人の差し引き（＋なら受け取る側、−なら払う側）
-function balances() {
-  const bal = new Map(sortedMembers().map((m) => [m.id, 0]));
+// 各人の差し引き（＋なら受け取る側、−なら払う側）。データが変わったときだけ計算し直す
+const balancesMemo = memo(() => {
+  const all = sortedMembers().map((m) => m.id);
+  const bal = new Map(all.map((id) => [id, 0]));
   const add = (id, v) => bal.set(id, (bal.get(id) ?? 0) + v);
   for (const e of S.expenses.values()) {
     if (e.kind === "settle") { add(e.from, e.amount); add(e.to, -e.amount); continue; }
     add(e.payer, e.amount);
-    for (const [id, v] of shares(e)) add(id, -v);
+    for (const [id, v] of shares(e, all)) add(id, -v);
   }
   return bal;
-}
+});
+const balances = () => new Map(balancesMemo());
 
 // 誰が誰にいくら払えばよいか
 function settlements() {
@@ -5778,7 +5868,7 @@ function chatList() {
   for (const m of S.msgRecent.values()) if (canSeeChat(m.chat)) keys.add(m.chat);
   const lastOf = (k) => sortedMsgs(new Map([...S.msgRecent].filter(([, m]) => m.chat === k))).pop();
   return [...keys].filter(canSeeChat).map((k) => ({ key: k, last: lastOf(k), unread: unreadOf(k) }))
-    .sort((a, b) => (a.key === "all" ? -1 : b.key === "all" ? 1 : 0) || (ts(b.last?.at) || 0) - (ts(a.last?.at) || 0) || chatTitle(a.key).localeCompare(chatTitle(b.key), "ja"));
+    .sort((a, b) => (a.key === "all" ? -1 : b.key === "all" ? 1 : 0) || (ts(b.last?.at) || 0) - (ts(a.last?.at) || 0) || byNatural(chatTitle(a.key), chatTitle(b.key)));
 }
 const totalUnread = () => chatList().reduce((s, c) => s + c.unread, 0);
 
@@ -5848,10 +5938,13 @@ function chatView() {
   sendBtn.addEventListener("click", send);
 
   let stick = true; // 一番下を見ているときは、新しいメッセージが来たら一番下へ
+  // 長いトークでも重くならないよう、画面に出すのは新しい方から CHAT_PAGE 件ずつ
+  const CHAT_PAGE = 150;
+  let shownMsgs = CHAT_PAGE;
   msgs.addEventListener("scroll", () => { stick = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 40; });
 
   function open(key) {
-    current = key; picking = false; stick = true;
+    current = key; picking = false; stick = true; shownMsgs = CHAT_PAGE;
     unlisten("chatOpen");
     S.chatMsgs = new Map();
     listen("chatOpen", query(C("messages"), where("chat", "==", key)), (s) => { if (s) S.chatMsgs = toMap(s); });
@@ -5880,9 +5973,11 @@ function chatView() {
     title.textContent = chatTitle(current);
     readonly.hidden = canPost(current);
     composer.hidden = !canPost(current);
-    const list = sortedMsgs(S.chatMsgs);
+    // このトークの受信が届くまでは、手元にある最近のメッセージを先に出しておく
+    const all = sortedMsgs(S.meta.chatOpen ? S.chatMsgs : new Map([...S.msgRecent].filter(([, m]) => m.chat === current)));
+    const list = all.slice(-shownMsgs);
     let prevDay = null;
-    const rows = [];
+    const rows = all.length > list.length ? [{ id: "more", more: all.length - list.length }] : [];
     for (const m of list) {
       const d = m.at?.toDate ? m.at.toDate() : new Date();
       const day = `${d.getMonth() + 1}月${d.getDate()}日`;
@@ -5891,6 +5986,16 @@ function chatView() {
     }
     keyedList(msgs, rows, (r) => ({ el: h("div") }), (row, r) => {
       if (r.day) { row.el.className = "chat-day"; row.el.textContent = r.day; return; }
+      if (r.more) {
+        row.el.className = "chat-more";
+        setKids(row.el, h("button", { class: "text-btn", onclick: () => {
+          const before = msgs.scrollHeight;
+          shownMsgs += CHAT_PAGE;
+          paintRoom();
+          msgs.scrollTop += msgs.scrollHeight - before; // 読んでいた位置がずれないように
+        } }, `前のメッセージを表示（あと${r.more}件）`));
+        return;
+      }
       const mine = r.uid === S.user.uid;
       const d = r.at?.toDate ? r.at.toDate() : null;
       const sig = `${r.text}|${r.image}|${d?.getTime()}|${mine}`;
@@ -6731,6 +6836,7 @@ function render(kinds) {
     if ((kinds.has("loc") && S.sheet?.key === "map") || (kinds.has("quiz") && S.sheet?.key === "quiz") || (kinds.has("chat") && S.sheet?.key === "chat")) S.sheet.view.update();
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
+    if (kinds.has("status")) document.querySelectorAll(".status").forEach(paintStatus);
     return;
   }
   if (!S.user) {
