@@ -1724,3 +1724,10 @@ input.cl-title { padding: 2px 0; }
 .balance-wrap { display: inline-flex; align-items: center; gap: 6px; }
 .balance-wrap .inline-select { font-size: 13px; max-width: 9em; }
 .attr-def-row input { width: 100%; box-sizing: border-box; }
+
+/* 表・メモ：メモの欄を縦長に（最低12行、書いた分だけ伸びる。手で広げることもできる） */
+.note-textarea { min-height: 18em; line-height: 1.6; resize: vertical; overflow-y: auto; }
+.note-body { min-height: 3em; }
+.assign-row { gap: 8px; }
+.role-input { width: 6.5em; flex: none; border: none; background: var(--fill); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
+.role-input::placeholder { color: var(--label-3); }

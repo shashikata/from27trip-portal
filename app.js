@@ -713,10 +713,13 @@ const membersOfTeam = (teamId, { includeHidden = false } = {}) => {
 };
 // チームのリーダー（表示だけ。チームから外れた人は出さない）
 const teamLeader = (t) => (t?.leader && membersOfTeam(t.id).some((m) => m.id === t.leader) ? t.leader : null);
+// 役職（チーム表ごと。teamSets/{id}.roles = { uid: "会計" }。空なら役職なし）
+const roleOf = (setId, uid) => S.sets.get(setId)?.roles?.[uid] ?? "";
+const withRole = (t, m) => { const r = roleOf(t.setId, m.id); return r ? `${m.name}（${r}）` : m.name; };
 // リーダーを先頭にした名前の並び
 const teamNamesText = (t, ms) => {
   const L = teamLeader(t);
-  return [...ms].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => (m.id === L ? `👑${m.name}` : m.name)).join("・");
+  return [...ms].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => (m.id === L ? `👑${withRole(t, m)}` : withRole(t, m))).join("・");
 };
 const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.teamId)).map((m) => m.teamId);
 const memberName = (uid) => S.members.get(uid)?.name ?? "（削除済み）";
@@ -1260,7 +1263,10 @@ function noteEditor(n) {
   const title = h("input", { type: "text", class: "plain title-input", placeholder: "タイトル", "aria-label": "タイトル" });
   const moveBtn = h("button", { class: "text-btn" });
   moveBtn.addEventListener("click", () => fire(updateDoc(D("notes", n.id), { shared: !n.shared }), n.shared ? "管理者用に移しました" : "全体公開に移しました"));
-  const body = h("textarea", { class: "plain", rows: "4", placeholder: "例：ビーチフラッグ 1位 +10 / 2位 +6 / 3位 +3" });
+  const body = h("textarea", { class: "plain note-textarea", rows: "12", placeholder: "例：ビーチフラッグ 1位 +10 / 2位 +6 / 3位 +3" });
+  // 書いた分だけ縦に伸ばす（スクロールしないと読めない狭い欄にしない）
+  const grow = () => { body.style.height = "auto"; body.style.height = `${Math.max(body.scrollHeight + 4, 0)}px`; };
+  body.addEventListener("input", grow);
   const grid = h("div", { class: "table-wrap" });
   const saveBtn = h("button", { class: "text-btn", disabled: true }, "保存");
   const markDirty = () => { dirty = true; saveBtn.disabled = false; el.classList.add("dirty"); };
@@ -1308,7 +1314,7 @@ function noteEditor(n) {
       el.classList.toggle("shared", !!n.shared);
       if (dirty) return;
       title.value = n.title ?? "";
-      if (n.type === "table") { draft = tableRows(n); paintGrid(); } else body.value = n.body ?? "";
+      if (n.type === "table") { draft = tableRows(n); paintGrid(); } else { body.value = n.body ?? ""; requestAnimationFrame(grow); }
     },
   };
 }
@@ -1812,6 +1818,7 @@ function memberTeam({ compact = false } = {}) {
         group("あなたのチーム", mine.flatMap(({ set, team, real }) => [
           cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"),
           team && teamLeader(team) ? cell(h("span", { class: "team-leader-note" }, "👑 リーダー"), teamLeader(team) === uid ? "あなた" : memberName(teamLeader(team))) : null,
+          team && roleOf(set.id, uid) ? cell("あなたの役職", roleOf(set.id, uid)) : null,
           real ? h("div", { class: "cell spy-secret" },
             h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), "スパイ")),
             h("div", { class: "cell-detail" }, "本当は ", h("span", { class: "team-label strong" }, dot(real.color), real.name))) : null,
@@ -2572,7 +2579,7 @@ function adminTeams() {
         setKids(row.attrSum, teamAttrSummary(tm));
         // メンバーを1人ずつ改行して並べる（リーダーが先頭）
         const L = teamLeader(t);
-        setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${m.name}` : m.name, attrChips(m.id))));
+        setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${withRole(t, m)}` : withRole(t, m), attrChips(m.id))));
         fillSelect(row.leader, tm.map((m) => ({ value: m.id, label: m.name })), "リーダーなし");
         if (document.activeElement !== row.leader) row.leader.value = teamLeader(t) ?? "";
       });
@@ -2600,12 +2607,19 @@ function adminTeams() {
         const label = h("div", { class: "cell-main" });
         const sel = h("select", { class: "inline-select", "aria-label": "所属チーム" });
         sel.addEventListener("change", () => fire(assignMember(m.id, sel.dataset.set, sel.value)));
-        return { el: h("div", { class: "cell" }, label, sel), label, sel };
+        // 役職は手入力（空欄なら役職なし）。入力欄から離れたときに保存する
+        const role = h("input", { type: "text", class: "role-input", placeholder: "役職なし", maxlength: "12", "aria-label": "役職" });
+        role.addEventListener("change", () => {
+          const v = role.value.trim();
+          fire(updateDoc(D("teamSets", sel.dataset.set), { [`roles.${m.id}`]: v || deleteField() }), v ? `${m.name} の役職を「${v}」にしました` : `${m.name} の役職をなしにしました`);
+        });
+        return { el: h("div", { class: "cell assign-row" }, label, role, sel), label, sel, role };
       }, (row, m) => {
         const teamId = teamOfIn(m.id, setId);
         const real = trueTeamOf(m.id, setId);
         setKids(row.label, dot(S.teams.get(teamId)?.color), m.name, attrChips(m.id),
           real ? h("span", { class: "spy-tag" }, icon("spy"), `本当は${S.teams.get(real)?.name ?? ""}`) : null);
+        if (document.activeElement !== row.role || row.sel.dataset.set !== setId) row.role.value = roleOf(setId, m.id);
         if (document.activeElement !== row.sel || row.sel.dataset.set !== setId) {
           row.sel.dataset.set = setId;
           row.sel.blur();
