@@ -128,6 +128,8 @@ const S = {
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
+  attrDefs: new Map(),       // 管理者：参加者の属性の項目 attrDefs/{id} { name, options: [..], order }
+  memberAttrs: new Map(),    // 管理者：参加者ごとの属性 memberAttrs/{uid} { values: { 項目id: 値 } }
   ptQrs: new Map(),          // ポイントQR ptQrs/{id}（管理者）
   ptClaims: new Map(),       // ポイントQRの受け取り記録 ptClaims/{id}（管理者）
   locGroups: new Map(),      // 位置の共有グループ locGroups/{id} { name, members: [uid] }（管理者が作る）
@@ -279,6 +281,8 @@ function startAdmin() {
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
   listen("ptQrs", C("ptQrs"), (s) => { if (s) S.ptQrs = toMap(s); });
+  listen("attrDefs", C("attrDefs"), (s) => { if (s) S.attrDefs = toMap(s); });
+  listen("memberAttrs", C("memberAttrs"), (s) => { if (s) S.memberAttrs = toMap(s); });
   listen("ptClaims", C("ptClaims"), (s) => { if (s) S.ptClaims = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
@@ -530,7 +534,7 @@ function resetProfileData() {
   DATA_VER++;
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
@@ -1899,7 +1903,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2303,7 +2307,73 @@ function adminMembers({ withTitle = true } = {}) {
   };
 }
 
+// ---- 参加者の属性（チーム分けの参考。管理者の画面だけに出す）
+const sortedAttrDefs = () => [...S.attrDefs.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const attrOf = (uid, defId) => S.memberAttrs.get(uid)?.values?.[defId] ?? "";
+function attrChips(uid) {
+  const xs = sortedAttrDefs().map((d) => [d, attrOf(uid, d.id)]).filter(([, v]) => v !== "");
+  return xs.length ? h("span", { class: "attr-chips" }, xs.map(([d, v]) => h("span", { class: "attr-chip", title: d.name }, v))) : null;
+}
+// チームの属性の内訳（選択肢のある項目だけ）
+function teamAttrSummary(ms) {
+  const parts = sortedAttrDefs().filter((d) => d.options?.length).map((d) => {
+    const cnt = d.options.map((o) => [o, ms.filter((m) => attrOf(m.id, d.id) === o).length]).filter(([, n]) => n);
+    return cnt.length ? `${d.name}：${cnt.map(([o, n]) => `${o}${n}`).join("・")}` : null;
+  }).filter(Boolean);
+  return parts.length ? h("div", { class: "attr-summary" }, parts.join(" ／ ")) : null;
+}
+function attrEditor() {
+  const name = h("input", { type: "text", class: "plain", placeholder: "例：性別 / 学年 / 運動の得意さ", maxlength: "20" });
+  const opts = h("input", { type: "text", placeholder: "例：男 / 女（空欄なら自由記入）" });
+  const add = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    if (!name.value.trim()) return;
+    fire(addDoc(C("attrDefs"), { name: name.value.trim(), options: opts.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean), order: Date.now() }), "属性を追加しました");
+    name.value = ""; opts.value = "";
+  } }, h("div", { class: "group-body" }, h("div", { class: "cell" }, name), field("選択肢", opts), h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "属性を追加")));
+  const defsBox = h("div");
+  const table = h("div", { class: "attr-table-wrap" });
+  const el = h("div", { class: "attr-editor" },
+    h("div", { class: "group-header standalone" }, "参加者の属性（チーム分けの参考・管理者だけに表示）"),
+    keptFold("attr-defs", "属性の項目を作る・直す", h("div", null, defsBox, add), false),
+    keptFold("attr-values", "参加者ごとに属性を入れる", table, false));
+  redrawOnLeave(el);
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      const defs = sortedAttrDefs();
+      setKids(defsBox, defs.length ? group(null, defs.map((d) => {
+        const nm = h("input", { type: "text", value: d.name, class: "plain", maxlength: "20" });
+        const op = h("input", { type: "text", value: (d.options ?? []).join(" / "), placeholder: "空欄なら自由記入" });
+        return h("div", { class: "cell attr-def-row" }, h("div", { class: "cell-main" }, nm, op),
+          h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("attrDefs", d.id), { name: nm.value.trim() || d.name, options: op.value.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean) }), "保存しました") }, "保存"),
+          h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`属性「${d.name}」を削除しますか？（入れた値も見えなくなります）`)) fire(deleteDoc(D("attrDefs", d.id)), "削除しました"); } }, "削除"));
+      })) : null);
+      const ms = sortedMembers();
+      if (!defs.length) return setKids(table, h("p", { class: "cell-sub" }, "先に「属性の項目」を作ってください。"));
+      const set = (uid, defId, v) => fire(setDoc(D("memberAttrs", uid), { values: { [defId]: v } }, { merge: true }));
+      setKids(table, h("table", { class: "attr-table" },
+        h("thead", null, h("tr", null, h("th", null, "名前"), defs.map((d) => h("th", null, d.name)))),
+        h("tbody", null, ms.map((m) => h("tr", null, h("td", null, m.name), defs.map((d) => {
+          const v = attrOf(m.id, d.id);
+          let input;
+          if (d.options?.length) {
+            input = h("select", { class: "inline-select" }, h("option", { value: "" }, "—"), d.options.map((o) => h("option", { value: o, selected: v === o }, o)));
+            input.addEventListener("change", () => set(m.id, d.id, input.value));
+          } else {
+            input = h("input", { type: "text", value: v, maxlength: "20" });
+            input.addEventListener("change", () => set(m.id, d.id, input.value.trim()));
+          }
+          return h("td", null, input);
+        }))))));
+    },
+  };
+}
+
 function adminTeams() {
+  const attrs = attrEditor();
+  const balanceSel = h("select", { class: "inline-select", "aria-label": "偏らないようにする属性" });
   let setId = null;
   let justCreated = null; // 追加直後でまだ一覧に届いていないチーム表
   const setBar = h("div", { class: "set-bar", role: "tablist" });
@@ -2352,12 +2422,22 @@ function adminTeams() {
     const teams = teamsInSet(setId);
     const ms = sortedMembers();
     if (!teams.length || !ms.length) return toast("チームと参加者を先に作ってください", true);
-    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます。このチーム表の今の振り分けとスパイ登録は上書きされます。`)) return;
-    const shuffled = [...ms];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
+    const by = S.attrDefs.get(balanceSel.value);
+    if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます${by ? `（「${by.name}」が偏らないように）` : ""}。このチーム表の今の振り分けとスパイ登録は上書きされます。`)) return;
+    const shuffle = (xs) => {
+      for (let i = xs.length - 1; i > 0; i--) {
+        const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+        [xs[i], xs[j]] = [xs[j], xs[i]];
+      }
+      return xs;
+    };
+    // 属性を選んだときは、同じ値の人をまとめてから順に配る（値ごとに各チームへ均等に散らばる）
+    let shuffled;
+    if (by) {
+      const groups = new Map();
+      for (const m of shuffle([...ms])) { const v = attrOf(m.id, by.id); groups.set(v, [...(groups.get(v) ?? []), m]); }
+      shuffled = [...groups.values()].sort((a, b) => b.length - a.length).flat();
+    } else shuffled = shuffle([...ms]);
     const published = !!S.sets.get(setId)?.published;
     const b = writeBatch(db);
     membershipsOf((m) => m.setId === setId).forEach((m) => b.delete(D("memberships", m.id)));
@@ -2391,7 +2471,7 @@ function adminTeams() {
       h("button", { class: "cell cell-button", type: "submit" }, "チームを作成")])),
     teamGroup,
     h("div", { class: "group-header standalone with-action" }, "振り分け",
-      h("button", { class: "text-btn", onclick: () => randomAssign() }, icon("shuffle"), "ランダム")),
+      h("span", { class: "balance-wrap" }, balanceSel, h("button", { class: "text-btn", onclick: () => randomAssign() }, icon("shuffle"), "ランダム"))),
     assignEmpty,
     h("section", { class: "group" }, assignBody),
     h("form", {
@@ -2422,11 +2502,13 @@ function adminTeams() {
     }, "このチーム表を削除")),
   );
 
-  const el = h("div", null, largeTitle("チーム"), setBar, noSets, detail);
+  const el = h("div", null, largeTitle("チーム"), setBar, noSets, detail, attrs.el);
 
   return {
     el,
     update() {
+      attrs.update();
+      fillSelect(balanceSel, sortedAttrDefs().filter((d) => d.options?.length).map((d) => ({ value: d.id, label: `${d.name}で均等` })), "属性なし");
       const sets = sortedSets();
       if (S.sets.has(justCreated)) justCreated = null;
       if (!S.sets.has(setId) && !(justCreated && setId === justCreated)) {
@@ -2460,10 +2542,11 @@ function adminTeams() {
         const count = h("span", { class: "cell-sub" });
         const leader = h("select", { class: "inline-select team-leader", "aria-label": "リーダー" });
         const memList = h("ul", { class: "team-members" });
+        const attrSum = h("div");
         leader.addEventListener("change", () => fire(updateDoc(D("teams", t.id), { leader: leader.value || null }), leader.value ? `リーダーを ${memberName(leader.value)} にしました` : "リーダーを外しました"));
         const el = h("div", { class: "cell team-row" },
           d,
-          h("div", { class: "cell-main" }, nm, count, memList, h("label", { class: "team-leader-wrap" }, h("span", null, "👑 リーダー"), leader)),
+          h("div", { class: "cell-main" }, nm, count, attrSum, memList, h("label", { class: "team-leader-wrap" }, h("span", null, "👑 リーダー"), leader)),
           h("button", {
             class: "text-btn",
             onclick: () => { fire(updateDoc(D("teams", t.id), { name: nm.value.trim() || t.name }), "保存しました"); nm.saved(); },
@@ -2480,15 +2563,16 @@ function adminTeams() {
             },
           }, "削除"),
         );
-        return { el, nm, d, count, leader, memList };
+        return { el, nm, d, count, leader, memList, attrSum };
       }, (row, t) => {
         row.d.style.setProperty("--c", t.color);
         row.nm.sync(t.name);
         const tm = membersOfTeam(t.id);
         row.count.textContent = `${tm.length}人`;
+        setKids(row.attrSum, teamAttrSummary(tm));
         // メンバーを1人ずつ改行して並べる（リーダーが先頭）
         const L = teamLeader(t);
-        setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${m.name}` : m.name)));
+        setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${m.name}` : m.name, attrChips(m.id))));
         fillSelect(row.leader, tm.map((m) => ({ value: m.id, label: m.name })), "リーダーなし");
         if (document.activeElement !== row.leader) row.leader.value = teamLeader(t) ?? "";
       });
@@ -2520,7 +2604,7 @@ function adminTeams() {
       }, (row, m) => {
         const teamId = teamOfIn(m.id, setId);
         const real = trueTeamOf(m.id, setId);
-        setKids(row.label, dot(S.teams.get(teamId)?.color), m.name,
+        setKids(row.label, dot(S.teams.get(teamId)?.color), m.name, attrChips(m.id),
           real ? h("span", { class: "spy-tag" }, icon("spy"), `本当は${S.teams.get(real)?.name ?? ""}`) : null);
         if (document.activeElement !== row.sel || row.sel.dataset.set !== setId) {
           row.sel.dataset.set = setId;

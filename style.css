@@ -1708,3 +1708,19 @@ input.cl-title { padding: 2px 0; }
 .team-members { margin: 4px 0 0; padding-left: 1.2em; font-size: 14px; color: var(--label); line-height: 1.6; }
 .team-members li::marker { color: var(--label-3); }
 .team-members li.leader { list-style: none; margin-left: -1.2em; font-weight: 700; }
+
+/* ---- 参加者の属性（管理者） ---- */
+.attr-editor { margin-top: 28px; }
+.attr-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.attr-chip { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--fill); color: var(--label-2); }
+.attr-summary { font-size: 12px; color: var(--blue); margin-top: 2px; }
+.attr-def-row .cell-main { display: grid; gap: 4px; }
+.attr-def-row input { border: none; background: var(--fill); border-radius: 8px; padding: 6px 10px; font-size: 15px; }
+.attr-table-wrap { overflow-x: auto; margin: 0 -4px 16px; padding: 0 4px; }
+.attr-table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--cell); border-radius: 12px; overflow: hidden; }
+.attr-table th, .attr-table td { padding: 6px 8px; border-bottom: .5px solid var(--separator); text-align: left; white-space: nowrap; }
+.attr-table th { font-size: 12px; color: var(--label-2); font-weight: 600; }
+.attr-table input { width: 7em; border: none; background: var(--fill); border-radius: 6px; padding: 4px 8px; font-size: 14px; }
+.balance-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.balance-wrap .inline-select { font-size: 13px; max-width: 9em; }
+.attr-def-row input { width: 100%; box-sizing: border-box; }
