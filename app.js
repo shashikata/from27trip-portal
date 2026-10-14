@@ -117,6 +117,7 @@ const S = {
   memSrc: {},                // 参加者：所属のクエリごとの結果
   notes: new Map(),          // 表・メモ
   locations: new Map(),      // 参加者の現在地 locations/{uid}
+  locGroups: new Map(),      // 位置の共有グループ locGroups/{id} { name, members: [uid] }（管理者が作る）
   mapPins: new Map(),        // 管理者が地図に刺したピン mapPins/{id}
   polls: new Map(),          // 出欠などのアンケート polls/{id}
   votes: new Map(),          // 回答 votes/{pollId}_{uid}（参加者は自分の分だけ）
@@ -251,6 +252,7 @@ function startAdmin() {
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
+  listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
@@ -399,6 +401,7 @@ function startMemberData(uid) {
   }
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { if (s) S.checklists = toMap(s); });
+  listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
   // チェックは「自分の分」と「共有の分」だけ受け取る（全員分を受け取ると、項目数×人数分の読み取りになるため）
   const mergeChecks = () => { S.checks = new Map([...(S.checkSrc?.mine ?? []), ...(S.checkSrc?.shared ?? [])]); };
   listen("checksMine", query(C("checks"), where("uid", "==", uid)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, mine: toMap(s) }; mergeChecks(); } });
@@ -497,7 +500,7 @@ function resetProfileData() {
   DATA_VER++;
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
@@ -1409,6 +1412,59 @@ function pinEditor(pin, { onClose, onMove }) {
       h("button", { class: "btn-small", onclick: save }, d.id ? "保存" : "刺す")));
 }
 
+// ---- 位置の共有グループ
+// 管理者が「参加者同士でも見られる」をオフにしているときでも、同じグループの人どうしは位置が見える（管理者は常に全員）
+const sortedLocGroups = () => [...S.locGroups.values()].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+const myLocGroups = (uid = S.user?.uid) => sortedLocGroups().filter((g) => (g.members ?? []).includes(uid));
+function myLocMates(uid = S.user?.uid) {
+  const set = new Set();
+  for (const g of myLocGroups(uid)) for (const m of g.members ?? []) if (m !== uid) set.add(m);
+  return set;
+}
+// 地図に出してよい人（管理者・全員公開は全員、それ以外は同じグループの人だけ）
+const canSeeLoc = (uid) => S.isAdmin || S.config.locAll || myLocMates().has(uid);
+
+// 管理者：グループの作成・編集（設定の中）
+function locGroupsEditor() {
+  const body = h("div");
+  const editors = new Map(); // id -> { el, checks, name }（描き直しても選択や入力が消えないように使い回す）
+  const newName = h("input", { type: "text", class: "plain", placeholder: "例：A班 / 買い出し組", maxlength: "20" });
+  const add = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    if (!newName.value.trim()) return;
+    fire(addDoc(C("locGroups"), { name: newName.value.trim(), members: [], createdAt: serverTimestamp() }), "グループを作りました");
+    newName.value = "";
+  } }, h("div", { class: "group-body" }, h("div", { class: "cell" }, newName), h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "グループを作る")));
+  const card = (g) => {
+    let e = editors.get(g.id);
+    if (!e) {
+      const name = editableInput({ class: "plain", maxlength: "20", "aria-label": "グループ名" });
+      const checks = memberChecks(g.members ?? []);
+      const save = () => fire(updateDoc(D("locGroups", g.id), { name: name.value.trim() || g.name, members: checks.value() }), "保存しました");
+      e = { name, checks, el: h("article", { class: "card loc-group" },
+        h("div", { class: "loc-group-head" }, name,
+          h("button", { class: "text-btn", onclick: () => { name.saved(); save(); } }, "保存"),
+          h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${g.name}」を削除しますか？`)) fire(deleteDoc(D("locGroups", g.id)), "削除しました"); } }, "削除")),
+        checks.el) };
+      editors.set(g.id, e);
+      e.checks.set(g.members ?? []);
+    }
+    e.name.sync(g.name);
+    e.checks.refresh();
+    return e.el;
+  };
+  return {
+    el: body,
+    update() {
+      if (!S.isAdmin) return;
+      const gs = sortedLocGroups();
+      for (const id of [...editors.keys()]) if (!S.locGroups.has(id)) editors.delete(id);
+      setKids(body, group("位置の共有グループ", [h("div", { class: "cell loc-groups" }, gs.length ? gs.map(card) : h("span", { class: "secondary" }, "まだありません")), add],
+        "同じグループの人どうしは、「参加者同士でも見られる」がオフでも地図でお互いの位置が見えます（位置の共有がオンのときだけ）。メンバーを選んで「保存」を押してください。1人が複数のグループに入ってもかまいません。"));
+    },
+  };
+}
+
 function mapView() {
   const box = h("div", { class: "map-box" });
   const status = h("div", { class: "map-status" }, "現在地を探しています…");
@@ -1417,7 +1473,8 @@ function mapView() {
   let map = null, dot = null, ring = null, watchId = null, last = null, follow = true;
   const others = new Map(); // uid -> marker
   const people = h("div", { class: "map-people" });
-  el.append(people);
+  const groupNote = h("div", { class: "map-groups", hidden: true });
+  el.append(groupNote, people);
 
   // ピン
   const pinMarks = new Map(); // id -> marker
@@ -1493,7 +1550,7 @@ function mapView() {
   // 他の人の位置（管理者は全員、参加者は設定でオンのときだけ届く）
   const paintOthers = () => {
     const me = S.user?.uid;
-    const locs = [...S.locations.values()].filter((l) => l.id !== me && S.members.has(l.id));
+    const locs = [...S.locations.values()].filter((l) => l.id !== me && S.members.has(l.id) && canSeeLoc(l.id));
     if (map) {
       const alive = new Set();
       for (const l of locs) {
@@ -1509,6 +1566,9 @@ function mapView() {
       }
       for (const [id, mk] of others) if (!alive.has(id)) { mk.remove(); others.delete(id); }
     }
+    const gs = !S.isAdmin && S.config.locShare && !S.config.locAll ? myLocGroups() : [];
+    groupNote.hidden = !gs.length;
+    groupNote.textContent = gs.length ? `位置の共有グループ：${gs.map((g) => `${g.name}（${(g.members ?? []).map(memberName).join("・")}）`).join("　")}` : "";
     people.hidden = !locs.length;
     people.replaceChildren(...locs.sort((a, b) => byNatural(memberName(a.id), memberName(b.id))).map((l) => {
       const stale = Date.now() - ts(l.at) > 5 * 60000;
@@ -1544,9 +1604,18 @@ function mapView() {
 
   let started = false;
   // 位置のデータは地図を開いている間だけ受け取る（全員の位置が動くたびに全員へ届くと、読み取り回数が膨らむため）
+  // 全員を受け取るか、同じグループの人だけ（30人まではその人たちの分だけ読む）を受け取るか。変わったら購読し直す
+  let locKey = null;
   const syncListen = () => {
-    if (S.isAdmin || S.config.locAll) listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
-    else if (subs.has("locations")) { unlisten("locations"); S.locations = new Map(); }
+    const mates = [...myLocMates()].sort();
+    const key = S.isAdmin || S.config.locAll ? "all" : !mates.length ? null : mates.length <= 30 ? `in:${mates.join(",")}` : "all";
+    if (key !== locKey) {
+      unlisten("locations");
+      S.locations = new Map();
+      locKey = key;
+      if (key === "all") listen("locations", C("locations"), (x) => { if (x) S.locations = toMap(x); });
+      else if (key) listen("locations", query(C("locations"), where("uid", "in", mates)), (x) => { if (x) S.locations = toMap(x); });
+    }
     listen("mapPins", C("mapPins"), (x) => { if (x) S.mapPins = toMap(x); });
   };
   return {
@@ -1770,7 +1839,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -1888,10 +1957,12 @@ function settingsView({ withTitle = true } = {}) {
     group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト")),
   );
   let built = false;
+  const locGroupsBox = locGroupsEditor();
   return {
     el,
     update() {
       profiles.update();
+      locGroupsBox.update();
       if (!S.isAdmin || built) return;
       built = true;
       const titleInput = h("input", { type: "text", value: S.config.title ?? APP_TITLE });
@@ -1917,7 +1988,8 @@ function settingsView({ withTitle = true } = {}) {
         field("参加者に地図を表示", mapSwitch),
         field("参加者の位置を共有", locSwitch),
         field("参加者同士でも見られる", locAllSwitch),
-      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。共有をオフにすると、位置のデータは消えます。"),
+      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
+        locGroupsBox.el,
         S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
   };
