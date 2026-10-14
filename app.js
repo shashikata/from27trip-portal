@@ -707,6 +707,13 @@ const membersOfTeam = (teamId, { includeHidden = false } = {}) => {
   const uids = new Set(membershipsOf((m) => m.teamId === teamId && (includeHidden || !m.hidden)).map((m) => m.uid));
   return sortedMembers().filter((m) => uids.has(m.id));
 };
+// チームのリーダー（表示だけ。チームから外れた人は出さない）
+const teamLeader = (t) => (t?.leader && membersOfTeam(t.id).some((m) => m.id === t.leader) ? t.leader : null);
+// リーダーを先頭にした名前の並び
+const teamNamesText = (t, ms) => {
+  const L = teamLeader(t);
+  return [...ms].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => (m.id === L ? `👑${m.name}` : m.name)).join("・");
+};
 const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.teamId)).map((m) => m.teamId);
 const memberName = (uid) => S.members.get(uid)?.name ?? "（削除済み）";
 const teamName = (teamId) => {
@@ -1800,6 +1807,7 @@ function memberTeam({ compact = false } = {}) {
       body.replaceChildren(
         group("あなたのチーム", mine.flatMap(({ set, team, real }) => [
           cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"),
+          team && teamLeader(team) ? cell(h("span", { class: "team-leader-note" }, "👑 リーダー"), teamLeader(team) === uid ? "あなた" : memberName(teamLeader(team))) : null,
           real ? h("div", { class: "cell spy-secret" },
             h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), "スパイ")),
             h("div", { class: "cell-detail" }, "本当は ", h("span", { class: "team-label strong" }, dot(real.color), real.name))) : null,
@@ -1810,7 +1818,7 @@ function memberTeam({ compact = false } = {}) {
           return h("div", { class: `cell team-cell${isMine ? " me" : ""}` },
             h("div", { class: "cell-main" },
               h("div", { class: "team-label strong" }, dot(t.color), t.name, isMine ? h("span", { class: "tint you" }, "あなた") : null),
-              h("div", { class: "cell-sub" }, ms.length ? ms.map((m) => m.name).join("・") : "メンバーなし")),
+              h("div", { class: "cell-sub" }, ms.length ? teamNamesText(t, ms) : "メンバーなし")),
           );
         }))),
       );
@@ -2450,9 +2458,12 @@ function adminTeams() {
         const nm = editableInput({ class: "plain", "aria-label": "チーム名" });
         const d = dot(t.color);
         const count = h("span", { class: "cell-sub" });
+        const leader = h("select", { class: "inline-select team-leader", "aria-label": "リーダー" });
+        const memList = h("ul", { class: "team-members" });
+        leader.addEventListener("change", () => fire(updateDoc(D("teams", t.id), { leader: leader.value || null }), leader.value ? `リーダーを ${memberName(leader.value)} にしました` : "リーダーを外しました"));
         const el = h("div", { class: "cell team-row" },
           d,
-          h("div", { class: "cell-main" }, nm, count),
+          h("div", { class: "cell-main" }, nm, count, memList, h("label", { class: "team-leader-wrap" }, h("span", null, "👑 リーダー"), leader)),
           h("button", {
             class: "text-btn",
             onclick: () => { fire(updateDoc(D("teams", t.id), { name: nm.value.trim() || t.name }), "保存しました"); nm.saved(); },
@@ -2469,11 +2480,17 @@ function adminTeams() {
             },
           }, "削除"),
         );
-        return { el, nm, d, count };
+        return { el, nm, d, count, leader, memList };
       }, (row, t) => {
         row.d.style.setProperty("--c", t.color);
         row.nm.sync(t.name);
-        row.count.textContent = `${membersOfTeam(t.id).length}人`;
+        const tm = membersOfTeam(t.id);
+        row.count.textContent = `${tm.length}人`;
+        // メンバーを1人ずつ改行して並べる（リーダーが先頭）
+        const L = teamLeader(t);
+        setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${m.name}` : m.name)));
+        fillSelect(row.leader, tm.map((m) => ({ value: m.id, label: m.name })), "リーダーなし");
+        if (document.activeElement !== row.leader) row.leader.value = teamLeader(t) ?? "";
       });
 
       const ms = sortedMembers();
@@ -6097,7 +6114,7 @@ function exportBuild(parts) {
           const mem = membersOfTeam(t.id);
           const spies = membershipsOf((x) => x.teamId === t.id && x.hidden).map((x) => memberName(x.uid));
           return h("div", { class: "rp-team" }, h("b", null, h("span", { class: "rp-dot", style: `background:${t.color ?? "#888"}` }), t.name, h("small", null, `${mem.length}人`)),
-            h("p", null, mem.map((m) => m.name).join("・") || "—"), spies.length ? h("p", { class: "rp-sub" }, `スパイ（本当はこのチーム）：${spies.join("・")}`) : null);
+            h("p", null, teamNamesText(t, mem) || "—"), spies.length ? h("p", { class: "rp-sub" }, `スパイ（本当はこのチーム）：${spies.join("・")}`) : null);
         })),
         (() => { const un = ms.filter((m) => !teamOfIn(m.id, st.id)); return un.length ? h("p", { class: "rp-sub" }, `未所属：${un.map((m) => m.name).join("・")}`) : null; })())) : none());
     },

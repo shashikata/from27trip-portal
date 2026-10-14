@@ -1694,3 +1694,17 @@ input.cl-title { padding: 2px 0; }
   .ptq-pt { font-weight: 700; font-size: calc(var(--qr) * .07 + 5pt); }
   .ptq-sub { font-size: 7.5pt; color: #555; }
 }
+
+/* ---- チームのリーダー ---- */
+.team-leader-wrap { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.team-leader-wrap .inline-select { max-width: 9em; }
+.team-leader-note { margin-left: 8px; font-size: 12px; font-weight: 600; color: var(--label-2); }
+.team-row .team-leader-wrap { margin-top: 4px; font-size: 13px; color: var(--label-2); }
+.team-row .team-leader-wrap .inline-select { max-width: none; font-size: 14px; }
+.team-leader-note { margin-left: 0; font-size: 15px; }
+.team-row .team-leader-wrap { display: flex; width: 100%; }
+.team-row .team-leader-wrap > span { white-space: nowrap; flex: none; }
+.team-row .team-leader-wrap .inline-select { flex: 1; min-width: 0; text-align: left; }
+.team-members { margin: 4px 0 0; padding-left: 1.2em; font-size: 14px; color: var(--label); line-height: 1.6; }
+.team-members li::marker { color: var(--label-3); }
+.team-members li.leader { list-style: none; margin-left: -1.2em; font-weight: 700; }
