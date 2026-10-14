@@ -2012,6 +2012,7 @@ function settingsView({ withTitle = true } = {}) {
         field("参加者同士でも見られる", locAllSwitch),
       ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
         locGroupsBox.el,
+        exportBox(),
         S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
   };
@@ -5884,6 +5885,157 @@ async function printCredentials(rows, mode) {
   // 画像（QR）の描画を待ってから印刷画面を開く
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   window.print();
+}
+
+// ---------------------------------------------------------------- データを PDF で出力（管理者）
+// 印刷画面を開き、「PDF に保存」で保存する。明朝体（Noto Serif JP）で、項目ごとに改ページする
+const EXPORT_PARTS = [
+  { key: "members", label: "参加者一覧" },
+  { key: "teams", label: "チーム" },
+  { key: "points", label: "ポイント" },
+  { key: "quizzes", label: "クイズ（問題と正解）" },
+  { key: "notes", label: "表・メモ" },
+  { key: "polls", label: "出欠・アンケート" },
+  { key: "payments", label: "集金" },
+  { key: "expenses", label: "立て替えの精算" },
+  { key: "checklists", label: "チェックリスト" },
+];
+let serifLoading = null;
+function loadSerif() {
+  serifLoading ??= new Promise((resolve) => {
+    const link = h("link", { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700&display=swap" });
+    link.onload = () => resolve(true); link.onerror = () => resolve(false);
+    document.head.append(link);
+  });
+  return serifLoading;
+}
+function exportBuild(parts) {
+  const title = S.config.title || APP_TITLE;
+  const now = new Date();
+  const T = (headers, rows, cls = "") => h("table", { class: `rp-table ${cls}` }, h("thead", null, h("tr", null, headers.map((x) => h("th", null, x)))), h("tbody", null, rows.map((r) => h("tr", null, r.map((c) => h("td", null, c ?? ""))))));
+  const sec = (label, ...body) => h("section", { class: "rp-sec" }, h("h2", null, label), ...body);
+  const none = (t = "データはありません") => h("p", { class: "rp-none" }, t);
+  const ms = sortedMembers();
+  const build = {
+    members: () => sec("参加者一覧", ms.length ? T(["#", "名前", "ID"], ms.map((m, i) => [i + 1, m.name, m.loginId]), "rp-idx") : none()),
+    teams: () => {
+      const sets = sortedSets();
+      return sec("チーム", sets.length ? sets.map((st) => h("div", { class: "rp-block" },
+        h("h3", null, st.name, h("small", null, st.published ? "（発表済み）" : "（未発表）")),
+        h("div", { class: "rp-teams" }, teamsInSet(st.id).map((t) => {
+          const mem = membersOfTeam(t.id);
+          const spies = membershipsOf((x) => x.teamId === t.id && x.hidden).map((x) => memberName(x.uid));
+          return h("div", { class: "rp-team" }, h("b", null, h("span", { class: "rp-dot", style: `background:${t.color ?? "#888"}` }), t.name, h("small", null, `${mem.length}人`)),
+            h("p", null, mem.map((m) => m.name).join("・") || "—"), spies.length ? h("p", { class: "rp-sub" }, `スパイ（本当はこのチーム）：${spies.join("・")}`) : null);
+        })),
+        (() => { const un = ms.filter((m) => !teamOfIn(m.id, st.id)); return un.length ? h("p", { class: "rp-sub" }, `未所属：${un.map((m) => m.name).join("・")}`) : null; })())) : none());
+    },
+    points: () => {
+      const users = ms.map((m) => [m.name, ptTotal("user", m.id)]).sort((a, b) => b[1] - a[1]);
+      const teams = sortedSets().flatMap((st) => teamsInSet(st.id).map((t) => [st.name, t.name, ptTotal("team", t.id)]));
+      let rank = 0, prev = null;
+      return sec("ポイント",
+        h("h3", null, "個人"), users.length ? T(["順位", "名前", "ポイント"], users.map(([n, v], i) => { if (v !== prev) { rank = i + 1; prev = v; } return [rank, n, v]; }), "rp-num rp-rank") : none(),
+        h("h3", null, "チーム"), teams.length ? T(["チーム表", "チーム", "ポイント"], teams, "rp-num") : none());
+    },
+    quizzes: () => {
+      const qs = [...S.quizzes.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      return sec("クイズ", qs.length ? qs.map((qz) => {
+        const sess = quizSessions(qz);
+        return h("div", { class: "rp-block" },
+          h("h3", null, qz.title || "クイズ", h("small", null, `全${qz.questions?.length ?? 0}問 ・ 解答者 ${qz.answerers ? `${qz.answerers.length}人` : "全員"}`)),
+          (qz.questions ?? []).map((q, i) => {
+            const se = sess.length > 1 ? sess.find((x) => x.id === q.session)?.name : null;
+            let ans;
+            if (q.type === "choice") ans = h("ol", { class: "rp-choices", type: "A" }, (q.choices ?? []).map((c, k) => h("li", { class: q.answer === k ? "ok" : null }, c || "（空欄）", q.answer === k ? " ◎正解" : "")));
+            else if (q.type === "order") ans = h("p", null, "正しい順：", (q.choices ?? []).join(" → "));
+            else if (q.type === "vote") ans = h("p", null, `アンケート「${S.polls.get(q.pollId)?.question ?? "未設定"}」の結果（${q.voteMode === "rank" ? `上位${seqLen(q)}位の順番` : "1位"}）　`, answerLabel(q, revealAnswerOf(q)));
+            else ans = h("p", null, "正解：", q.answer || "（未設定）");
+            return h("div", { class: "rp-q" },
+              h("div", { class: "rp-qhead" }, h("b", null, `第${i + 1}問`), se ? h("span", null, se) : null, h("span", null, QTYPE[q.type] ?? q.type), h("span", null, `${q.points ?? 10}点`), q.time ? h("span", null, `${q.time}秒`) : null),
+              h("p", { class: "rp-qtext" }, q.text || "（問題文なし）"), ans);
+          }));
+      }) : none());
+    },
+    notes: () => {
+      const ns = sortedNotes();
+      return sec("表・メモ", ns.length ? ns.map((n) => h("div", { class: "rp-block" },
+        h("h3", null, n.title || "無題", h("small", null, n.shared ? "（全体公開）" : "（管理者用）")),
+        n.type === "table" ? (() => { const rows = (n.rows ?? []).map((r) => r.c ?? []); return rows.length ? T(rows[0], rows.slice(1)) : none("空の表"); })()
+          : h("p", { class: "rp-pre" }, n.body || ""))) : none());
+    },
+    polls: () => {
+      const ps = sortedPolls().filter((p) => !p.fromLobby);
+      return sec("出欠・アンケート", ps.length ? ps.map((p) => {
+        const votes = [...S.votes.values()].filter((v) => v.pollId === p.id && isTarget(p, v.uid));
+        const tg = pollTargets(p);
+        const noAns = tg.filter((m) => !votes.some((v) => v.uid === m.id));
+        const rows = isRankPoll(p)
+          ? (() => { const pts = pollScores(p, votes); return p.options.map((o) => [o, `${pts.get(o) ?? 0}点`, p.anonymous ? "" : ""]).sort((a, b) => parseInt(b[1]) - parseInt(a[1])); })()
+          : p.options.map((o) => { const vs = votes.filter((v) => v.choice === o); return [o, `${vs.length}人`, p.anonymous ? "（非表示）" : vs.map((v) => memberName(v.uid)).join("・")]; });
+        return h("div", { class: "rp-block" }, h("h3", null, p.question, h("small", null, `${votes.length}/${tg.length}人回答${pollOpen(p) ? "・受付中" : "・締切"}`)),
+          T(["選択肢", isRankPoll(p) ? "点数" : "人数", "回答した人"], rows),
+          noAns.length ? h("p", { class: "rp-sub" }, `未回答：${noAns.map((m) => m.name).join("・")}`) : null);
+      }) : none());
+    },
+    payments: () => {
+      const ps = sortedPayments().filter((p) => !p.fromLobby);
+      return sec("集金", ps.length ? ps.map((p) => {
+        const t = payTotals(p);
+        return h("div", { class: "rp-block" }, h("h3", null, p.title, h("small", null, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
+          h("p", { class: "rp-sub" }, `入金済み ${t.paidN}/${t.n}人 ・ ${yen(t.got)} / ${yen(t.expect)}`),
+          T(["名前", "金額", "状態", "払い方"], payTargets(p).map((m) => { const r = recordOf(p, m.id); return [m.name, yen(amountOf(p, m.id)), PAY_STATUS[r.status], r.status === "paid" ? r.method ?? "" : ""]; })));
+      }) : none());
+    },
+    expenses: () => {
+      const items = sortedExpenses();
+      const st = settlements();
+      return sec("立て替えの精算",
+        h("h3", null, "精算（誰が誰に払うか）"), st.length ? T(["払う人", "受け取る人", "金額"], st.map((x) => [memberName(x.from), memberName(x.to), yen(x.amount)])) : none("精算するものはありません"),
+        h("h3", null, "記録"), items.length ? T(["内容", "立て替えた人", "金額", "割る人"], items.map((e) => e.kind === "settle" ? [`支払い済み（${memberName(e.from)} → ${memberName(e.to)}）`, "", yen(e.amount), ""] : [e.title, memberName(e.payer), yen(e.amount), e.split?.length ? splitOf(e).map(memberName).join("・") : "全員"])) : none());
+    },
+    checklists: () => {
+      const ls = sortedChecklists();
+      return sec("チェックリスト", ls.length ? ls.map((l) => h("div", { class: "rp-block" }, h("h3", null, l.title),
+        T(["項目", "種類", "状況"], l.items.map((it) => {
+          if (it.kind === "shared") { const c = S.checks.get(checkId(l, it, "")); return [it.text, `共有${it.assignee ? `（担当：${memberName(it.assignee)}）` : ""}`, c ? `済（${memberName(c.uid)}）` : "まだ"]; }
+          const not = ms.filter((m) => !isChecked(l, it, m.id));
+          return [it.text, "各自", `${ms.length - not.length}/${ms.length}${not.length && not.length < ms.length ? `（まだ：${not.map((m) => m.name).join("・")}）` : ""}`];
+        })))) : none());
+    },
+  };
+  return h("div", { id: "print-root", class: "print-report" },
+    h("header", { class: "rp-cover" }, h("div", { class: "rp-kicker" }, "旅行ポータル　データ出力"), h("h1", null, title),
+      h("p", null, `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")} 出力 ・ 参加者 ${ms.length}人`),
+      h("ol", { class: "rp-toc" }, parts.map((k) => h("li", null, EXPORT_PARTS.find((x) => x.key === k)?.label)))),
+    parts.map((k) => build[k]()));
+}
+async function exportPdf(parts) {
+  if (!parts.length) return toast("出力する項目を選んでください", true);
+  toast("PDF の準備中…");
+  const root = exportBuild(parts);
+  // 明朝体を、出力する文字の分だけ先に読み込んでおく（読み込み前に印刷するとゴシックになるため）。電波がなければ端末の明朝体で出す
+  const txt = root.textContent;
+  await Promise.race([
+    loadSerif().then((ok) => ok && document.fonts ? Promise.all(["400", "700"].map((w) => document.fonts.load(`${w} 12px "Noto Serif JP"`, txt))) : null).catch(() => {}),
+    new Promise((r) => setTimeout(r, 6000)),
+  ]);
+  document.getElementById("print-root")?.remove();
+  document.body.append(root);
+  document.body.classList.add("printing");
+  const prevTitle = document.title;
+  document.title = `${S.config.title || APP_TITLE}_データ`; // 保存するときのファイル名になる
+  const done = () => { root.remove(); document.body.classList.remove("printing"); document.title = prevTitle; window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  window.print();
+}
+function exportBox() {
+  const checks = new Map(EXPORT_PARTS.map((p) => [p.key, toggle(true)]));
+  return group("データを PDF で出力", [
+    ...EXPORT_PARTS.map((p) => field(p.label, checks.get(p.key))),
+    h("button", { class: "cell cell-button", onclick: () => guard(null, () => exportPdf(EXPORT_PARTS.map((p) => p.key).filter((k) => checks.get(k).checked))) }, icon("note"), "PDF で出力（印刷画面 →「PDF に保存」）"),
+  ], "この旅行のデータを、項目ごとにページを分けて出力します。印刷画面で「送信先：PDF に保存」（iPhone は共有ボタン →「プリント」→ 2本指で拡大 → 共有 →「ファイルに保存」）を選んでください。");
 }
 
 // ---------------------------------------------------------------- 画面の組み立て

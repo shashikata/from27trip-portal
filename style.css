@@ -1624,3 +1624,49 @@ input.cl-title { padding: 2px 0; }
 .loc-group .pick-list { margin: 0; }
 .map-groups { font-size: 13px; color: var(--label-2); padding: 6px 4px 0; }
 .from-lobby { color: var(--blue); }
+
+/* ---- データの PDF 出力（明朝・項目ごとに改ページ） ---- */
+@media print {
+  body.printing #print-root.print-report {
+    font-family: "Noto Serif JP", "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "MS PMincho", serif;
+    font-size: 10pt; line-height: 1.6; color: #111;
+  }
+  .print-report h1, .print-report h2, .print-report h3 { font-weight: 700; margin: 0; }
+  .rp-cover { padding-top: 40mm; break-after: page; }
+  .rp-kicker { font-size: 10pt; letter-spacing: .2em; color: #666; }
+  .rp-cover h1 { font-size: 26pt; margin: 4mm 0 2mm; border-bottom: .6mm solid #111; padding-bottom: 3mm; }
+  .rp-cover p { color: #444; }
+  .rp-toc { margin-top: 12mm; font-size: 12pt; line-height: 2; }
+  .rp-sec { break-before: page; }
+  .rp-sec:first-of-type { break-before: auto; }
+  .rp-sec > h2 { font-size: 16pt; border-left: 1.6mm solid #111; padding-left: 3mm; margin-bottom: 5mm; }
+  .rp-block { break-inside: avoid-page; margin-bottom: 6mm; }
+  .rp-sec h3 { font-size: 12pt; margin: 4mm 0 2mm; break-after: avoid; }
+  .rp-sec h3 small { font-size: 9pt; font-weight: 400; color: #555; margin-left: 2mm; }
+  .rp-table { width: 100%; border-collapse: collapse; margin: 1mm 0 3mm; font-size: 9.5pt; }
+  .rp-table th, .rp-table td { border: .25mm solid #999; padding: 1.2mm 2mm; text-align: left; vertical-align: top; }
+  .rp-table th { background: #eee; font-weight: 700; }
+  .rp-table tr { break-inside: avoid; }
+  .rp-table thead { display: table-header-group; }
+  .rp-num td:last-child, .rp-num th:last-child { text-align: right; }
+  .rp-none { color: #777; }
+  .rp-sub { color: #444; font-size: 9pt; margin: 1mm 0; }
+  .rp-pre { white-space: pre-wrap; margin: 0; }
+  .rp-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }
+  .rp-team { border: .25mm solid #999; padding: 2mm 3mm; break-inside: avoid; }
+  .rp-team b { display: flex; align-items: center; gap: 2mm; }
+  .rp-team b small { font-weight: 400; color: #555; margin-left: auto; }
+  .rp-team p { margin: 1mm 0 0; }
+  .rp-dot { width: 3mm; height: 3mm; border-radius: 50%; display: inline-block; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rp-q { break-inside: avoid; border-top: .25mm solid #ccc; padding: 2mm 0; }
+  .rp-qhead { display: flex; gap: 3mm; align-items: baseline; font-size: 9pt; color: #444; }
+  .rp-qhead b { font-size: 10.5pt; color: #111; }
+  .rp-qtext { margin: 1mm 0; font-size: 11pt; }
+  .rp-choices { margin: 0; padding-left: 7mm; }
+  .rp-choices li.ok { font-weight: 700; }
+}
+@media print {
+  .rp-idx td:first-child, .rp-idx th:first-child { width: 10mm; text-align: right; }
+  .rp-rank td:first-child, .rp-rank th:first-child { width: 14mm; }
+  .rp-table th { white-space: nowrap; }
+}
