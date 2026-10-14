@@ -251,6 +251,8 @@ function startAdmin() {
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
+  // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
+  listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
   listenLiveQuiz();
 }
@@ -497,7 +499,7 @@ function resetProfileData() {
     me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
-    quizzes: new Map(), live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
+    quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
@@ -536,19 +538,20 @@ function switchProfile(pid) {
 
 // 参加者が入っている旅行を調べる（members/{uid} があるかどうか）
 async function resolveMemberProfiles(uid) {
-  const reg = await getDocs(collection(db, "profiles")).catch(() => null);
+  // 旅行ごとの登録の確認は同時に投げる（1件ずつ待つと、旅行の数だけ通信の往復を待つことになる）
+  const [reg, rootMem] = await Promise.all([getDocs(collection(db, "profiles")).catch(() => null), getDoc(doc(db, "members", uid)).catch(() => null)]);
   const regDocs = reg?.docs ?? [];
   const list = [];
-  const rootMem = await getDoc(doc(db, "members", uid)).catch(() => null);
   if (rootMem?.exists()) list.push({ id: ROOT, name: regDocs.find((d) => d.id === ROOT)?.data().name ?? APP_TITLE, order: 0 });
   let lobby = null;
-  for (const d of regDocs) {
-    if (d.id === ROOT) continue;
-    const m = await getDoc(doc(db, "profiles", d.id, "members", uid)).catch(() => null);
-    if (!m?.exists()) continue;
+  const others = regDocs.filter((d) => d.id !== ROOT);
+  const mems = await Promise.all(others.map((d) => getDoc(doc(db, "profiles", d.id, "members", uid)).catch(() => null)));
+  others.forEach((d, i) => {
+    const m = mems[i];
+    if (!m?.exists()) return;
     if (d.id === LOBBY) lobby = m.data();
     else list.push({ id: d.id, name: d.data().name ?? "旅行", order: d.data().order ?? 0 });
-  }
+  });
   list.sort((a, b) => a.order - b.order);
   // 確定前ページに入っている人は、確定した旅行だけを開ける
   if (!lobby) return list;
@@ -1794,13 +1797,11 @@ async function createProfile() {
 async function createLobby() {
   if (S.profiles.has(LOBBY)) return switchProfile(LOBBY);
   if (!confirm("確定前ページを作りますか？\n\n今の参加者は全員「未確定」になり、次に開いたときから確定前ページ（お知らせ・出欠・集金・チャット・立て替え）だけが表示されます。\n旅行のデータは消えません。旅行を割り当てて「確定」すると、また旅行のページが開けるようになります。")) return;
+  toast("確定前ページを作っています…");
   const people = new Map();
-  const rootSnap = await getDocs(collection(db, "members"));
-  rootSnap.forEach((d) => people.set(d.id, d.data()));
-  for (const p of [...S.profiles.keys()].filter((x) => x !== ROOT && x !== LOBBY)) {
-    const snap = await getDocs(collection(db, "profiles", p, "members"));
-    snap.forEach((d) => { if (!people.has(d.id)) people.set(d.id, d.data()); });
-  }
+  const pids = [...S.profiles.keys()].filter((x) => x !== ROOT && x !== LOBBY);
+  const snaps = await Promise.all([getDocs(collection(db, "members")), ...pids.map((p) => getDocs(collection(db, "profiles", p, "members")))]);
+  snaps.forEach((snap) => snap.forEach((d) => { if (!people.has(d.id)) people.set(d.id, d.data()); }));
   const b = writeBatch(db);
   b.set(doc(db, "profiles", LOBBY), { name: LOBBY_NAME, order: -1, lobby: true, createdAt: serverTimestamp() });
   b.set(LD("config", "app"), { title: LOBBY_NAME });
@@ -2033,6 +2034,7 @@ function adminMembers({ withTitle = true } = {}) {
     const cred = await createUserWithEmailAndPassword(a2, idToEmail(loginId), password);
     // 初期パスワードは accounts（管理者だけが読める）に控えておき、あとから印刷できるようにする
     await setDoc(doc(db, "accounts", loginId), { uid: cred.user.uid, name: displayName, pw: password });
+    printCache.at = 0; // 次の印刷前に読み直す
     await setDoc(D("members", cred.user.uid), { loginId, name: displayName, createdAt: serverTimestamp() });
     await signOut(a2);
     created.push({ loginId, name: displayName, password });
@@ -2093,9 +2095,12 @@ function adminMembers({ withTitle = true } = {}) {
     listGroup,
   );
 
+  let prefetched = false;
   return {
     el,
     update() {
+      // 印刷の準備を、画面が落ち着いてから先に済ませておく
+      if (!prefetched) { prefetched = true; (window.requestIdleCallback ?? setTimeout)(() => prefetchPrint(), { timeout: 3000 }); }
       const ms = sortedMembers();
       listEmpty.hidden = ms.length > 0;
       listGroup.hidden = ms.length === 0;
@@ -5661,11 +5666,33 @@ function loadQr() {
   return qrLoading;
 }
 
+// 印刷に使うパスワードの控えと QR の部品は、参加者の画面を開いたときに先に読んでおく
+// （押してから通信すると、スマホでは印刷画面が出るまで数秒かかるため）。「本人が変更済み」は常に受け取っている記録（S.pwChangedIds）を使う
+const printCache = { at: 0, pid: null, byLogin: null, pending: null };
+function prefetchPrint(force = false) {
+  loadQr();
+  if (!S.isAdmin || !navigator.onLine) return Promise.resolve();
+  if (printCache.pending) return printCache.pending;
+  if (!force && printCache.pid === S.pid && Date.now() - printCache.at < 5 * 60e3) return Promise.resolve();
+  const pid = S.pid;
+  printCache.pending = getDocs(collection(db, "accounts"))
+    .then((accs) => { Object.assign(printCache, { at: Date.now(), pid, byLogin: new Map(accs.docs.map((d) => [d.id, d.data()])) }); })
+    .catch((e) => console.warn("prefetchPrint", e))
+    .finally(() => { printCache.pending = null; });
+  return printCache.pending;
+}
+
 async function printAllCredentials(mode) {
-  if (!navigator.onLine) return toast("印刷の準備は電波のある場所で行ってください", true);
-  const [accs, changed] = await Promise.all([getDocs(collection(db, "accounts")), getDocs(C("pwChanged"))]);
-  const byLogin = new Map(accs.docs.map((d) => [d.id, d.data()]));
-  const changedSet = new Set(changed.docs.map((d) => d.id));
+  // 先に読んだ控えが使えれば、通信を待たずにすぐ印刷する（全員分がそろっていないときだけ読み直す）
+  const ready = () => printCache.pid === S.pid && printCache.byLogin && sortedMembers().every((m) => !m.loginId || printCache.byLogin.has(m.loginId));
+  if (!ready()) {
+    if (!navigator.onLine) return toast("印刷の準備は電波のある場所で行ってください", true);
+    toast("印刷の準備中…");
+    await prefetchPrint(true);
+    if (!printCache.byLogin) return toast("パスワードの控えを読めませんでした。電波を確認してください", true);
+  }
+  const byLogin = printCache.byLogin;
+  const changedSet = S.pwChangedIds ?? new Set();
   const rows = sortedMembers().map((m) => {
     const a = byLogin.get(m.loginId);
     return { name: m.name, loginId: m.loginId, password: a?.pw ?? null, changed: changedSet.has(m.id), missing: !a?.pw };
@@ -5676,7 +5703,7 @@ async function printAllCredentials(mode) {
 
 async function printCredentials(rows, mode) {
   const url = `${location.origin}${location.pathname}`;
-  const qr = await loadQr();
+  const qr = window.qrcode ?? await loadQr();
   // パスワードが分かる人は「読むだけでログインできる」QR、分からない人（変更済み・記録なし）はURLだけのQR
   const canAuto = (r) => !!(r.password && !r.changed);
   const qrSvg = (text) => { if (!qr) return ""; const q = qr(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 2, margin: 0, scalable: true }); };

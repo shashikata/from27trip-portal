@@ -1,6 +1,6 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v36";
+const CACHE = "island-v37";
 const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
@@ -55,10 +55,12 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 自分のファイルはネット優先（更新を反映するため）。電波が弱くて 4 秒以内に返らなければキャッシュ
+  // 自分のファイルはキャッシュ優先（スマホで開くたびに通信を待たないように）。
+  // 新しい版は CACHE の名前を変えて公開するので、この sw.js が更新された時点で入れ替わり、画面が1回読み直される。
+  // キャッシュに無いものだけネットから取る（電波が弱くて 4 秒以内に返らなければトップ画面）
   if (url.origin === self.location.origin) {
     e.respondWith(
-      fetchWithTimeout(new Request(req.url, { cache: "no-cache", credentials: "same-origin" }), 4000)
+      caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetchWithTimeout(new Request(req.url, { cache: "no-cache", credentials: "same-origin" }), 4000)
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();
@@ -66,7 +68,7 @@ self.addEventListener("fetch", (e) => {
           }
           return res;
         })
-        .catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match("./index.html"))),
+        .catch(() => caches.match("./index.html"))),
     );
   }
 });

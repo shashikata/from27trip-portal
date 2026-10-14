@@ -1604,3 +1604,14 @@ input.cl-title { padding: 2px 0; }
 .trip-pills { justify-content: flex-start; }
 .trip-card .btn-small:disabled { background: var(--fill); color: var(--label-2); }
 .trip-row .cell-main { justify-content: flex-start; }
+
+/* ---- スマホでの軽量化 ----
+   ぼかし（backdrop-filter）はスクロールのたびに背景を描き直すので、スマホでは重くなりやすい。
+   タッチ操作の端末では、ぼかしをやめて、ほぼ不透明な背景にする */
+@media (hover: none), (max-width: 1099px) {
+  :root { --bar: rgba(249, 249, 249, .97); }
+  .navbar.scrolled, .tabbar, .toast, .desk-bar, .navbar .me-chip { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+@media (hover: none) and (prefers-color-scheme: dark), (max-width: 1099px) and (prefers-color-scheme: dark) {
+  :root { --bar: rgba(22, 22, 23, .97); }
+}
