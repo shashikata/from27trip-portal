@@ -81,14 +81,18 @@ const D = (name, ...ids) => doc(db, ...base(), name, ...ids);
 const LOBBY = "lobby";
 const inLobby = () => S.pid === LOBBY;
 const isL = (id) => typeof id === "string" && id.startsWith("L:");
-const rawId = (id) => (isL(id) ? id.slice(2) : id);
-const DX = (name, id) => (isL(id) ? doc(db, "profiles", LOBBY, name, id.slice(2)) : D(name, id));
-const CX = (name, id) => (isL(id) ? collection(db, "profiles", LOBBY, name) : C(name));
+// ほかの旅行のページから合流したもの（集金）は "X:{旅行のid}:" を付ける
+const isExt = (id) => typeof id === "string" && (id.startsWith("L:") || id.startsWith("X:"));
+const extPid = (id) => (isL(id) ? LOBBY : id.slice(2, id.indexOf(":", 2)));
+const rawId = (id) => (!isExt(id) ? id : isL(id) ? id.slice(2) : id.slice(id.indexOf(":", 2) + 1));
+const pageBase = (pid) => (pid && pid !== ROOT ? ["profiles", pid] : []);
+const DX = (name, id) => (isExt(id) ? doc(db, ...pageBase(extPid(id)), name, rawId(id)) : D(name, id));
+const CX = (name, id) => (isExt(id) ? collection(db, ...pageBase(extPid(id)), name) : C(name));
 const LC = (name) => collection(db, "profiles", LOBBY, name);
 const LD = (name, id) => doc(db, "profiles", LOBBY, name, id);
 const tripsOf = (m) => m?.trips ?? {};
 // 旅行の分と確定前ページの分を合わせて S.polls などに入れる
-const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [part]: val }; S[key] = new Map([...(S.lobbySrc[key].trip ?? []), ...(S.lobbySrc[key].lobby ?? [])]); };
+const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [part]: val }; S[key] = new Map(Object.values(S.lobbySrc[key]).flatMap((m) => [...(m ?? [])])); };
 // 管理者：旅行のページに出す確定前ページの集金・アンケートは、この旅行の参加者が対象に入っているものだけ
 // 管理者：旅行のページに出す確定前ページのお知らせ（全員宛てと、この旅行の参加者宛てのもの）
 function refreshAdminLobbyAnn() {
@@ -100,15 +104,55 @@ function refreshAdminLobbyAnn() {
 const relevantHere = (x) => !x.fromLobby || !x.targets || x.targets.some((uid) => S.members.has(uid));
 const confirmedTrips = (m) => Object.keys(tripsOf(m)).filter((k) => tripsOf(m)[k] === true);
 // 確定前ページのデータを合流用に読み込む（id と、ほかのデータを指す欄に "L:" を付ける）
-const toMapL = (snap, refs = []) => {
+const toMapX = (snap, pid, refs = []) => {
+  const pre = pid === LOBBY ? "L:" : `X:${pid}:`;
   const m = new Map();
   snap?.forEach((d) => {
-    const v = { ...d.data({ serverTimestamps: "estimate" }), id: `L:${d.id}`, fromLobby: true };
-    for (const f of refs) if (v[f]) v[f] = `L:${v[f]}`;
+    const v = { ...d.data({ serverTimestamps: "estimate" }), id: `${pre}${d.id}`, fromLobby: pid === LOBBY, fromPage: pid };
+    for (const f of refs) if (v[f]) v[f] = `${pre}${v[f]}`;
     m.set(v.id, v);
   });
   return m;
 };
+const toMapL = (snap, refs = []) => toMapX(snap, LOBBY, refs);
+// ページの名前（「確定前ページより」「'27春旅行より」のタグに使う）
+const pageName = (pid) => (pid === LOBBY ? LOBBY_NAME : S.profiles.get(pid)?.name ?? S.myProfiles.find((p) => p.id === pid)?.name ?? "別の旅行");
+const fromTag = (pid) => h("span", { class: "from-tag" }, `${pageName(pid)}より`);
+
+// ---- ほかのページの集金・立て替え
+// 確定前ページ・ほかの旅行のページで作った集金と立て替えも、終わっていないものはこのページに「〇〇より」を付けて出す。
+//   集金   : S.payments に "L:" / "X:{pid}:" 付きで合流（書き込みは DX で元のページへ）。対象者全員が入金済み・免除になったら出さない
+//   立て替え: ページごとに S.extExpenses に置き、そのページの精算が残っている間だけ出す
+// 管理者はすべてのページ、参加者は自分が入っているページの分（自分が対象のものだけ表示）
+function syncExtPages() {
+  if (!S.user || !S.pid) return;
+  const uid = S.user.uid;
+  const pages = S.isAdmin
+    ? [...new Set([ROOT, ...S.profiles.keys()])].filter((p) => p !== S.pid)
+    : S.myProfiles.map((p) => p.id).filter((p) => p !== S.pid);
+  const quiet = (fn) => (s, err) => { if (!err && s) fn(s); };
+  for (const p of pages) {
+    const col = (name) => collection(db, ...pageBase(p), name);
+    const k = `x:${p}:`;
+    listen(`${k}members`, col("members"), quiet((s) => { S.extMembers.set(p, toMap(s)); }));
+    listen(`${k}expenses`, col("expenses"), quiet((s) => { S.extExpenses.set(p, toMap(s)); }));
+    if (p === LOBBY) continue; // 確定前ページの集金は、旅行のページでは前から合流している（lPayments）
+    listen(`${k}payments`, col("payments"), quiet((s) => mergeSrc("payments", `x:${p}`, toMapX(s, p))));
+    listen(`${k}payReports`, S.isAdmin ? col("payReports") : query(col("payReports"), where("uid", "==", uid)),
+      quiet((s) => mergeSrc("payReports", `x:${p}`, toMapX(s, p, ["paymentId"]))));
+  }
+}
+// ページの参加者（ID 順。割り勘の端数の付け方をそのページと同じにするため）
+const extMemberCache = new Map();
+function pageMembers(pid) {
+  const src = S.extMembers.get(pid) ?? (pid === LOBBY ? S.lobbyMembers : null);
+  if (!src) return null;
+  const hit = extMemberCache.get(pid);
+  if (hit && hit.src === src) return hit.list;
+  const list = [...src.entries()].map(([id, m]) => ({ id, ...m })).sort((a, b) => byNatural(a.loginId, b.loginId));
+  extMemberCache.set(pid, { src, list });
+  return list;
+}
 
 const idToEmail = (id) => (id.includes("@") ? id : `${id}@${EMAIL_DOMAIN}`).toLowerCase();
 const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
@@ -457,6 +501,7 @@ function startMemberData(uid) {
   listen("checksShared", query(C("checks"), where("shared", "==", true)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, shared: toMap(s) }; mergeChecks(); } });
   // チャットは新しい順に80件だけ（自分に関係するものだけ使う。開いているチャットは別に全部受け取る）
   listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) S.msgRecent = toMap(s); }); // 見てよいかは使うときに判定（チームの所属が後から届くため）
+  syncExtPages();
 }
 
 // 参加者：お知らせとポイント履歴は「新しい順に N 件」だけ受け取る。
@@ -566,7 +611,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -584,6 +629,7 @@ function cachedProfiles() {
 }
 function setMyProfiles(list) {
   S.myProfiles = list;
+  if (!S.isAdmin && S.pid && subs.has("msgRecent")) syncExtPages(); // 入っている旅行が増えたら、その旅行の集金・立て替えも受け取る
   try { if (list.length) localStorage.setItem(profsKey(), JSON.stringify(list)); } catch { /* 保存できなくても動く */ }
 }
 const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { /* 保存できなくても動く */ } };
@@ -591,7 +637,7 @@ const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { 
 function startProfile() {
   if (S.isAdmin) {
     startAdmin();
-    listen("profiles", collection(db, "profiles"), (s) => { if (s) S.profiles = toMap(s); });
+    listen("profiles", collection(db, "profiles"), (s) => { if (s) { S.profiles = toMap(s); syncExtPages(); } });
   } else {
     startMember(S.user.uid);
   }
@@ -789,7 +835,11 @@ const teamNamesText = (t, ms) => {
   return [...ms].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => (m.id === L ? `👑${withRole(t, m)}` : withRole(t, m))).join("・");
 };
 const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.teamId)).map((m) => m.teamId);
-const memberName = (uid) => S.members.get(uid)?.name ?? "（削除済み）";
+const memberName = (uid) => S.members.get(uid)?.name ?? extMemberName(uid) ?? "（削除済み）";
+const extMemberName = (uid) => {
+  for (const m of S.extMembers.values()) if (m.get(uid)?.name) return m.get(uid).name;
+  return S.lobbyMembers?.get(uid)?.name ?? null;
+};
 const teamName = (teamId) => {
   const t = S.teams.get(teamId);
   if (!t) return "（チーム）";
@@ -2101,7 +2151,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v49"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v50"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2255,19 +2305,22 @@ function adminOngoing() {
       }
       // 集金：まだ全員そろっていないもの
       const pend = pendingReports();
-      for (const p of sortedPayments().filter(relevantHere)) {
+      for (const p of sortedPayments()) {
         const t = payTargets(p);
         const { expect, got, paidN, n } = payTotals(p);
         if (!t.length || paidN >= n) continue;
         const reports = pend.filter((x) => x.p.id === p.id).length;
         const over = p.due && p.due < new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-        rows.push(row("yen", p.title, [`入金 ${paidN} / ${n}人`, `${yen(got)} / ${yen(expect)}`, p.due ? `期限 ${p.due.slice(5).replace("-", "/")}` : null, reports ? `確認待ち ${reports}件` : null].filter(Boolean).join(" ・ "),
+        rows.push(row("yen", isExt(p.id) ? `${p.title}（${pageName(extPid(p.id))}より）` : p.title, [`入金 ${paidN} / ${n}人`, `${yen(got)} / ${yen(expect)}`, p.due ? `期限 ${p.due.slice(5).replace("-", "/")}` : null, reports ? `確認待ち ${reports}件` : null].filter(Boolean).join(" ・ "),
           over ? { text: "期限切れ", cls: "warn" } : { text: "集金中" }, () => openAdminMoney("pay")));
       }
       // 立て替え：まだ精算が残っているもの
       const st = settlements();
       if (st.length) {
         rows.push(row("arrows", "立て替えの精算", `残り ${st.length}件 ・ 合計 ${yen(st.reduce((a, x) => a + x.amount, 0))}`, { text: "未精算" }, () => openAdminMoney("exp")));
+      }
+      for (const { pid, st: xs } of extSettlements()) {
+        rows.push(row("arrows", `立て替えの精算（${pageName(pid)}より）`, `残り ${xs.length}件 ・ 合計 ${yen(xs.reduce((a, x) => a + x.amount, 0))}`, { text: "未精算" }, () => openAdminMoney("exp")));
       }
       el.hidden = !rows.length;
       body.replaceChildren(...rows);
@@ -5052,9 +5105,20 @@ const pollDeadlinePassed = (p) => !!p.deadline && Date.now() > new Date(p.deadli
 const pollOpen = (p) => p.open !== false && !pollDeadlinePassed(p);
 const fmtDeadline = (s) => { if (!s) return ""; const d = new Date(s); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const sortedPolls = () => [...S.polls.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
-const sortedPayments = () => [...S.payments.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
-const payTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.includes(m.id)) : sortedMembers());
-const pollTargets = payTargets; // アンケートも同じ形（targets: [uid] | null(=全員)）
+// ほかのページの集金は、終わったもの（対象者全員が入金済み・免除）を出さない。そのページの参加者がまだ届いていないときも出さない
+const extPayDone = (p) => {
+  if (!pageMembers(extPid(p.id))) return true;
+  const { paidN, n } = payTotals(p);
+  return paidN >= n;
+};
+const sortedPaymentsMemo = memo(() => [...S.payments.values()].filter((p) => !isExt(p.id) || !extPayDone(p)).sort((a, b) => ts(b.createdAt) - ts(a.createdAt)));
+const sortedPayments = () => [...sortedPaymentsMemo()];
+// ほかのページの集金は、そのページの参加者が対象（この旅行に入っていない人も含めて全員出す）
+const payTargets = (p) => {
+  const ms = (isExt(p.id) && pageMembers(extPid(p.id))) || sortedMembers();
+  return p.targets ? ms.filter((m) => p.targets.includes(m.id)) : ms;
+};
+const pollTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.includes(m.id)) : sortedMembers()); // アンケートも同じ形（targets: [uid] | null(=全員)）
 const isTarget = (x, uid) => !x.targets || x.targets.includes(uid);
 // 回答順：最初に回答した時刻（firstAt）。回答を変えても順番は変わらない（firstAt がない古い回答は最後に変えた時刻）
 const firstAtOf = (v) => (v ? v.firstAt ?? v.at ?? serverTimestamp() : serverTimestamp());
@@ -5185,12 +5249,14 @@ function payTotals(p) {
   }
   return { expect, got, paidN, n };
 }
+// その人が対象か（ほかのページの集金で対象が「全員」のときは、そのページの参加者が対象）
+const payFor = (p, uid) => (p.targets ? p.targets.includes(uid) : !isExt(p.id) || !pageMembers(extPid(p.id)) || pageMembers(extPid(p.id)).some((m) => m.id === uid));
 // 自分の未入金の合計
-const myUnpaid = (uid) => sortedPayments().filter((p) => !p.targets || p.targets.includes(uid))
+const myUnpaid = (uid) => sortedPayments().filter((p) => payFor(p, uid))
   .reduce((s, p) => s + (recordOf(p, uid).status === "unpaid" ? amountOf(p, uid) : 0), 0);
 const reportOf = (p, uid) => S.payReports.get(`${p.id}_${uid}`) ?? null;
 // 報告はあるが、まだ入金済みにしていないもの（管理者の確認待ち）
-const pendingReports = () => sortedPayments().filter(relevantHere).flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
+const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
   .filter((x) => x.rep && recordOf(x.p, x.m.id).status === "unpaid");
 const reportLine = (rep) => [rep.method, rep.at ? fmtDate(rep.at) : "送信中…", rep.note].filter(Boolean).join(" ・ ");
 const myUnanswered = (uid) => sortedPolls().filter((p) => isTarget(p, uid) && pollOpen(p) && !S.votes.has(`${p.id}_${uid}`)).length;
@@ -5410,7 +5476,7 @@ function adminMoney({ withTitle = true } = {}) {
     const ms = payTargets(p).filter((m) => !onlyUnpaid || recordOf(p, m.id).status === "unpaid");
     const setRec = (uid, patch) => fire(updateDoc(DX("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
     return h("article", { class: "card pay-card" },
-      h("div", { class: "poll-head" }, h("b", null, p.title, h("small", { class: "target-count" }, p.targets ? `対象 ${p.targets.length}人` : "対象 全員")), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
+      h("div", { class: "poll-head" }, h("b", null, isExt(p.id) ? fromTag(extPid(p.id)) : null, p.title, h("small", { class: "target-count" }, p.targets ? `対象 ${p.targets.length}人` : "対象 全員")), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
       p.note ? h("div", { class: "cell-sub pay-note" }, p.note) : null,
       h("div", { class: "pay-progress" },
         h("div", { class: "poll-track big" }, h("div", { style: `width:${t.expect ? (t.got / t.expect) * 100 : 0}%` })),
@@ -5428,15 +5494,15 @@ function adminMoney({ withTitle = true } = {}) {
         const rep = reportOf(p, m.id);
         const confirmPaid = () => setRec(m.id, { status: "paid", at: serverTimestamp(), method: PAY_METHODS.includes(rep?.method) ? rep.method : "その他" });
         return h("div", { class: `cell pay-row ${r.status}${rep && r.status === "unpaid" ? " reported" : ""}` },
-          h("div", { class: "cell-main" }, h("b", null, m.name), h("div", { class: "cell-sub" }, r.status === "paid" ? `${r.method ?? ""} ${r.at ? fmtDate(r.at) : ""}` : ""),
+          h("div", { class: "cell-main" }, h("b", null, m.name, isExt(p.id) && !S.members.has(m.id) ? fromTag(extPid(p.id)) : null), h("div", { class: "cell-sub" }, r.status === "paid" ? `${r.method ?? ""} ${r.at ? fmtDate(r.at) : ""}` : ""),
             rep ? h("div", { class: "pay-report" },
               h("span", { class: "pay-report-badge" }, r.status === "unpaid" ? "送金の報告あり" : "報告あり"), reportLine(rep),
               rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null,
               r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
-      p.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページの集金です（この旅行の参加者の分だけ表示）。入金の記録はここでも付けられます。対象者の変更・削除は確定前ページで行ってください。") : targetEditor(p, "payments"),
-      p.fromLobby ? null : h("div", { class: "poll-actions" },
+      isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。全員の入金が済むと、このページには出なくなります。`) : targetEditor(p, "payments"),
+      isExt(p.id) ? null : h("div", { class: "poll-actions" },
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
@@ -5449,7 +5515,7 @@ function adminMoney({ withTitle = true } = {}) {
 
   // 人ごとの未入金
   function byPerson() {
-    const rows = sortedMembers().map((m) => ({ m, owe: sortedPayments().filter((p) => !p.targets || p.targets.includes(m.id)).reduce((s, p) => s + (recordOf(p, m.id).status === "unpaid" ? amountOf(p, m.id) : 0), 0) }))
+    const rows = sortedMembers().map((m) => ({ m, owe: sortedPayments().filter((p) => payFor(p, m.id)).reduce((s, p) => s + (recordOf(p, m.id).status === "unpaid" ? amountOf(p, m.id) : 0), 0) }))
       .filter((r) => r.owe > 0).sort((a, b) => b.owe - a.owe);
     return group("人ごとの未入金", rows.length ? rows.map((r) => cell(r.m.name, h("b", { class: "owe" }, yen(r.owe)))) : none("未入金の人はいません"));
   }
@@ -5469,14 +5535,14 @@ function adminMoney({ withTitle = true } = {}) {
         if (!payChecksCell.hidden) payChecks.refresh();
         const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p) && !p.fromLobby).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
-        const ps = sortedPayments().filter(relevantHere);
+        const ps = sortedPayments();
         const pend = pendingReports();
         const pendGroup = pend.length ? group(`確認待ちの送金報告 ${pend.length}件`, pend.map(({ p, m, rep }) => h("div", { class: "cell pay-row reported" },
           h("div", { class: "cell-main" }, h("b", null, `${m.name}：${p.title}（${yen(amountOf(p, m.id))}）`), h("div", { class: "cell-sub" }, reportLine(rep)),
             rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null),
           h("button", { class: "btn-small", onclick: () => fire(updateDoc(DX("payments", p.id), { [`records.${m.id}.status`]: "paid", [`records.${m.id}.at`]: serverTimestamp(), [`records.${m.id}.method`]: PAY_METHODS.includes(rep.method) ? rep.method : "その他" }), `${m.name} を入金済みにしました`) }, "入金済みにする"))),
           "参加者が「送金しました」を押したものです。入金を確かめてから「入金済みにする」を押してください。") : null;
-        const own = ps.filter((x) => !x.fromLobby);
+        const own = ps.filter((x) => !isExt(x.id));
         const moveAll = own.length && !inLobby() && S.profiles.has(LOBBY)
           ? group(null, h("button", { class: "cell cell-button", onclick: () => guard(null, () => movePaymentsToLobby(own.map((x) => x.id))) }, icon("check"), `この旅行の集金をすべて確定前ページへ移す（${own.length}件）`),
             "入金済みなどの記録と送金の報告も一緒に移ります。移したあとは確定前ページで管理し、確定した人には旅行のページにも表示されます。")
@@ -5552,7 +5618,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
       if (typingIn(el) || typingIn(top)) return;
       const uid = S.user.uid;
       const polls = sortedPolls().filter((p) => isTarget(p, uid));
-      const allPays = sortedPayments().filter((p) => isTarget(p, uid));
+      const allPays = sortedPayments().filter((p) => payFor(p, uid));
       const topPays = pinned === "none" ? [] : allPays.filter((p) => payPinned(p, uid))
         // 未入金を先に、その中は期限の近い順
         .sort((a, b) => (recordOf(a, uid).status === "unpaid" ? 0 : 1) - (recordOf(b, uid).status === "unpaid" ? 0 : 1) || (a.due || "9999").localeCompare(b.due || "9999"));
@@ -5587,7 +5653,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         const rep = reportOf(p, uid);
         const badge = r.status === "paid" ? "入金済み ✓" : r.status === "exempt" ? PAY_STATUS.exempt : rep ? "確認待ち" : PAY_STATUS.unpaid;
         return h("div", { class: `cell pay-mine ${r.status}${rep && r.status === "unpaid" ? " reported" : ""}` },
-          h("div", { class: "cell-main" }, h("b", null, p.title), h("div", { class: "cell-sub" }, [p.due ? `期限 ${p.due.replaceAll("-", "/")}` : null, p.note].filter(Boolean).join(" ・ ")),
+          h("div", { class: "cell-main" }, h("b", null, isExt(p.id) ? fromTag(extPid(p.id)) : null, p.title), h("div", { class: "cell-sub" }, [p.due ? `期限 ${p.due.replaceAll("-", "/")}` : null, p.note].filter(Boolean).join(" ・ ")),
             r.status === "unpaid" ? reportBox(p, rep) : null),
           h("div", { class: "pay-right" }, h("b", null, yen(amountOf(p, uid))), h("span", { class: `pay-badge ${r.status}${rep && r.status === "unpaid" ? " wait" : ""}` }, badge)));
       };
@@ -5796,22 +5862,30 @@ function shares(e, all) {
 }
 
 // 各人の差し引き（＋なら受け取る側、−なら払う側）。データが変わったときだけ計算し直す
-const balancesMemo = memo(() => {
-  const all = sortedMembers().map((m) => m.id);
+function balancesOf(expenses, all) {
   const bal = new Map(all.map((id) => [id, 0]));
   const add = (id, v) => bal.set(id, (bal.get(id) ?? 0) + v);
-  for (const e of S.expenses.values()) {
+  for (const e of expenses) {
     if (e.kind === "settle") { add(e.from, e.amount); add(e.to, -e.amount); continue; }
     add(e.payer, e.amount);
     for (const [id, v] of shares(e, all)) add(id, -v);
   }
   return bal;
-});
+}
+const balancesMemo = memo(() => balancesOf(S.expenses.values(), sortedMembers().map((m) => m.id)));
 const balances = () => new Map(balancesMemo());
+// ほかのページの立て替えで、精算が残っているもの [{ pid, st }]
+const extSettlements = memo(() => [...S.extExpenses].flatMap(([pid, exps]) => {
+  const ms = pageMembers(pid);
+  if (!ms || !exps.size) return [];
+  const st = settleOf(balancesOf(exps.values(), ms.map((m) => m.id)));
+  return st.length ? [{ pid, st }] : [];
+}));
 
 // 誰が誰にいくら払えばよいか
-function settlements() {
-  const bal = [...balances()].filter(([, v]) => v !== 0);
+function settlements() { return settleOf(balances()); }
+function settleOf(balMap) {
+  const bal = [...balMap].filter(([, v]) => v !== 0);
   const pay = bal.filter(([, v]) => v < 0).map(([id, v]) => ({ id, v: -v })).sort((a, b) => b.v - a.v);
   const get = bal.filter(([, v]) => v > 0).map(([id, v]) => ({ id, v })).sort((a, b) => b.v - a.v);
   const out = [];
@@ -5874,6 +5948,21 @@ function expenseView({ admin = false } = {}) {
           h("div", { class: "cell-main" }, h("b", null, `${memberName(t.from)} → ${memberName(t.to)}`)), h("b", null, yen(t.amount)), settleBtn(t))) : cell("精算するものはありません"),
           "支払いの回数ができるだけ少なくなるように組み合わせています。"),
         admin ? group("人ごとの差し引き", sortedMembers().map((m) => cell(m.name, h("b", { class: (bal.get(m.id) ?? 0) < 0 ? "owe" : (bal.get(m.id) ?? 0) > 0 ? "get" : "" }, `${(bal.get(m.id) ?? 0) > 0 ? "+" : (bal.get(m.id) ?? 0) < 0 ? "−" : ""}${yen(Math.abs(bal.get(m.id) ?? 0))}`))), "＋は受け取る額、−は払う額です。") : null);
+      // ほかのページの立て替え（精算が残っている間だけ）。参加者は自分が関わる分だけ
+      const extGroups = extSettlements().map(({ pid, st: xs }) => {
+        const shown = admin ? xs : xs.filter((t) => t.from === uid || t.to === uid);
+        if (!shown.length) return null;
+        const pay = (t) => (admin || t.from === uid) ? h("button", { class: "btn-small", onclick: () => {
+          if (!confirm(`${pageName(pid)}の精算：${memberName(t.from)} → ${memberName(t.to)} に ${yen(t.amount)} 払ったことにしますか？`)) return;
+          fire(addDoc(collection(db, ...pageBase(pid), "expenses"), { uid: admin ? uid : t.from, kind: "settle", from: t.from, to: t.to, amount: t.amount, createdAt: serverTimestamp() }), "記録しました");
+        } }, "払った") : null;
+        return h("section", { class: "group" }, h("div", { class: "group-header" }, fromTag(pid), `立て替えの精算（残り ${xs.length}件）`),
+          h("div", { class: "group-body" }, shown.map((t) => h("div", { class: "cell settle-row" },
+            h("div", { class: "cell-main" }, h("b", null, admin ? `${memberName(t.from)} → ${memberName(t.to)}` : t.from === uid ? `${memberName(t.to)} に払う` : `${memberName(t.from)} から受け取る`)),
+            h("b", { class: admin ? "" : t.from === uid ? "owe" : "get" }, yen(t.amount)), pay(t)))),
+          h("div", { class: "group-footer" }, `${pageName(pid)}で登録した立て替えです。精算が全部済むと、このページには出なくなります。`));
+      });
+      result.append(...extGroups.filter(Boolean));
       const items = sortedExpenses();
       setKids(list, items.length ? group("記録", items.map((e) => {
         const canDel = admin || e.uid === uid;
@@ -6480,7 +6569,7 @@ function exportBuild(parts) {
       }) : none());
     },
     payments: () => {
-      const ps = sortedPayments().filter((p) => !p.fromLobby);
+      const ps = sortedPayments().filter((p) => !isExt(p.id));
       return sec("集金", ps.length ? ps.map((p) => {
         const t = payTotals(p);
         return h("div", { class: "rp-block" }, h("h3", null, p.title, h("small", null, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
