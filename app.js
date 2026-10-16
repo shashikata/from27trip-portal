@@ -896,6 +896,7 @@ const ICONS = {
   note: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
   table: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
+  yen: '<path d="M7 4l5 7 5-7M12 11v9M8 13.5h8M8 17h8"/>',
   map: '<path d="M9 4.5 3.5 6.5v13l5.5-2 6 2 5.5-2v-13l-5.5 2-6-2Z"/><path d="M9 4.5v13M15 6.5v13"/>',
   locate: '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="7.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22"/>',
   quiz: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
@@ -2100,7 +2101,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v48"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v49"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2211,15 +2212,80 @@ function adminAnnouncements() {
     btn,
   );
 
-  const el = h("div", null, largeTitle("お知らせ"), form, h("div", { class: "group-header standalone" }, "投稿済み"), list);
+  const ongoing = adminOngoing();
+  const el = h("div", null, largeTitle("お知らせ"), ongoing.el, form, h("div", { class: "group-header standalone" }, "投稿済み"), list);
   return {
     el,
     update() {
+      ongoing.update();
       refreshTarget();
       const page = paged("adminAnn", sortAnnouncements(merged(S.annSrc)), 20);
       setKids(list, page.items.length ? page.items.map((a) => announcementCard(a, { admin: true })) : emptyState("megaphone", "まだありません"), page.more);
     },
   };
+}
+
+// 管理者のお知らせページの一番上：いま動いているもの（受付中のアンケート・集金中・未精算の立て替え・クイズ）
+// 押すと、その画面（出欠・集金 / クイズ）を開く。何もないときは欄ごと隠す
+function adminOngoing() {
+  const body = h("div", { class: "group-body" });
+  const el = h("section", { class: "group ongoing" }, h("div", { class: "group-header" }, "実施中"), body);
+  const row = (ic, title, sub, tag, onclick) => h("button", { class: "cell cell-button ongoing-row", onclick },
+    icon(ic), h("span", { class: "cell-main" }, h("b", null, title), h("small", null, sub)),
+    tag ? h("span", { class: `ongoing-tag ${tag.cls ?? ""}` }, tag.text) : null, icon("chevron", "ongoing-go"));
+  return {
+    el,
+    update() {
+      const rows = [];
+      // クイズ
+      const L = S.live;
+      if (!inLobby() && L && L.phase && L.phase !== "off") {
+        const qz = S.quizzes.get(L.quizId);
+        rows.push(row("quiz", `クイズ「${qz?.title ?? "クイズ"}」`, L.phase === "lobby" ? "参加者の入場待ち" : L.phase === "results" ? "結果発表中" : "出題中", { text: "実施中", cls: "live" },
+          () => openAdminTab("quiz")));
+      }
+      // 出欠・アンケート（受付中）：回答した人数
+      const answered = new Map();
+      for (const v of S.votes.values()) { if (!answered.has(v.pollId)) answered.set(v.pollId, new Set()); answered.get(v.pollId).add(v.uid); }
+      for (const p of sortedPolls().filter((x) => relevantHere(x) && pollOpen(x))) {
+        const ts2 = pollTargets(p);
+        const got = ts2.filter((m) => answered.get(p.id)?.has(m.id)).length;
+        rows.push(row("check", p.question, [`回答 ${got} / ${ts2.length}人`, p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "締切なし"].join(" ・ "), { text: "受付中" },
+          () => openAdminMoney("polls")));
+      }
+      // 集金：まだ全員そろっていないもの
+      const pend = pendingReports();
+      for (const p of sortedPayments().filter(relevantHere)) {
+        const t = payTargets(p);
+        const { expect, got, paidN, n } = payTotals(p);
+        if (!t.length || paidN >= n) continue;
+        const reports = pend.filter((x) => x.p.id === p.id).length;
+        const over = p.due && p.due < new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        rows.push(row("yen", p.title, [`入金 ${paidN} / ${n}人`, `${yen(got)} / ${yen(expect)}`, p.due ? `期限 ${p.due.slice(5).replace("-", "/")}` : null, reports ? `確認待ち ${reports}件` : null].filter(Boolean).join(" ・ "),
+          over ? { text: "期限切れ", cls: "warn" } : { text: "集金中" }, () => openAdminMoney("pay")));
+      }
+      // 立て替え：まだ精算が残っているもの
+      const st = settlements();
+      if (st.length) {
+        rows.push(row("arrows", "立て替えの精算", `残り ${st.length}件 ・ 合計 ${yen(st.reduce((a, x) => a + x.amount, 0))}`, { text: "未精算" }, () => openAdminMoney("exp")));
+      }
+      el.hidden = !rows.length;
+      body.replaceChildren(...rows);
+    },
+  };
+}
+
+// 出欠・集金の画面を、指定した欄（polls / pay / exp）で開く。もう開いていれば欄だけ切り替える
+let moneyTabHint = null;
+let activeMoney = null;
+function openAdminMoney(which) {
+  if (activeMoney?.el.isConnected) { activeMoney.show(which); activeMoney.el.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
+  moneyTabHint = which;
+  openAdminTab("money");
+}
+function openAdminTab(key) {
+  const t = (inLobby() ? LOBBY_ADMIN_TABS : ADMIN_TABS).find((x) => x.key === key);
+  if (t) openSheet(t);
 }
 
 function adminMembers({ withTitle = true } = {}) {
@@ -4990,6 +5056,37 @@ const sortedPayments = () => [...S.payments.values()].sort((a, b) => ts(b.create
 const payTargets = (p) => (p.targets ? sortedMembers().filter((m) => p.targets.includes(m.id)) : sortedMembers());
 const pollTargets = payTargets; // アンケートも同じ形（targets: [uid] | null(=全員)）
 const isTarget = (x, uid) => !x.targets || x.targets.includes(uid);
+// 回答順：最初に回答した時刻（firstAt）。回答を変えても順番は変わらない（firstAt がない古い回答は最後に変えた時刻）
+const firstAtOf = (v) => (v ? v.firstAt ?? v.at ?? serverTimestamp() : serverTimestamp());
+const fmtClock = (x) => {
+  if (!x?.toDate) return "送信中…";
+  const d = x.toDate();
+  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+};
+// 参加者：管理者が「ひとことを全員に見せる」にしたアンケートの、みんなのひとこと（匿名のアンケートは名前を出さない）
+function pollComments(p, tally) {
+  const list = tally.filter((v) => v.comment).sort((a, b) => ts(a.at) - ts(b.at));
+  return h("div", { class: "poll-comments" },
+    h("div", { class: "poll-comments-head" }, `みんなのひとこと（${list.length}件）`),
+    list.length ? list.map((v) => h("div", { class: "poll-comment-item" },
+      p.anonymous ? null : h("b", null, memberName(v.uid)),
+      h("span", null, v.comment))) : h("div", { class: "cell-sub" }, "まだひとことはありません"));
+}
+// 管理者：アンケートの回答順と回答時刻
+function voteOrderList(p, votes) {
+  const first = (v) => ts(v.firstAt ?? v.at) || Date.now();
+  const list = [...votes].sort((a, b) => first(a) - first(b) || ts(a.at) - ts(b.at));
+  if (!list.length) return null;
+  const answer = (v) => (isRankPoll(p) ? (v.order ?? [v.choice]).map((o, i) => `${i + 1}位 ${o}`).join("・") : v.choice);
+  return keptFold(`order:${p.id}`, `回答順・回答時刻（${list.length}人）`, h("ol", { class: "vote-order" }, list.map((v, i) => {
+    const changed = v.firstAt && v.at && ts(v.at) - ts(v.firstAt) > 1000;
+    return h("li", null,
+      h("span", { class: "vo-rank" }, `${i + 1}`),
+      h("span", { class: "vo-name" }, memberName(v.uid), v.byAdmin ? h("small", null, "（管理者が入力）") : null),
+      h("span", { class: "vo-choice" }, answer(v)),
+      h("span", { class: "vo-time" }, fmtClock(v.firstAt ?? v.at), changed ? h("small", null, `変更 ${fmtClock(v.at)}`) : null));
+  })));
+}
 
 // 順位投票（polls.rank = true）：各自が選択肢に 1位〜depth位 を付けて投票する（votes.order に順番、choice は1位）。
 // 集計は点数（ボルダ式）：depth 位まで付けるとき、1位 = depth 点、2位 = depth−1 点 … depth位 = 1点
@@ -5178,7 +5275,8 @@ async function movePaymentsToLobby(ids) {
 
 // ---- 管理者
 function adminMoney({ withTitle = true } = {}) {
-  const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], "polls");
+  const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], moneyTabHint ?? "polls");
+  moneyTabHint = null;
   const exp = expenseView({ admin: true });
   tab.addEventListener("change", () => scheduleRender());
   const body = h("div");
@@ -5271,7 +5369,7 @@ function adminMoney({ withTitle = true } = {}) {
     const votes = [...S.votes.values()].filter((v) => v.pollId === p.id && isTarget(p, v.uid));
     const none = ms.filter((m) => !votes.some((v) => v.uid === m.id));
     const setVote = (uid, choice) => fire(choice
-      ? setDoc(DX("votes", `${p.id}_${uid}`), { uid, pollId: rawId(p.id), choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), byAdmin: true })
+      ? setDoc(DX("votes", `${p.id}_${uid}`), { uid, pollId: rawId(p.id), choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), firstAt: firstAtOf(S.votes.get(`${p.id}_${uid}`)), byAdmin: true })
       : deleteDoc(DX("votes", `${p.id}_${uid}`)));
     return h("article", { class: "card poll-card" },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null),
@@ -5284,6 +5382,7 @@ function adminMoney({ withTitle = true } = {}) {
           vs.length && !p.anonymous ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
       })),
       none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
+      p.anonymous ? null : voteOrderList(p, votes),
       p.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのアンケートです（この旅行の参加者の分だけ表示）。対象者の変更・削除は確定前ページで行ってください。") : null,
       p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : isRankPoll(p) ? null : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "未回答"), p.options.map((o) => h("option", { value: o, selected: S.votes.get(`${p.id}_${m.id}`)?.choice === o }, o)));
@@ -5294,6 +5393,7 @@ function adminMoney({ withTitle = true } = {}) {
       h("div", { class: "poll-actions" },
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
+        p.allowComment || p.showComments || votes.some((v) => v.comment) ? h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showComments: !p.showComments }), p.showComments ? "ひとことを非公開にしました" : "ひとことを全員に表示しました") }, p.showComments ? "ひとことを全員に見せない" : "ひとことを全員に見せる") : null,
         p.fromLobby ? null : h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.question}」を削除しますか？回答も消えます。`)) return;
           const b = writeBatch(db);
@@ -5354,6 +5454,7 @@ function adminMoney({ withTitle = true } = {}) {
     return group("人ごとの未入金", rows.length ? rows.map((r) => cell(r.m.name, h("b", { class: "owe" }, yen(r.owe)))) : none("未入金の人はいません"));
   }
 
+  activeMoney = { el, show: (v) => { tab.value = v; scheduleRender(); } };
   return {
     el,
     update() {
@@ -5467,8 +5568,8 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         com.sync(mine?.comment ?? "");
         const rank = isRankPoll(p);
         const vote = (choice) => fire(setDoc(DX("votes", `${p.id}_${uid}`), rank
-          ? { uid, pollId: rawId(p.id), choice: choice[0], order: choice, comment: com.value.trim(), at: serverTimestamp() }
-          : { uid, pollId: rawId(p.id), choice, comment: com.value.trim(), at: serverTimestamp() }), "回答しました");
+          ? { uid, pollId: rawId(p.id), choice: choice[0], order: choice, comment: com.value.trim(), at: serverTimestamp(), firstAt: firstAtOf(mine) }
+          : { uid, pollId: rawId(p.id), choice, comment: com.value.trim(), at: serverTimestamp(), firstAt: firstAtOf(mine) }), "回答しました");
         const tally = S.pollTally.get(p.id) ?? [];
         const res = !p.showResults ? null : rank ? rankPollResult(p, tally, false)
           : h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, tally.filter((v) => v.choice === o).length))));
@@ -5478,7 +5579,8 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
             : h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
           p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(rank ? mine.order ?? [mine.choice] : mine.choice); } }, "コメントを送る") : null) : null,
           h("div", { class: "cell-sub" }, mine ? `あなたの回答：${rank ? (mine.order ?? []).map((o, i) => `${i + 1}位 ${o}`).join("・") : mine.choice}${mine.byAdmin ? "（管理者が入力）" : ""}${open ? "（締切まで変えられます）" : ""}` : open ? "まだ回答していません" : "回答していません"),
-          res);
+          res,
+          p.showComments ? pollComments(p, S.pollTally.get(p.id) ?? []) : null);
       };
       const payEl = (p) => {
         const r = recordOf(p, uid);
@@ -5508,9 +5610,9 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
 // 集計を見せるアンケートの回答（参加者用）。votes を全部は読まず、集計を見せるアンケートの分だけ読む
 function syncPollTally() {
   if (S.isAdmin) return;
-  const want = new Set(sortedPolls().filter((p) => p.showResults).map((p) => p.id));
+  const want = new Set(sortedPolls().filter((p) => p.showResults || p.showComments).map((p) => p.id));
   for (const id of [...S.pollTally.keys()]) if (!want.has(id)) { unlisten(`tally:${id}`); S.pollTally.delete(id); TALLY_ONCE.delete(id); }
-  const tallyOf = (s) => [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null }));
+  const tallyOf = (s) => [...toMap(s).values()].map((v) => ({ choice: v.choice, order: v.order ?? null, uid: v.uid, comment: v.comment ?? "", at: v.firstAt ?? v.at ?? null }));
   for (const id of want) {
     const q = query(CX("votes", id), where("pollId", "==", rawId(id)));
     const p = S.polls.get(id);

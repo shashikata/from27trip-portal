@@ -1732,3 +1732,36 @@ input.cl-title { padding: 2px 0; }
 .assign-row { gap: 8px; }
 .role-input { width: 6.5em; flex: none; border: none; background: var(--fill); border-radius: 8px; padding: 5px 8px; font-size: 14px; }
 .role-input::placeholder { color: var(--label-3); }
+
+/* 管理者のお知らせページ：実施中のもの */
+.ongoing-row { gap: 12px; text-align: left; color: var(--label); }
+.ongoing-row > .icon:first-child { width: 22px; height: 22px; color: var(--blue); flex: none; }
+.ongoing-row .cell-main { flex: 1; display: grid; justify-content: stretch; justify-items: start; text-align: left; min-width: 0; gap: 2px; }
+.ongoing-row .cell-main b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ongoing-row small { color: var(--label-2); font-size: 13px; line-height: 1.35; }
+.ongoing-tag { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; color: var(--blue); background: var(--fill); }
+.ongoing-tag.warn { color: #fff; background: var(--red); }
+.ongoing-tag.live { color: #fff; background: var(--green); }
+.ongoing-row .ongoing-go { width: 16px; height: 16px; color: var(--label-3); flex: none; }
+
+/* 管理者：アンケートの回答順 */
+.vote-order { list-style: none; margin: 0; padding: 4px 0; display: grid; }
+.vote-order li { text-align: left; display: grid; grid-template-columns: 2em minmax(5em, 1fr) minmax(4em, 1fr) auto; align-items: baseline; gap: 4px 10px; padding: 7px 4px; border-bottom: 0.5px solid var(--separator, rgba(60, 60, 67, .2)); font-size: 14px; }
+.vote-order li:last-child { border-bottom: none; }
+.vo-rank { color: var(--label-2); font-variant-numeric: tabular-nums; text-align: right; }
+.vo-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.vo-name small, .vo-time small { display: block; font-weight: 400; color: var(--label-2); font-size: 12px; }
+.vo-choice { min-width: 0; overflow-wrap: anywhere; }
+.vo-time { color: var(--label-2); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+@media (max-width: 420px) {
+  .vote-order li { grid-template-columns: 2em 1fr auto; }
+  .vo-choice { grid-column: 2; grid-row: 2; color: var(--label-2); }
+  .vo-time { grid-column: 3; grid-row: 1 / span 2; }
+}
+
+/* 参加者：みんなのひとこと */
+.poll-comments { margin-top: 10px; padding-top: 10px; border-top: 0.5px solid var(--separator); display: grid; gap: 8px; text-align: left; }
+.poll-comments-head { font-size: 13px; font-weight: 600; color: var(--label-2); }
+.poll-comment-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 14px; line-height: 1.5; }
+.poll-comment-item b { font-weight: 600; }
+.poll-comment-item span { flex-basis: 100%; overflow-wrap: anywhere; }
