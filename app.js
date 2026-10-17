@@ -2155,7 +2155,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v52"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v53"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5352,24 +5352,27 @@ async function movePaymentsToLobby(ids) {
 const sortedPollReqs = () => [...S.pollReqs.values()].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
 const pendingPollReqs = () => sortedPollReqs().filter((r) => r.status === "pending");
 const splitOptions = (text) => [...new Set(String(text).split(/[/／,、\n]/).map((x) => x.trim()).filter(Boolean))];
-const proposedLabel = (p) => (p.proposedBy ? h("small", { class: "proposed-by" }, `${memberName(p.proposedBy)}さんの提案`) : null);
+// 提案者の名前は showProposer のときだけ参加者に出す（管理者には常に出す）
+const proposedLabel = (p) => (!p.proposedBy ? null
+  : p.showProposer !== false ? h("small", { class: "proposed-by" }, `${memberName(p.proposedBy)}さんの提案`)
+  : S.isAdmin ? h("small", { class: "proposed-by off" }, `${memberName(p.proposedBy)}さんの提案（名前は非公開）`) : h("small", { class: "proposed-by" }, "参加者の提案"));
 
 // 参加者：アンケートを申請する欄と、自分の申請の状況
 function pollRequestBox() {
   const q = h("input", { type: "text", class: "plain", placeholder: "例：2日目の夜ごはん、何がいい？", maxlength: "100" });
   const opts = h("input", { type: "text", class: "plain", placeholder: "選択肢を / で区切る（例：焼肉 / 寿司 / カレー）", maxlength: "200" });
   const deadline = h("input", { type: "datetime-local" });
-  const allowCom = toggle(true), showRes = toggle(true);
+  const allowCom = toggle(true), showRes = toggle(true), showName = toggle(true);
   const form = h("form", { onsubmit: (e) => {
     e.preventDefault();
     const options = splitOptions(opts.value);
     if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
-    fire(addDoc(C("pollRequests"), { uid: S.user.uid, question: q.value.trim(), options, deadline: deadline.value || null, allowComment: allowCom.checked, showResults: showRes.checked, status: "pending", createdAt: serverTimestamp() }),
+    fire(addDoc(C("pollRequests"), { uid: S.user.uid, question: q.value.trim(), options, deadline: deadline.value || null, allowComment: allowCom.checked, showResults: showRes.checked, showName: showName.checked, status: "pending", createdAt: serverTimestamp() }),
       "申請しました。管理者が承認すると公開されます");
     q.value = opts.value = deadline.value = "";
   } },
-    group(null, [h("div", { class: "cell" }, q), h("div", { class: "cell" }, opts), field("締切（任意）", deadline), field("ひとこと欄", allowCom), field("集計をみんなに見せる", showRes)],
-      "管理者が内容を確認して承認すると、みんなに公開されます。"),
+    group(null, [h("div", { class: "cell" }, q), h("div", { class: "cell" }, opts), field("締切（任意）", deadline), field("ひとこと欄", allowCom), field("集計をみんなに見せる", showRes), field("自分の名前を出す", showName)],
+      "管理者が内容を確認して承認すると、みんなに公開されます。「自分の名前を出す」をオフにすると「参加者の提案」とだけ表示されます（管理者には誰の申請かわかります）。"),
     h("button", { class: "btn-filled", type: "submit" }, "申請する"));
   const fold = keptFold("pollReqForm", "＋ アンケートを申請する", form);
   const mine = h("div");
@@ -5380,7 +5383,7 @@ function pollRequestBox() {
       const rs = sortedPollReqs().filter((r) => r.uid === S.user.uid).reverse();
       const label = { pending: "申請中（管理者の確認待ち）", approved: "承認されて公開されました", rejected: "見送られました" };
       setKids(mine, rs.length ? group("あなたの申請", rs.map((r) => h("div", { class: `cell poll-req mine ${r.status}` },
-        h("div", { class: "cell-main" }, h("b", null, r.question), h("div", { class: "cell-sub" }, r.options.join(" / ")),
+        h("div", { class: "cell-main" }, h("b", null, r.question), h("div", { class: "cell-sub" }, `${r.options.join(" / ")} ・ ${r.showName === false ? "名前を出さない" : "名前を出す"}`),
           h("div", { class: `poll-req-status ${r.status}` }, label[r.status] ?? r.status, r.status === "rejected" && r.reason ? `：${r.reason}` : "")),
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(r.status === "pending" ? "この申請を取り下げますか？" : "この記録を消しますか？（公開されたアンケートは消えません）")) return;
@@ -5398,7 +5401,7 @@ function pollRequestReview() {
   return group(`参加者からの申請 ${rs.length}件`, rs.map((r) => {
     let d = reqDrafts.get(r.id);
     if (!d) {
-      d = { q: editableInput({ class: "plain", maxlength: "100" }), opts: editableInput({ class: "plain", maxlength: "200" }) };
+      d = { q: editableInput({ class: "plain", maxlength: "100" }), opts: editableInput({ class: "plain", maxlength: "200" }), name: toggle(r.showName !== false) };
       reqDrafts.set(r.id, d);
     }
     d.q.sync(r.question);
@@ -5409,7 +5412,7 @@ function pollRequestReview() {
       const b = writeBatch(db);
       const pref = doc(C("polls"));
       b.set(pref, { question: d.q.value.trim(), options, optionUids: null, noSelf: false, rank: false, depth: null, deadline: r.deadline ?? null, open: true,
-        showResults: r.showResults !== false, allowComment: r.allowComment !== false, anonymous: false, targets: null, proposedBy: r.uid, createdAt: serverTimestamp() });
+        showResults: r.showResults !== false, allowComment: r.allowComment !== false, anonymous: false, targets: null, proposedBy: r.uid, showProposer: d.name.checked, createdAt: serverTimestamp() });
       b.update(D("pollRequests", r.id), { status: "approved", pollId: pref.id, reason: null });
       reqDrafts.delete(r.id);
       fire(b.commit(), "承認して公開しました");
@@ -5424,6 +5427,7 @@ function pollRequestReview() {
       h("div", { class: "cell-main" },
         h("div", { class: "cell-sub" }, `${memberName(r.uid)}さんから ・ ${fmtDate(r.createdAt)}`),
         h("div", { class: "poll-req-edit" }, d.q, d.opts),
+        h("label", { class: "poll-req-name" }, d.name, `提案者の名前（${memberName(r.uid)}）を公開する`, r.showName === false ? h("small", null, "（本人は「出さない」を希望）") : null),
         h("div", { class: "cell-sub" }, [r.deadline ? `締切 ${fmtDeadline(r.deadline)}` : "締切なし", r.allowComment !== false ? "ひとこと欄あり" : "ひとこと欄なし", r.showResults !== false ? "集計を見せる" : "集計は見せない"].join(" ・ ")),
         h("div", { class: "poll-req-actions" },
           h("button", { class: "btn-small", onclick: approve }, "承認して公開"),
@@ -5550,6 +5554,7 @@ function adminMoney({ withTitle = true } = {}) {
       h("div", { class: "poll-actions" },
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
+        p.proposedBy ? h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showProposer: p.showProposer === false }), p.showProposer === false ? "提案者の名前を公開しました" : "提案者の名前を隠しました") }, p.showProposer === false ? "提案者の名前を出す" : "提案者の名前を隠す") : null,
         p.allowComment || p.showComments || votes.some((v) => v.comment) ? h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showComments: !p.showComments }), p.showComments ? "ひとことを非公開にしました" : "ひとことを全員に表示しました") }, p.showComments ? "ひとことを全員に見せない" : "ひとことを全員に見せる") : null,
         p.fromLobby ? null : h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.question}」を削除しますか？回答も消えます。`)) return;

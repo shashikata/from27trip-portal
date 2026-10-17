@@ -1802,3 +1802,6 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .poll-req-status { font-size: 13px; font-weight: 600; color: var(--orange); }
 .poll-req-status.approved { color: var(--green); }
 .poll-req-status.rejected { color: var(--label-2); }
+.proposed-by.off { color: var(--label-2); }
+.poll-req-name { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 13px; margin: 2px 0; }
+.poll-req-name small { color: var(--orange); }
