@@ -1789,3 +1789,16 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .video-admin.hidden-video > .video-link, .video-admin.hidden-video .cell-main > b { opacity: .45; }
 .video-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; }
 .video-vis { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--label-2); }
+
+/* アンケートの申請 */
+.proposed-by { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--blue); background: var(--fill); vertical-align: 0.15em; white-space: nowrap; }
+.poll-req-box { margin-bottom: 12px; }
+.poll-req { align-items: flex-start; gap: 10px; }
+.poll-req .cell-main { gap: 4px; text-align: left; }
+.poll-req-edit { display: grid; gap: 6px; margin: 4px 0; }
+.poll-req-edit input { width: 100%; padding: 8px 10px; border-radius: 8px; background: var(--fill); border: none; }
+.poll-req-edit input:first-child { font-weight: 600; }
+.poll-req-actions { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+.poll-req-status { font-size: 13px; font-weight: 600; color: var(--orange); }
+.poll-req-status.approved { color: var(--green); }
+.poll-req-status.rejected { color: var(--label-2); }

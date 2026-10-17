@@ -321,6 +321,7 @@ function startAdmin() {
   listen("notes", C("notes"), (s) => { S.notes = toMap(s); });
   listen("quizzes", C("quizzes"), (s) => { S.quizzes = toMap(s); });
   listen("polls", C("polls"), (s) => { if (s) mergeSrc("polls", "trip", toMap(s)); });
+  listen("pollReqs", C("pollRequests"), (s) => { if (s) S.pollReqs = toMap(s); });
   listen("votes", C("votes"), (s) => { if (s) mergeSrc("votes", "trip", toMap(s)); });
   listen("payments", C("payments"), (s) => { if (s) mergeSrc("payments", "trip", toMap(s)); });
   listen("payReports", C("payReports"), (s) => { if (s) mergeSrc("payReports", "trip", toMap(s)); });
@@ -460,6 +461,7 @@ function startMemberData(uid) {
   listenRecent(uid);
   listen("stats", D("stats", "points"), (s) => { S.stats = s?.exists() ? s.data() : null; });
   listen("polls", C("polls"), (s) => { if (s) mergeSrc("polls", "trip", toMap(s)); syncPollTally(); });
+  listen("pollReqs", query(C("pollRequests"), where("uid", "==", uid)), (s) => { if (s) S.pollReqs = toMap(s); });
   listen("votes", query(C("votes"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("votes", "trip", toMap(s)); });
   listen("payments", C("payments"), (s) => { if (s) mergeSrc("payments", "trip", toMap(s)); });
   listen("payReports", query(C("payReports"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("payReports", "trip", toMap(s)); });
@@ -613,7 +615,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -2153,7 +2155,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v51"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v52"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2305,6 +2307,8 @@ function adminOngoing() {
         rows.push(row("check", p.question, [`回答 ${got} / ${ts2.length}人`, p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "締切なし"].join(" ・ "), { text: "受付中" },
           () => openAdminMoney("polls")));
       }
+      const reqs = pendingPollReqs();
+      if (reqs.length) rows.push(row("check", "アンケートの申請", reqs.map((r) => `${memberName(r.uid)}「${r.question}」`).join(" ・ "), { text: `${reqs.length}件`, cls: "warn" }, () => openAdminMoney("polls")));
       // 集金：まだ全員そろっていないもの
       const pend = pendingReports();
       for (const p of sortedPayments()) {
@@ -5342,6 +5346,91 @@ async function movePaymentsToLobby(ids) {
 }
 
 // ---- 管理者
+// ---- アンケートの申請（参加者 → 管理者が承認すると公開）
+//   pollRequests/{自動}  { uid, question, options, deadline, allowComment, showResults, status: "pending" | "approved" | "rejected", reason, pollId, createdAt }
+//   承認すると polls に { ..., proposedBy: uid } で作り、申請は status: "approved" にする
+const sortedPollReqs = () => [...S.pollReqs.values()].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
+const pendingPollReqs = () => sortedPollReqs().filter((r) => r.status === "pending");
+const splitOptions = (text) => [...new Set(String(text).split(/[/／,、\n]/).map((x) => x.trim()).filter(Boolean))];
+const proposedLabel = (p) => (p.proposedBy ? h("small", { class: "proposed-by" }, `${memberName(p.proposedBy)}さんの提案`) : null);
+
+// 参加者：アンケートを申請する欄と、自分の申請の状況
+function pollRequestBox() {
+  const q = h("input", { type: "text", class: "plain", placeholder: "例：2日目の夜ごはん、何がいい？", maxlength: "100" });
+  const opts = h("input", { type: "text", class: "plain", placeholder: "選択肢を / で区切る（例：焼肉 / 寿司 / カレー）", maxlength: "200" });
+  const deadline = h("input", { type: "datetime-local" });
+  const allowCom = toggle(true), showRes = toggle(true);
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const options = splitOptions(opts.value);
+    if (!q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上入れてください", true);
+    fire(addDoc(C("pollRequests"), { uid: S.user.uid, question: q.value.trim(), options, deadline: deadline.value || null, allowComment: allowCom.checked, showResults: showRes.checked, status: "pending", createdAt: serverTimestamp() }),
+      "申請しました。管理者が承認すると公開されます");
+    q.value = opts.value = deadline.value = "";
+  } },
+    group(null, [h("div", { class: "cell" }, q), h("div", { class: "cell" }, opts), field("締切（任意）", deadline), field("ひとこと欄", allowCom), field("集計をみんなに見せる", showRes)],
+      "管理者が内容を確認して承認すると、みんなに公開されます。"),
+    h("button", { class: "btn-filled", type: "submit" }, "申請する"));
+  const fold = keptFold("pollReqForm", "＋ アンケートを申請する", form);
+  const mine = h("div");
+  const el = h("div", { class: "poll-req-box" }, fold, mine);
+  return {
+    el,
+    update() {
+      const rs = sortedPollReqs().filter((r) => r.uid === S.user.uid).reverse();
+      const label = { pending: "申請中（管理者の確認待ち）", approved: "承認されて公開されました", rejected: "見送られました" };
+      setKids(mine, rs.length ? group("あなたの申請", rs.map((r) => h("div", { class: `cell poll-req mine ${r.status}` },
+        h("div", { class: "cell-main" }, h("b", null, r.question), h("div", { class: "cell-sub" }, r.options.join(" / ")),
+          h("div", { class: `poll-req-status ${r.status}` }, label[r.status] ?? r.status, r.status === "rejected" && r.reason ? `：${r.reason}` : "")),
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(r.status === "pending" ? "この申請を取り下げますか？" : "この記録を消しますか？（公開されたアンケートは消えません）")) return;
+          fire(deleteDoc(D("pollRequests", r.id)), r.status === "pending" ? "取り下げました" : "消しました");
+        } }, r.status === "pending" ? "取り下げる" : "消す")))) : null);
+    },
+  };
+}
+
+// 管理者：参加者からの申請（内容を直してから承認できる）
+const reqDrafts = new Map(); // 申請 id -> { q, opts }
+function pollRequestReview() {
+  const rs = pendingPollReqs();
+  if (!rs.length) return null;
+  return group(`参加者からの申請 ${rs.length}件`, rs.map((r) => {
+    let d = reqDrafts.get(r.id);
+    if (!d) {
+      d = { q: editableInput({ class: "plain", maxlength: "100" }), opts: editableInput({ class: "plain", maxlength: "200" }) };
+      reqDrafts.set(r.id, d);
+    }
+    d.q.sync(r.question);
+    d.opts.sync(r.options.join(" / "));
+    const approve = () => {
+      const options = splitOptions(d.opts.value);
+      if (!d.q.value.trim() || options.length < 2) return toast("質問と、選択肢を2つ以上にしてください", true);
+      const b = writeBatch(db);
+      const pref = doc(C("polls"));
+      b.set(pref, { question: d.q.value.trim(), options, optionUids: null, noSelf: false, rank: false, depth: null, deadline: r.deadline ?? null, open: true,
+        showResults: r.showResults !== false, allowComment: r.allowComment !== false, anonymous: false, targets: null, proposedBy: r.uid, createdAt: serverTimestamp() });
+      b.update(D("pollRequests", r.id), { status: "approved", pollId: pref.id, reason: null });
+      reqDrafts.delete(r.id);
+      fire(b.commit(), "承認して公開しました");
+    };
+    const reject = () => {
+      const reason = prompt("見送る理由（任意・申請した人に表示されます）", "");
+      if (reason == null) return;
+      reqDrafts.delete(r.id);
+      fire(updateDoc(D("pollRequests", r.id), { status: "rejected", reason: reason.trim() || null }), "見送りました");
+    };
+    return h("div", { class: "cell poll-req" },
+      h("div", { class: "cell-main" },
+        h("div", { class: "cell-sub" }, `${memberName(r.uid)}さんから ・ ${fmtDate(r.createdAt)}`),
+        h("div", { class: "poll-req-edit" }, d.q, d.opts),
+        h("div", { class: "cell-sub" }, [r.deadline ? `締切 ${fmtDeadline(r.deadline)}` : "締切なし", r.allowComment !== false ? "ひとこと欄あり" : "ひとこと欄なし", r.showResults !== false ? "集計を見せる" : "集計は見せない"].join(" ・ ")),
+        h("div", { class: "poll-req-actions" },
+          h("button", { class: "btn-small", onclick: approve }, "承認して公開"),
+          h("button", { class: "text-btn destructive", onclick: reject }, "見送る"))));
+  }), "質問や選択肢はここで直してから承認できます。承認すると全員が対象のアンケートとして公開されます（対象者はあとから変えられます）。");
+}
+
 function adminMoney({ withTitle = true } = {}) {
   const tab = segmented([{ value: "polls", label: "出欠・アンケート" }, { value: "pay", label: "集金" }, { value: "exp", label: "立て替え" }], moneyTabHint ?? "polls");
   moneyTabHint = null;
@@ -5440,7 +5529,7 @@ function adminMoney({ withTitle = true } = {}) {
       ? setDoc(DX("votes", `${p.id}_${uid}`), { uid, pollId: rawId(p.id), choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), firstAt: firstAtOf(S.votes.get(`${p.id}_${uid}`)), byAdmin: true })
       : deleteDoc(DX("votes", `${p.id}_${uid}`)));
     return h("article", { class: "card poll-card" },
-      h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null),
+      h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null, proposedLabel(p)),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
       isRankPoll(p) ? rankPollResult(p, votes, !p.anonymous) : h("div", { class: "poll-bars" }, p.options.map((o) => {
         const vs = votes.filter((v) => v.choice === o);
@@ -5532,7 +5621,7 @@ function adminMoney({ withTitle = true } = {}) {
         exp.update();
       } else if (tab.value === "polls") {
         const ps = sortedPolls().filter(relevantHere);
-        setKids(body, keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
+        setKids(body, pollRequestReview(), keptFold("newPoll", "＋ 新しいアンケート", pollForm, !ps.length), ps.length ? ps.map(pollCard) : emptyState("check", "アンケートはまだありません", "「参加 / 不参加」の出欠などを取れます。"));
       } else {
         if (!payChecksCell.hidden) payChecks.refresh();
         const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p) && !p.fromLobby).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
@@ -5573,6 +5662,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
   const drafts = new Map(); // pollId -> コメント入力欄
   const exp = expenseView();
   const expGroup = h("section", { class: "expense-section" }, h("h3", { class: "sub-title" }, "立て替えの精算"), exp.el);
+  const req = pinned === "only" ? null : pollRequestBox();
   redrawOnLeave(el);
   // 「送金しました」の入力欄（集金ごとに作って使い回す。描き直しても選んだ画像や入力が消えないように）
   const forms = new Map();
@@ -5642,7 +5732,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         const res = !p.showResults ? null : rank ? rankPollResult(p, tally, false)
           : h("div", { class: "poll-mini" }, p.options.map((o) => h("span", null, o, h("b", null, tally.filter((v) => v.choice === o).length))));
         return h("article", { class: `card poll-card${!mine && open ? " todo" : ""}` },
-          h("div", { class: "poll-head" }, h("b", null, p.question), h("span", { class: `tint${open ? "" : " closed"}` }, open ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
+          h("div", { class: "poll-head" }, h("b", null, p.question, proposedLabel(p)), h("span", { class: `tint${open ? "" : " closed"}` }, open ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
           rank ? rankPicker(p, mine, open, vote)
             : h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
           p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(rank ? mine.order ?? [mine.choice] : mine.choice); } }, "コメントを送る") : null) : null,
@@ -5665,8 +5755,9 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         topPolls.length ? h("div", { class: "stack" }, topPolls.map(pollEl)) : null,
         topPays.length ? group(`集金${owe ? `（未入金 ${yen(owe)}）` : ""}`, topPays.map(payEl), payHelp) : null);
       if (pinned === "only") return;
+      req.update();
       setKids(body,
-        null,
+        req.el,
         restPolls.length ? h("div", { class: "stack" }, restPolls.map(pollEl)) : null,
         pays.length ? group(topPays.length ? "そのほかの集金" : `集金${owe ? `（未入金 ${yen(owe)}）` : "（すべて入金済み）"}`, pays.map(payEl), topPays.length ? null : payHelp) : null,
         expGroup);
