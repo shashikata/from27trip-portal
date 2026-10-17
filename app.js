@@ -337,6 +337,7 @@ function startAdmin() {
     listen("lMembers", LC("members"), quiet((s) => { S.lobbyMembers = toMap(s); DATA_VER++; }));
   }
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
+  if (pid === LOBBY) listen("videos", C("videos"), (s) => { if (s) S.videos = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
@@ -490,6 +491,7 @@ function startMemberData(uid) {
     listen("lPayReports", query(LC("payReports"), where("uid", "==", uid)), quiet((s) => mergeSrc("payReports", "lobby", toMapL(s, ["paymentId"]))));
   }
   listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
+  if (inLobby()) listen("videos", query(C("videos"), where("visible", "==", true)), (s) => { if (s) S.videos = toMap(s); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
@@ -611,7 +613,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -2151,7 +2153,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v50"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v51"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5977,6 +5979,94 @@ function expenseView({ admin = false } = {}) {
   };
 }
 
+// ---------------------------------------------------------------- 過去動画（確定前ページ）
+//
+//   profiles/lobby/videos/{自動}  { title, url, videoId, note, visible, order, createdAt }
+//   限定公開の YouTube のリンクを管理者が登録する。参加者には visible の分だけ出す（押すと YouTube で開く）
+
+// YouTube の URL から動画の ID を取り出す（youtu.be / watch?v= / shorts / live / embed）
+function youtubeId(url) {
+  try {
+    const u = new URL(url.trim());
+    const host = u.hostname.replace(/^(www|m|music)\./, "");
+    let id = null;
+    if (host === "youtu.be") id = u.pathname.slice(1).split("/")[0];
+    else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      id = u.searchParams.get("v") ?? u.pathname.match(/^\/(?:shorts|live|embed|v)\/([^/?#]+)/)?.[1] ?? null;
+    }
+    return id && /^[\w-]{6,20}$/.test(id) ? id : null;
+  } catch { return null; }
+}
+const sortedVideos = () => [...S.videos.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || ts(b.createdAt) - ts(a.createdAt));
+const videoThumb = (v) => h("span", { class: "video-thumb" },
+  v.videoId ? h("img", { src: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`, alt: "", loading: "lazy" }) : null, icon("play", "video-play"));
+const videoLink = (v, inner) => h("a", { class: "video-link", href: v.url, target: "_blank", rel: "noopener noreferrer" }, inner);
+
+function memberVideos({ compact = false } = {}) {
+  const list = h("div", { class: "video-list" });
+  const el = h("div", null, sectionTitle("過去動画", compact), list);
+  return {
+    el,
+    update() {
+      const vs = sortedVideos().filter((v) => v.visible);
+      setKids(list, vs.length ? vs.map((v) => videoLink(v, [videoThumb(v),
+        h("span", { class: "video-text" }, h("b", null, v.title), v.note ? h("small", null, v.note) : null)]))
+        : emptyState("play", "まだありません", "過去の旅行の動画が公開されるとここに表示されます。"));
+    },
+  };
+}
+
+function adminVideos({ withTitle = true } = {}) {
+  const title = h("input", { type: "text", class: "plain", placeholder: "例：2025 夏 沖縄旅行", maxlength: "60" });
+  const url = h("input", { type: "url", class: "plain", placeholder: "https://youtu.be/…（限定公開のリンク）", autocapitalize: "none", autocorrect: "off" });
+  const note = h("input", { type: "text", class: "plain", placeholder: "ひとこと（任意）", maxlength: "80" });
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const id = youtubeId(url.value);
+    if (!id) return toast("YouTube のリンクを貼ってください（youtu.be/… や youtube.com/watch?v=…）", true);
+    const order = Math.min(0, ...sortedVideos().map((v) => v.order ?? 0)) - 1; // 新しいものを一番上に
+    fire(addDoc(C("videos"), { title: title.value.trim() || "過去動画", url: url.value.trim(), videoId: id, note: note.value.trim(), visible: true, order, createdAt: serverTimestamp() }), "追加しました");
+    title.value = url.value = note.value = "";
+  } },
+    group("動画を追加", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, url), h("div", { class: "cell" }, note)],
+      "YouTube の「共有」でコピーしたリンクを貼ってください。限定公開の動画は、リンクを知っている人だけが見られます（このページの参加者にはリンクが見えます）。"),
+    h("button", { class: "btn-filled", type: "submit" }, "追加する"));
+  const list = h("div");
+  const el = h("div", null, withTitle ? largeTitle("過去動画") : null, keptFold("newVideo", "＋ 動画を追加", form, !S.videos.size), list);
+  redrawOnLeave(el);
+  const move = (vs, i, d) => {
+    const a = vs[i], b = vs[i + d];
+    if (!a || !b) return;
+    const b2 = writeBatch(db);
+    // 並び順を振り直してから入れ替える（同じ order が並んでいても動くように）
+    vs.forEach((v, k) => b2.update(D("videos", v.id), { order: k === i ? i + d : k === i + d ? i : k }));
+    fire(b2.commit());
+  };
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      const vs = sortedVideos();
+      setKids(list, vs.length ? group(`登録済み（${vs.length}本・表示中 ${vs.filter((v) => v.visible).length}本）`, vs.map((v, i) => {
+        const vis = toggle(!!v.visible);
+        vis.addEventListener("change", () => fire(updateDoc(D("videos", v.id), { visible: vis.checked }), vis.checked ? "表示にしました" : "非表示にしました"));
+        return h("div", { class: `cell video-admin${v.visible ? "" : " hidden-video"}` },
+          videoLink(v, videoThumb(v)),
+          h("div", { class: "cell-main" }, h("b", null, v.title), h("div", { class: "cell-sub" }, v.note || v.url),
+            h("div", { class: "video-actions" },
+              h("label", { class: "video-vis" }, vis, v.visible ? "表示中" : "非表示"),
+              h("button", { class: "text-btn", disabled: i === 0, onclick: () => move(vs, i, -1) }, "↑"),
+              h("button", { class: "text-btn", disabled: i === vs.length - 1, onclick: () => move(vs, i, 1) }, "↓"),
+              h("button", { class: "text-btn", onclick: () => {
+                const t = prompt("動画の名前", v.title);
+                if (t != null && t.trim()) fire(updateDoc(D("videos", v.id), { title: t.trim() }), "変更しました");
+              } }, "名前"),
+              h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${v.title}」を削除しますか？`)) fire(deleteDoc(D("videos", v.id)), "削除しました"); } }, "削除"))));
+      }), "非表示にした動画は参加者に出ません。↑↓で並び順を変えられます。") : emptyState("play", "まだありません", "「＋ 動画を追加」から YouTube のリンクを登録できます。"));
+    },
+  };
+}
+
 // ---------------------------------------------------------------- チャット
 //
 //   messages/{自動}  { uid(送った人), chat, text, at, parties: [uid, uid] (DM と管理者連絡のみ), from(管理者の表示名) }
@@ -6691,6 +6781,7 @@ function lobbyAssign({ withTitle = true } = {}) {
 const LOBBY_MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "money", icon: "check", label: "出欠・集金", view: memberMoney },
+  { key: "videos", icon: "play", label: "過去動画", view: memberVideos },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -6700,6 +6791,7 @@ const LOBBY_ADMIN_TABS = [
   { key: "side", icon: "people", label: "参加者", view: adminMembers, desktopOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
+  { key: "videos", icon: "play", label: "過去動画", view: adminVideos, sheet: true },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -6861,7 +6953,7 @@ function buildMobileShell(allTabs) {
 
 // 管理者の PC 画面：左にお知らせ・チーム、右半分は1つの大きな欄（ふだんは表・メモ／参加者）。
 // 上部の「ポイント」「出欠・集金」「チェック」「チャット」「設定」は、小窓ではなく右半分の欄に出す（クイズ・地図は小窓のまま）
-const DESK_SIDE_KEYS = new Set(["points", "money", "checklist", "chat", "settings"]);
+const DESK_SIDE_KEYS = new Set(["points", "money", "videos", "checklist", "chat", "settings"]);
 let deskSideOpen = null; // buildDesktopShell が設定する（右の欄に出したら true を返す）
 function openSheet(tab) {
   if (deskSideOpen?.(tab)) return;
@@ -6959,6 +7051,7 @@ function buildMemberPageShell() {
   const sections = lobby ? [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "money", label: "出欠・集金", view: memberMoney({ compact: true, pinned: "split" }) },
+    { key: "videos", label: "過去動画", view: memberVideos({ compact: true }) },
   ] : [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
