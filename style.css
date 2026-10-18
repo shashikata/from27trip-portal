@@ -1851,3 +1851,10 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
   .print-poll.rp-wide .rp-bar { width: calc(22mm * var(--rp-scale, 1)); }
   .print-poll .rp-rank td:nth-child(n+5), .print-poll .rp-rank th:nth-child(n+5) { min-width: 6mm; }
 }
+.poll-comments-list { display: grid; gap: 8px; padding-top: 6px; }
+
+/* カードの中の折りたたみは小さめに（縦に長くしないため） */
+.card .fold { margin: 4px 0 2px; border-top: .5px solid var(--separator); }
+.card .fold > summary { font-size: 15px; font-weight: 600; padding: 10px 2px; color: var(--blue); }
+.card .fold > summary .icon { color: var(--label-3); }
+.card .fold[open] > summary { padding-bottom: 6px; }

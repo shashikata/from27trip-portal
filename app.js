@@ -2186,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v60"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v61"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5167,11 +5167,11 @@ const fmtClock = (x) => {
 // 参加者：管理者が「ひとことを全員に見せる」にしたアンケートの、みんなのひとこと（匿名のアンケートは名前を出さない）
 function pollComments(p, tally) {
   const list = tally.filter((v) => v.comment).sort((a, b) => ts(a.at) - ts(b.at));
-  return h("div", { class: "poll-comments" },
-    h("div", { class: "poll-comments-head" }, `みんなのひとこと（${list.length}件）`),
+  // 件数が増えると長くなるので開け閉めできるようにする（最初は閉じる）
+  return h("div", { class: "poll-comments" }, keptFold(`pcom:${p.id}`, `みんなのひとこと（${list.length}件）`, h("div", { class: "poll-comments-list" },
     list.length ? list.map((v) => h("div", { class: "poll-comment-item" },
       p.anonymous ? null : h("b", null, memberName(v.uid)),
-      h("span", null, v.comment))) : h("div", { class: "cell-sub" }, "まだひとことはありません"));
+      h("span", null, v.comment))) : h("div", { class: "cell-sub" }, "まだひとことはありません"))));
 }
 // 管理者：アンケートの回答順と回答時刻
 function voteOrderList(p, votes) {
@@ -5292,6 +5292,7 @@ const payFor = (p, uid) => (p.targets ? p.targets.includes(uid) : !isExt(p.id) |
 const myUnpaid = (uid) => sortedPayments().filter((p) => payFor(p, uid))
   .reduce((s, p) => s + (recordOf(p, uid).status === "unpaid" ? amountOf(p, uid) : 0), 0);
 const reportOf = (p, uid) => S.payReports.get(`${p.id}_${uid}`) ?? null;
+const pendingCount = (p) => payTargets(p).filter((m) => reportOf(p, m.id) && recordOf(p, m.id).status === "unpaid").length;
 // 報告はあるが、まだ入金済みにしていないもの（管理者の確認待ち）
 const pendingReports = () => sortedPayments().flatMap((p) => payTargets(p).map((m) => ({ p, m, rep: reportOf(p, m.id) })))
   .filter((x) => x.rep && recordOf(x.p, x.m.id).status === "unpaid");
@@ -5593,10 +5594,17 @@ function adminMoney({ withTitle = true } = {}) {
         const vs = votes.filter((v) => v.choice === o);
         return h("div", { class: "poll-bar" },
           h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
-          h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (vs.length / ms.length) * 100 : 0}%` })),
-          vs.length && !p.anonymous ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : null);
+          h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (vs.length / ms.length) * 100 : 0}%` })));
       })),
-      none.length ? h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")) : h("div", { class: "poll-none ok" }, "全員回答しました"),
+      // 誰が何に入れたかは長くなるので折りたたむ（最初は閉じる）
+      isRankPoll(p) || p.anonymous || !votes.length ? null : keptFold(`pollnames:${p.id}`, `選択肢ごとの回答者（${votes.length}人）`, h("div", { class: "poll-bars" }, p.options.map((o) => {
+        const vs = votes.filter((v) => v.choice === o);
+        return h("div", { class: "poll-bar" }, h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
+          vs.length ? h("div", { class: "poll-names" }, vs.map((v) => h("span", null, memberName(v.uid), v.comment ? h("small", null, `「${v.comment}」`) : null))) : h("div", { class: "cell-sub" }, "なし"));
+      }))),
+      !none.length ? h("div", { class: "poll-none ok" }, "全員回答しました")
+        : none.length > 6 ? keptFold(`pollnone:${p.id}`, `未回答 ${none.length}人`, h("div", { class: "poll-none" }, none.map((m) => m.name).join("・")))
+        : h("div", { class: "poll-none" }, h("b", null, `未回答 ${none.length}人：`), none.map((m) => m.name).join("・")),
       p.anonymous ? null : voteOrderList(p, votes),
       p.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのアンケートです（この旅行の参加者の分だけ表示）。対象者の変更・削除は確定前ページで行ってください。") : null,
       p.anonymous ? h("div", { class: "cell-sub" }, "誰が何に入れたかは表示しません") : isRankPoll(p) ? null : keptFold(`proxy:${p.id}`, "回答を代わりに入れる・直す", h("div", { class: "group-body" }, ms.map((m) => {
@@ -5633,6 +5641,8 @@ function adminMoney({ withTitle = true } = {}) {
       h("div", { class: "pay-progress" },
         h("div", { class: "poll-track big" }, h("div", { style: `width:${t.expect ? (t.got / t.expect) * 100 : 0}%` })),
         h("div", { class: "pay-sum" }, h("b", null, yen(t.got)), ` / ${yen(t.expect)}`, h("span", null, `${t.paidN} / ${t.n}人 入金済み`))),
+      // 対象者ごとの一覧は長くなるので開け閉めできるようにする（最初は閉じる。確認待ちの報告は上の欄にも出る）
+      keptFold(`payrows:${p.id}`, `対象者ごとの入金（${t.paidN} / ${t.n}人 入金済み${pendingCount(p) ? `・確認待ち ${pendingCount(p)}件` : ""}）`, [
       h("label", { class: "pay-filter" }, (() => { const c = toggle(onlyUnpaid); c.addEventListener("change", () => { SHOWN.set(filterKey, c.checked ? 1 : 0); scheduleRender(); }); return c; })(), "未入金の人だけ表示"),
       h("div", { class: "group-body" }, ms.length ? ms.map((m) => {
         const r = recordOf(p, m.id);
@@ -5652,7 +5662,7 @@ function adminMoney({ withTitle = true } = {}) {
               rep.image ? h("img", { src: rep.image, alt: "送金のスクリーンショット", class: "pay-shot", onclick: () => openLightbox(rep.image) }) : null,
               r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
-      }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
+      }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません"))]),
       isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。全員の入金が済むと、このページには出なくなります。`) : targetEditor(p, "payments"),
       isExt(p.id) ? null : h("div", { class: "poll-actions" },
         h("button", { class: "text-btn", onclick: () => openShareImage("pay", p) }, icon("photo"), "報告用の画像"),
@@ -5670,7 +5680,7 @@ function adminMoney({ withTitle = true } = {}) {
   function byPerson() {
     const rows = sortedMembers().map((m) => ({ m, owe: sortedPayments().filter((p) => payFor(p, m.id)).reduce((s, p) => s + (recordOf(p, m.id).status === "unpaid" ? amountOf(p, m.id) : 0), 0) }))
       .filter((r) => r.owe > 0).sort((a, b) => b.owe - a.owe);
-    return group("人ごとの未入金", rows.length ? rows.map((r) => cell(r.m.name, h("b", { class: "owe" }, yen(r.owe)))) : none("未入金の人はいません"));
+    return keptFold("payByPerson", `人ごとの未入金（${rows.length}人）`, group(null, rows.length ? rows.map((r) => cell(r.m.name, h("b", { class: "owe" }, yen(r.owe)))) : none("未入金の人はいません")));
   }
 
   activeMoney = { el, show: (v) => { tab.value = v; scheduleRender(); } };
@@ -6105,7 +6115,7 @@ function expenseView({ admin = false } = {}) {
         group(`精算（${st.length ? `${st.length}回のやり取りで完了` : "すべて精算済み"}）`, st.length ? st.map((t) => h("div", { class: "cell settle-row" },
           h("div", { class: "cell-main" }, h("b", null, `${memberName(t.from)} → ${memberName(t.to)}`)), h("b", null, yen(t.amount)), settleBtn(t))) : cell("精算するものはありません"),
           "支払いの回数ができるだけ少なくなるように組み合わせています。"),
-        admin ? group("人ごとの差し引き", sortedMembers().map((m) => cell(m.name, h("b", { class: (bal.get(m.id) ?? 0) < 0 ? "owe" : (bal.get(m.id) ?? 0) > 0 ? "get" : "" }, `${(bal.get(m.id) ?? 0) > 0 ? "+" : (bal.get(m.id) ?? 0) < 0 ? "−" : ""}${yen(Math.abs(bal.get(m.id) ?? 0))}`))), "＋は受け取る額、−は払う額です。") : null);
+        admin ? keptFold("expBalance", "人ごとの差し引き", group(null, sortedMembers().map((m) => cell(m.name, h("b", { class: (bal.get(m.id) ?? 0) < 0 ? "owe" : (bal.get(m.id) ?? 0) > 0 ? "get" : "" }, `${(bal.get(m.id) ?? 0) > 0 ? "+" : (bal.get(m.id) ?? 0) < 0 ? "−" : ""}${yen(Math.abs(bal.get(m.id) ?? 0))}`))), "＋は受け取る額、−は払う額です。")) : null);
       // ほかのページの立て替え（精算が残っている間だけ）。参加者は自分が関わる分だけ
       const extGroups = extSettlements().map(({ pid, st: xs }) => {
         const shown = admin ? xs : xs.filter((t) => t.from === uid || t.to === uid);
@@ -6122,7 +6132,7 @@ function expenseView({ admin = false } = {}) {
       });
       result.append(...extGroups.filter(Boolean));
       const items = sortedExpenses();
-      setKids(list, items.length ? group("記録", items.map((e) => {
+      setKids(list, items.length ? keptFold(`expRecords:${admin}`, `記録（${items.length}件）`, group(null, items.map((e) => {
         const canDel = admin || e.uid === uid;
         const del = canDel ? h("button", { class: "text-btn destructive", onclick: () => { if (confirm("この記録を削除しますか？")) fire(deleteDoc(D("expenses", e.id)), "削除しました"); } }, "削除") : null;
         if (e.kind === "settle") return h("div", { class: "cell settle-row done" }, h("div", { class: "cell-main" }, h("span", null, `${memberName(e.from)} → ${memberName(e.to)} 支払い済み`), h("div", { class: "cell-sub" }, fmtDate(e.createdAt))), h("span", null, yen(e.amount)), del);
@@ -6130,7 +6140,7 @@ function expenseView({ admin = false } = {}) {
         return h("div", { class: "cell" }, h("div", { class: "cell-main" }, h("b", null, e.title),
           h("div", { class: "cell-sub" }, `${memberName(e.payer)} が立て替え ・ ${e.split?.length ? `${sp.length}人で割る（${sp.map(memberName).join("・")}）` : `全員（${sp.length}人）で割る`} ・ 1人 約${yen(Math.round(e.amount / (sp.length || 1)))}`)),
           h("b", null, yen(e.amount)), del);
-      })) : emptyState("check", "まだありません", "誰かが立て替えたら、ここに登録すると最後にまとめて精算できます。"));
+      }))) : emptyState("check", "まだありません", "誰かが立て替えたら、ここに登録すると最後にまとめて精算できます。"));
     },
   };
 }
