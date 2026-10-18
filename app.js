@@ -2186,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v59"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v60"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -7034,19 +7034,16 @@ async function printPollResult(p) {
   const max = Math.max(0, ...rows.map((r) => r.pt));
   const blocks = [];
   if (rank) {
-    // 何位に何人が入れたか（8位より下はまとめる）
-    const cols = Math.min(d, 8);
+    // 何位に何人が入れたか（何位まであっても全部の列を出す。列が多いときは横向き・小さい文字にする）
     const placeCount = (o, k) => votes.filter((v) => (v.order ?? [])[k] === o).length;
-    const lower = (o) => votes.filter((v) => { const k = (v.order ?? []).indexOf(o); return k >= cols && k < d; }).length;
+    const places = [...Array(d).keys()];
     blocks.push(h("div", { class: "rp-block" }, h("h3", null, "順位（合計点の多い順）", h("small", null, `1位 ${d}点 … ${d}位 1点`)),
-      T(["順位", "選択肢", "合計点", "", ...[...Array(cols).keys()].map((k) => `${k + 1}位`), ...(d > cols ? [`${cols + 1}〜${d}位`] : [])],
+      T(["順位", "選択肢", "合計点", "", ...places.map((k) => `${k + 1}位`)],
         rows.map((r) => [`${1 + rows.filter((x) => x.pt > r.pt).length}位`, r.o, `${r.pt}点`, bar(r.pt, max),
-          ...[...Array(cols).keys()].map((k) => placeCount(r.o, k) || "–"), ...(d > cols ? [lower(r.o) || "–"] : [])]), "rp-poll rp-rank")));
+          ...places.map((k) => placeCount(r.o, k) || "–")]), "rp-poll rp-rank")));
     if (!p.anonymous) {
       blocks.push(h("div", { class: "rp-block" }, h("h3", null, "各自の順番", h("small", null, "回答した順")),
-        d <= 8
-          ? T(["#", "名前", ...[...Array(d).keys()].map((k) => `${k + 1}位`)], votes.map((v, i) => [i + 1, memberName(v.uid), ...[...Array(d).keys()].map((k) => (v.order ?? [])[k] ?? "")]), "rp-poll-each")
-          : T(["#", "名前", "順番"], votes.map((v, i) => [i + 1, memberName(v.uid), (v.order ?? []).map((o, k) => `${k + 1}.${o}`).join("　")]))));
+        T(["#", "名前", ...places.map((k) => `${k + 1}位`)], votes.map((v, i) => [i + 1, memberName(v.uid), ...places.map((k) => (v.order ?? [])[k] ?? "")]), "rp-poll-each")));
     }
   } else {
     const n = votes.length || 1;
@@ -7065,7 +7062,10 @@ async function printPollResult(p) {
     pollOpen(p) ? "受付中" : "締切済み",
     `印刷 ${new Date().toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short" })}`,
   ].filter(Boolean).join("　・　");
-  const root = h("div", { id: "print-root", class: "print-report print-poll" },
+  // 列が多いときは横向きにして、文字を小さくする（全部の順位を1枚の幅に収める）
+  const wide = rank && d > 6;
+  const scale = !rank ? 1 : d <= 6 ? 1 : d <= 10 ? 0.9 : d <= 14 ? 0.78 : d <= 20 ? 0.66 : 0.56;
+  const root = h("div", { id: "print-root", class: `print-report print-poll${wide ? " rp-wide" : ""}`, style: `--rp-scale:${scale}` },
     h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, "アンケート結果"), h("h1", { class: "rp-poll-title" }, p.question), h("p", { class: "rp-sub" }, meta), ...blocks));
   await printReport(root, `${p.question.slice(0, 30)}_結果`);
 }

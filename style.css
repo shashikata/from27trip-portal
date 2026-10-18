@@ -1842,3 +1842,12 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
   .rp-poll-each td, .rp-poll-each th { font-size: 9pt; }
   .rp-poll-each td:first-child { width: 6mm; text-align: right; }
 }
+@media print {
+  @page wide { size: A4 landscape; margin: 10mm; }
+  body.printing #print-root.rp-wide { page: wide; }
+  .print-poll .rp-table { font-size: calc(9.5pt * var(--rp-scale, 1)); table-layout: auto; }
+  .print-poll .rp-table th, .print-poll .rp-table td { padding: calc(1.2mm * var(--rp-scale, 1)) calc(2mm * var(--rp-scale, 1)); }
+  .print-poll .rp-poll-each td, .print-poll .rp-poll-each th { font-size: calc(9pt * var(--rp-scale, 1)); }
+  .print-poll.rp-wide .rp-bar { width: calc(22mm * var(--rp-scale, 1)); }
+  .print-poll .rp-rank td:nth-child(n+5), .print-poll .rp-rank th:nth-child(n+5) { min-width: 6mm; }
+}
