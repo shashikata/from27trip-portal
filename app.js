@@ -2186,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v61"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v62"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2356,7 +2356,7 @@ function adminOngoing() {
       if (st.length) {
         rows.push(row("arrows", "立て替えの精算", `残り ${st.length}件 ・ 合計 ${yen(st.reduce((a, x) => a + x.amount, 0))}`, { text: "未精算" }, () => openAdminMoney("exp")));
       }
-      for (const { pid, st: xs } of extSettlements()) {
+      for (const { pid, st: xs } of extSettlements().filter((x) => x.st.length)) {
         rows.push(row("arrows", `立て替えの精算（${pageName(pid)}より）`, `残り ${xs.length}件 ・ 合計 ${yen(xs.reduce((a, x) => a + x.amount, 0))}`, { text: "未精算" }, () => openAdminMoney("exp")));
       }
       el.hidden = !rows.length;
@@ -5142,13 +5142,9 @@ const pollDeadlinePassed = (p) => !!p.deadline && Date.now() > new Date(p.deadli
 const pollOpen = (p) => p.open !== false && !pollDeadlinePassed(p);
 const fmtDeadline = (s) => { if (!s) return ""; const d = new Date(s); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const sortedPolls = () => [...S.polls.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
-// ほかのページの集金は、終わったもの（対象者全員が入金済み・免除）を出さない。そのページの参加者がまだ届いていないときも出さない
-const extPayDone = (p) => {
-  if (!pageMembers(extPid(p.id))) return true;
-  const { paidN, n } = payTotals(p);
-  return paidN >= n;
-};
-const sortedPaymentsMemo = memo(() => [...S.payments.values()].filter((p) => !isExt(p.id) || !extPayDone(p)).sort((a, b) => ts(b.createdAt) - ts(a.createdAt)));
+// 終わった集金も消さずに残す（ほかのページの分も）。管理者の一覧では、終わったものを後ろに回す
+const payAllDone = (p) => { const { paidN, n } = payTotals(p); return n > 0 && paidN >= n; };
+const sortedPaymentsMemo = memo(() => [...S.payments.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt)));
 const sortedPayments = () => [...sortedPaymentsMemo()];
 // ほかのページの集金は、そのページの参加者が対象（この旅行に入っていない人も含めて全員出す）
 const payTargets = (p) => {
@@ -5308,12 +5304,13 @@ function rankPollResult(p, votes, withVoters) {
   return h("div", { class: "poll-bars" },
     h("div", { class: "cell-sub" }, `順位投票（${d > 1 ? `${d}位まで・1位${d}点 … ${d}位1点` : "1位だけ・1点"}）・${votes.length}人が回答`),
     votes.length ? null : h("div", { class: "cell-sub" }, "まだ回答がありません"),
-    !votes.length ? null : rows.map((r) => {
+    // 順位の一覧（青いバー）は長くなるので開け閉めできるようにする（最初は閉じる。見出しに1位を出す）
+    !votes.length ? null : keptFold(`rankres:${p.id}`, `順位を見る（1位：${rows.filter((r) => r.pt === rows[0].pt).map((r) => r.o).join("・")}）`, h("div", { class: "poll-bars" }, rows.map((r) => {
       const pos = 1 + rows.filter((x) => x.pt > r.pt).length;
       return h("div", { class: "poll-bar" },
         h("div", { class: "poll-bar-top" }, h("span", null, h("b", { class: "rank-pos" }, `${pos}位`), r.o), h("b", null, `${r.pt}点`)),
         h("div", { class: "poll-track" }, h("div", { style: `width:${(r.pt / max) * 100}%` })));
-    }),
+    }))),
     withVoters && votes.length ? keptFold(`rankv:${p.id}`, `各自の順番（${votes.length}人）`, h("div", { class: "rank-voters" }, votes.map((v) =>
       h("div", null, h("b", null, memberName(v.uid)), (v.order ?? []).map((o, i) => `${i + 1}.${o}`).join("　"), v.comment ? h("small", null, `「${v.comment}」`) : null)))) : null);
 }
@@ -5590,12 +5587,16 @@ function adminMoney({ withTitle = true } = {}) {
     return h("article", { class: "card poll-card" },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null, proposedLabel(p)),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
-      isRankPoll(p) ? rankPollResult(p, votes, !p.anonymous) : h("div", { class: "poll-bars" }, p.options.map((o) => {
-        const vs = votes.filter((v) => v.choice === o);
-        return h("div", { class: "poll-bar" },
-          h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${vs.length}人`)),
-          h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (vs.length / ms.length) * 100 : 0}%` })));
-      })),
+      isRankPoll(p) ? rankPollResult(p, votes, !p.anonymous) : (() => {
+        const counts = p.options.map((o) => ({ o, n: votes.filter((v) => v.choice === o).length }));
+        const top = Math.max(0, ...counts.map((c) => c.n));
+        const lead = top ? counts.filter((c) => c.n === top).map((c) => `${c.o} ${c.n}人`).join("・") : "まだ回答なし";
+        // 集計の青いバーも開け閉めできるようにする（最初は閉じる。見出しに一番多い選択肢）
+        return keptFold(`pollbars:${p.id}`, `集計を見る（${votes.length}人回答・最多：${lead}）`, h("div", { class: "poll-bars" }, counts.map(({ o, n }) =>
+          h("div", { class: "poll-bar" },
+            h("div", { class: "poll-bar-top" }, h("span", null, o), h("b", null, `${n}人`)),
+            h("div", { class: "poll-track" }, h("div", { style: `width:${ms.length ? (n / ms.length) * 100 : 0}%` }))))));
+      })(),
       // 誰が何に入れたかは長くなるので折りたたむ（最初は閉じる）
       isRankPoll(p) || p.anonymous || !votes.length ? null : keptFold(`pollnames:${p.id}`, `選択肢ごとの回答者（${votes.length}人）`, h("div", { class: "poll-bars" }, p.options.map((o) => {
         const vs = votes.filter((v) => v.choice === o);
@@ -5663,7 +5664,7 @@ function adminMoney({ withTitle = true } = {}) {
               r.status === "unpaid" ? h("button", { class: "btn-small", onclick: confirmPaid }, "確認して入金済みにする") : null) : null),
           amt, r.status === "paid" ? method : null, st);
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません"))]),
-      isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。全員の入金が済むと、このページには出なくなります。`) : targetEditor(p, "payments"),
+      isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。`) : targetEditor(p, "payments"),
       isExt(p.id) ? null : h("div", { class: "poll-actions" },
         h("button", { class: "text-btn", onclick: () => openShareImage("pay", p) }, icon("photo"), "報告用の画像"),
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
@@ -5698,7 +5699,7 @@ function adminMoney({ withTitle = true } = {}) {
         if (!payChecksCell.hidden) payChecks.refresh();
         const opts2 = [{ value: "all", label: "全員（あとから増えた人も）" }, { value: "pick", label: "アカウントから選ぶ" }, ...sortedPolls().filter((p) => !p.anonymous && !isRankPoll(p) && !p.fromLobby).flatMap((p) => p.options.map((o) => ({ value: `poll:${p.id}:${o}`, label: `「${o}」と答えた人（${p.question.slice(0, 14)}）`, group: "アンケートの回答" })))];
         fillSelect(who, opts2);
-        const ps = sortedPayments();
+        const ps = sortedPayments().sort((a, b) => (payAllDone(a) ? 1 : 0) - (payAllDone(b) ? 1 : 0));
         const pend = pendingReports();
         const pendGroup = pend.length ? group(`確認待ちの送金報告 ${pend.length}件`, pend.map(({ p, m, rep }) => h("div", { class: "cell pay-row reported" },
           h("div", { class: "cell-main" }, h("b", null, `${m.name}：${p.title}（${yen(amountOf(p, m.id))}）`), h("div", { class: "cell-sub" }, reportLine(rep)),
@@ -6042,12 +6043,12 @@ function balancesOf(expenses, all) {
 }
 const balancesMemo = memo(() => balancesOf(S.expenses.values(), sortedMembers().map((m) => m.id)));
 const balances = () => new Map(balancesMemo());
-// ほかのページの立て替えで、精算が残っているもの [{ pid, st }]
+// ほかのページの立て替え（精算が済んだページも含む） [{ pid, st }]
 const extSettlements = memo(() => [...S.extExpenses].flatMap(([pid, exps]) => {
   const ms = pageMembers(pid);
   if (!ms || !exps.size) return [];
   const st = settleOf(balancesOf(exps.values(), ms.map((m) => m.id)));
-  return st.length ? [{ pid, st }] : [];
+  return [{ pid, st }]; // 精算が済んだページも残す（「すべて精算済み」と出す）
 }));
 
 // 誰が誰にいくら払えばよいか
@@ -6119,16 +6120,15 @@ function expenseView({ admin = false } = {}) {
       // ほかのページの立て替え（精算が残っている間だけ）。参加者は自分が関わる分だけ
       const extGroups = extSettlements().map(({ pid, st: xs }) => {
         const shown = admin ? xs : xs.filter((t) => t.from === uid || t.to === uid);
-        if (!shown.length) return null;
         const pay = (t) => (admin || t.from === uid) ? h("button", { class: "btn-small", onclick: () => {
           if (!confirm(`${pageName(pid)}の精算：${memberName(t.from)} → ${memberName(t.to)} に ${yen(t.amount)} 払ったことにしますか？`)) return;
           fire(addDoc(collection(db, ...pageBase(pid), "expenses"), { uid: admin ? uid : t.from, kind: "settle", from: t.from, to: t.to, amount: t.amount, createdAt: serverTimestamp() }), "記録しました");
         } }, "払った") : null;
-        return h("section", { class: "group" }, h("div", { class: "group-header" }, fromTag(pid), `立て替えの精算（残り ${xs.length}件）`),
-          h("div", { class: "group-body" }, shown.map((t) => h("div", { class: "cell settle-row" },
+        return h("section", { class: "group" }, h("div", { class: "group-header" }, fromTag(pid), xs.length ? `立て替えの精算（残り ${xs.length}件）` : "立て替えの精算（すべて精算済み）"),
+          h("div", { class: "group-body" }, !shown.length ? cell(h("span", { class: "secondary" }, xs.length ? "あなたの精算はありません" : "すべて精算済みです")) : shown.map((t) => h("div", { class: "cell settle-row" },
             h("div", { class: "cell-main" }, h("b", null, admin ? `${memberName(t.from)} → ${memberName(t.to)}` : t.from === uid ? `${memberName(t.to)} に払う` : `${memberName(t.from)} から受け取る`)),
             h("b", { class: admin ? "" : t.from === uid ? "owe" : "get" }, yen(t.amount)), pay(t)))),
-          h("div", { class: "group-footer" }, `${pageName(pid)}で登録した立て替えです。精算が全部済むと、このページには出なくなります。`));
+          h("div", { class: "group-footer" }, `${pageName(pid)}で登録した立て替えです。`));
       });
       result.append(...extGroups.filter(Boolean));
       const items = sortedExpenses();
