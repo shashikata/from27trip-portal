@@ -18,13 +18,19 @@ import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOU
 // 切り替えは「どちらを使うか」を端末に保存して読み込み直すだけなので、パスワードをアプリが保存することはない
 const SWITCH_KEY = "island.activeAccount"; // "alt" なら参加者側（別インスタンス）
 const SWITCH_FROM_KEY = "island.switchFrom"; // 切り替え元の管理者ID
+const SWITCH_TARGET_KEY = "island.switchTarget"; // 切り替え先の参加者ID（名前から探したときのため）
 const altSession = (() => { try { return localStorage.getItem(SWITCH_KEY) === "alt"; } catch { return false; } })();
 const switchFrom = (() => { try { return localStorage.getItem(SWITCH_FROM_KEY); } catch { return null; } })();
-const switchTarget = altSession && switchFrom ? (ACCOUNT_SWITCH ?? {})[switchFrom] ?? null : null;
-function switchAccount(toAlt, fromId) {
+const switchTarget = altSession && switchFrom ? (() => {
+  const spec = (ACCOUNT_SWITCH ?? {})[switchFrom];
+  if (typeof spec === "string") return spec;
+  try { return localStorage.getItem(SWITCH_TARGET_KEY); } catch { return null; }
+})() : null;
+function switchAccount(toAlt, fromId, targetId) {
   try {
     localStorage.setItem(SWITCH_KEY, toAlt ? "alt" : "main");
     if (fromId) localStorage.setItem(SWITCH_FROM_KEY, fromId);
+    if (targetId) localStorage.setItem(SWITCH_TARGET_KEY, targetId);
   } catch { return toast("この端末では切り替えられません（保存できません）", true); }
   location.reload();
 }
@@ -2142,12 +2148,23 @@ function settingsView({ withTitle = true } = {}) {
   const adminBox = h("div");
   const profiles = profilesGroup();
   const myId = emailToId(S.user.email);
-  const target = S.isAdmin && !altSession ? (ACCOUNT_SWITCH ?? {})[myId] : null;
-  const switchBox = target
-    ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId) }, icon("people"), `参加者アカウント（${target}）に切り替える`),
+  const spec = S.isAdmin && !altSession ? (ACCOUNT_SWITCH ?? {})[myId] : null;
+  const switchBox = h("div");
+  // 切り替え先：ID で書いてあればそのまま、名前で書いてあれば参加者の一覧（なければアカウントの一覧）から ID を探す
+  const paintSwitch = (target, label) => setKids(switchBox, target
+    ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, target) }, icon("people"), `参加者アカウント（${label ? `${label}・` : ""}${target}）に切り替える`),
       "初回だけパスワードを入れてログインします。管理者のログインはそのまま残るので、戻るときは入力不要です。")
     : altSession ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(false) }, icon("people"), `管理者アカウント（${adminName(idToEmail(switchFrom ?? "admin1"))}）に戻る`))
-    : null;
+    : spec ? group("アカウントの切り替え", cell(h("span", { class: "secondary" }, `「${spec.name}」さんのアカウントが見つかりません（名前が変わっていないか確認してください）`)))
+    : null);
+  if (typeof spec === "string") paintSwitch(spec);
+  else if (spec?.name) {
+    const pools = [S.members, S.lobbyMembers, ...S.extMembers.values()].filter(Boolean);
+    const hits = [...new Set(pools.flatMap((m) => [...m.values()].filter((x) => x.name === spec.name && x.loginId).map((x) => x.loginId)))];
+    if (hits.length === 1) paintSwitch(hits[0], spec.name);
+    else if (hits.length > 1) setKids(switchBox, group("アカウントの切り替え", hits.map((id) => h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, id) }, icon("people"), `参加者アカウント（${spec.name}・${id}）に切り替える`)), `「${spec.name}」さんが${hits.length}人いるので、IDで選んでください。`));
+    else getDocs(query(collection(db, "accounts"), where("name", "==", spec.name))).then((qs) => paintSwitch(qs.docs[0]?.id ?? spec.id ?? null, spec.name)).catch(() => paintSwitch(spec.id ?? null, spec.name));
+  } else paintSwitch(null);
   const el = h("div", null,
     withTitle ? largeTitle("設定") : null,
     switchBox,
@@ -2169,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v56"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v57"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5584,6 +5601,7 @@ function adminMoney({ withTitle = true } = {}) {
       }))),
       p.fromLobby ? null : targetEditor(p, "polls"),
       h("div", { class: "poll-actions" },
+        h("button", { class: "text-btn", onclick: () => guard(null, () => printPollResult(p)) }, icon("table"), "結果を印刷"),
         h("button", { class: "text-btn", onclick: () => openShareImage("poll", p) }, icon("photo"), "報告用の画像"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
@@ -6992,6 +7010,74 @@ function exportBuild(parts) {
       h("ol", { class: "rp-toc" }, parts.map((k) => h("li", null, EXPORT_PARTS.find((x) => x.key === k)?.label)))),
     parts.map((k) => build[k]()));
 }
+// 管理者：アンケートの結果を印刷（PDF 保存もできる）。順位投票は順位表・何位に何票か・各自の順番、ふつうのアンケートは票数と回答者
+async function printPollResult(p) {
+  const votes = [...S.votes.values()].filter((v) => v.pollId === p.id && isTarget(p, v.uid));
+  const first = (v) => ts(v.firstAt ?? v.at) || 0;
+  votes.sort((a, b) => first(a) - first(b));
+  const ms = pollTargets(p);
+  const none = ms.filter((m) => !votes.some((v) => v.uid === m.id));
+  const rank = isRankPoll(p);
+  const d = pollDepth(p);
+  const pts = pollScores(p, votes);
+  const T = (headers, rows, cls = "") => h("table", { class: `rp-table ${cls}` }, h("thead", null, h("tr", null, headers.map((x) => h("th", null, x)))), h("tbody", null, rows.map((r) => h("tr", null, r.map((c) => h("td", null, c ?? ""))))));
+  const bar = (v, max) => h("span", { class: "rp-bar" }, h("span", { style: `width:${max ? (v / max) * 100 : 0}%` }));
+  const rows = p.options.map((o, i) => ({ o, i, pt: pts.get(o) ?? 0 })).sort((a, b) => b.pt - a.pt || a.i - b.i);
+  const max = Math.max(0, ...rows.map((r) => r.pt));
+  const blocks = [];
+  if (rank) {
+    // 何位に何人が入れたか（8位より下はまとめる）
+    const cols = Math.min(d, 8);
+    const placeCount = (o, k) => votes.filter((v) => (v.order ?? [])[k] === o).length;
+    const lower = (o) => votes.filter((v) => { const k = (v.order ?? []).indexOf(o); return k >= cols && k < d; }).length;
+    blocks.push(h("div", { class: "rp-block" }, h("h3", null, "順位（合計点の多い順）", h("small", null, `1位 ${d}点 … ${d}位 1点`)),
+      T(["順位", "選択肢", "合計点", "", ...[...Array(cols).keys()].map((k) => `${k + 1}位`), ...(d > cols ? [`${cols + 1}〜${d}位`] : [])],
+        rows.map((r) => [`${1 + rows.filter((x) => x.pt > r.pt).length}位`, r.o, `${r.pt}点`, bar(r.pt, max),
+          ...[...Array(cols).keys()].map((k) => placeCount(r.o, k) || "–"), ...(d > cols ? [lower(r.o) || "–"] : [])]), "rp-poll rp-rank")));
+    if (!p.anonymous) {
+      blocks.push(h("div", { class: "rp-block" }, h("h3", null, "各自の順番", h("small", null, "回答した順")),
+        d <= 8
+          ? T(["#", "名前", ...[...Array(d).keys()].map((k) => `${k + 1}位`)], votes.map((v, i) => [i + 1, memberName(v.uid), ...[...Array(d).keys()].map((k) => (v.order ?? [])[k] ?? "")]), "rp-poll-each")
+          : T(["#", "名前", "順番"], votes.map((v, i) => [i + 1, memberName(v.uid), (v.order ?? []).map((o, k) => `${k + 1}.${o}`).join("　")]))));
+    }
+  } else {
+    const n = votes.length || 1;
+    blocks.push(h("div", { class: "rp-block" }, h("h3", null, "結果"),
+      T(["選択肢", "人数", "割合", "", ...(p.anonymous ? [] : ["回答した人"])],
+        rows.map((r) => [r.o, `${r.pt}人`, `${Math.round((r.pt / n) * 100)}%`, bar(r.pt, max), ...(p.anonymous ? [] : [votes.filter((v) => v.choice === r.o).map((v) => memberName(v.uid)).join("、")])]), "rp-poll")));
+  }
+  const coms = votes.filter((v) => v.comment);
+  if (coms.length) blocks.push(h("div", { class: "rp-block" }, h("h3", null, "ひとこと"), T(p.anonymous ? ["ひとこと"] : ["名前", "ひとこと"], coms.map((v) => (p.anonymous ? [v.comment] : [memberName(v.uid), v.comment])))));
+  if (!p.anonymous) blocks.push(h("div", { class: "rp-block" }, h("h3", null, `未回答（${none.length}人）`), h("p", { class: none.length ? "" : "rp-none" }, none.length ? none.map((m) => m.name).join("、") : "全員回答しました")));
+  const meta = [
+    S.config.title || APP_TITLE,
+    rank ? `順位投票（${d}位まで）` : "アンケート",
+    `回答 ${votes.length} / ${ms.length}人`,
+    p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : null,
+    pollOpen(p) ? "受付中" : "締切済み",
+    `印刷 ${new Date().toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short" })}`,
+  ].filter(Boolean).join("　・　");
+  const root = h("div", { id: "print-root", class: "print-report print-poll" },
+    h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, "アンケート結果"), h("h1", { class: "rp-poll-title" }, p.question), h("p", { class: "rp-sub" }, meta), ...blocks));
+  await printReport(root, `${p.question.slice(0, 30)}_結果`);
+}
+async function printReport(root, fileTitle) {
+  const txt = root.textContent;
+  await Promise.race([
+    loadSerif().then((ok) => ok && document.fonts ? Promise.all(["400", "700"].map((w) => document.fonts.load(`${w} 12px "Noto Serif JP"`, txt))) : null).catch(() => {}),
+    new Promise((r) => setTimeout(r, 6000)),
+  ]);
+  document.getElementById("print-root")?.remove();
+  document.body.append(root);
+  document.body.classList.add("printing");
+  const prevTitle = document.title;
+  document.title = fileTitle; // PDF に保存するときのファイル名
+  const done = () => { root.remove(); document.body.classList.remove("printing"); document.title = prevTitle; window.removeEventListener("afterprint", done); };
+  window.addEventListener("afterprint", done);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  window.print();
+}
+
 async function exportPdf(parts) {
   if (!parts.length) return toast("出力する項目を選んでください", true);
   toast("PDF の準備中…");

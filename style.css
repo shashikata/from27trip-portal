@@ -1828,3 +1828,15 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .share-preview { display: block; max-width: 100%; max-height: 56dvh; border-radius: 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, .15); }
 .share-actions { display: grid; gap: 8px; }
 .share-actions a.btn-filled { text-align: center; text-decoration: none; }
+
+/* アンケート結果の印刷 */
+@media print {
+  .print-poll .rp-poll-title { font-size: 20pt; margin: 2mm 0 2mm; border-bottom: .6mm solid #111; padding-bottom: 2mm; }
+  .print-poll .rp-sub { margin-bottom: 6mm; }
+  .rp-bar { display: inline-block; width: 30mm; height: 3mm; background: #e6e6e6; vertical-align: middle; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rp-bar > span { display: block; height: 100%; background: #333; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rp-rank td:nth-child(n+5), .rp-rank th:nth-child(n+5) { text-align: center; }
+  .rp-poll td:first-child, .rp-poll td:nth-child(3) { white-space: nowrap; }
+  .rp-poll-each td, .rp-poll-each th { font-size: 9pt; }
+  .rp-poll-each td:first-child { width: 6mm; text-align: right; }
+}

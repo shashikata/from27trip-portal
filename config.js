@@ -22,7 +22,7 @@ export const EMAIL_DOMAIN = "island.example.com";
 export const ADMIN_IDS = ["admin1", "admin2", "admin3"];
 
 // アカウントの切り替え：管理者ID → その人の参加者ID（この組み合わせだけ、設定画面から行き来できる）
-export const ACCOUNT_SWITCH = { admin1: "s0406" };
+export const ACCOUNT_SWITCH = { admin1: "s0406", admin3: { name: "かや", id: "k1201" } }; // ID か、{ name: "名前", id: "見つからないときのID" }（名前からIDを探す）
 
 // ===== ここから下は触らなくてよい =====
 
