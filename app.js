@@ -2186,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v57"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v58"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5773,7 +5773,10 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         .sort((a, b) => (recordOf(a, uid).status === "unpaid" ? 0 : 1) - (recordOf(b, uid).status === "unpaid" ? 0 : 1) || (a.due || "9999").localeCompare(b.due || "9999"));
       const pays = allPays.filter((p) => !topPays.includes(p));
       // 受付中（締切前）の出欠・アンケートも一番上に出す。未回答を先に
-      const topPolls = pinned === "none" ? [] : polls.filter(pollOpen).sort((a, b) => (S.votes.has(`${a.id}_${uid}`) ? 1 : 0) - (S.votes.has(`${b.id}_${uid}`) ? 1 : 0));
+      // 並び順：未回答（受付中）→ 回答済み（受付中）→ 締切済み。同じ中では新しい順
+      const pollRank = (p) => (!pollOpen(p) ? 2 : S.votes.has(`${p.id}_${uid}`) ? 1 : 0);
+      polls.sort((a, b) => pollRank(a) - pollRank(b));
+      const topPolls = pinned === "none" ? [] : polls.filter(pollOpen);
       const restPolls = polls.filter((p) => !topPolls.includes(p));
       const pollEl = (p) => {
         const mine = S.votes.get(`${p.id}_${uid}`);
