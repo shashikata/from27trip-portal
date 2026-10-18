@@ -2168,7 +2168,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v54"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v55"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5348,6 +5348,11 @@ function rankPicker(p, mine, open, vote) {
     })),
     open ? h("div", { class: "rank-actions" },
       h("button", { class: "text-btn", disabled: !dr.order.length, onclick: () => { dr.order = []; dr.sel = null; dr.dirty = true; redraw(); } }, "やり直す"),
+      // 空いている枠を、選択肢の並び順で一度に埋める（あとは枠のタップで入れ替えるだけ）
+      h("button", { class: "text-btn", disabled: dr.order.length >= d, onclick: () => {
+        for (const o of choices) { if (dr.order.length >= d) break; if (!dr.order.includes(o)) dr.order.push(o); }
+        dr.sel = null; dr.dirty = true; openFolds.add(`rankslots:${p.id}`); redraw();
+      } }, "残りを順に埋める"),
       h("button", { class: "btn-small", disabled: dr.order.length !== d || same, onclick: () => { dr.dirty = false; dr.key = JSON.stringify(dr.order); vote([...dr.order]); } }, same ? "投票済み" : mine ? "この順で投票し直す" : "この順で投票")) : null);
 }
 
