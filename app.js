@@ -1277,6 +1277,7 @@ function announcementCard(a, { admin = false } = {}) {
     ackBox(a, admin),
     admin && a.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのお知らせ（固定・削除は確定前ページで）") : null,
     admin && !a.fromLobby ? h("div", { class: "ann-actions" },
+      h("button", { class: "text-btn", onclick: () => openShareImage("ann", a) }, icon("photo"), "報告用の画像"),
       h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
       h("button", { class: "text-btn destructive", onclick: () => deleteAnnouncement(a) }, "削除"),
     ) : null,
@@ -2168,7 +2169,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v55"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v56"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5583,6 +5584,7 @@ function adminMoney({ withTitle = true } = {}) {
       }))),
       p.fromLobby ? null : targetEditor(p, "polls"),
       h("div", { class: "poll-actions" },
+        h("button", { class: "text-btn", onclick: () => openShareImage("poll", p) }, icon("photo"), "報告用の画像"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
         p.proposedBy ? h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showProposer: p.showProposer === false }), p.showProposer === false ? "提案者の名前を公開しました" : "提案者の名前を隠しました") }, p.showProposer === false ? "提案者の名前を出す" : "提案者の名前を隠す") : null,
@@ -5630,6 +5632,7 @@ function adminMoney({ withTitle = true } = {}) {
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません")),
       isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。全員の入金が済むと、このページには出なくなります。`) : targetEditor(p, "payments"),
       isExt(p.id) ? null : h("div", { class: "poll-actions" },
+        h("button", { class: "text-btn", onclick: () => openShareImage("pay", p) }, icon("photo"), "報告用の画像"),
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${p.title}」を削除しますか？送金の報告も消えます。`)) return;
@@ -6479,6 +6482,178 @@ function loadQr() {
     document.head.append(sc);
   });
   return qrLoading;
+}
+
+// ---------------------------------------------------------------- インスタ用の報告画像（管理者）
+// アンケート・集金・お知らせを作ったときに、みんなへ知らせる画像を端末の中で描く（サーバーには何も送らない）。
+// ストーリー（1080×1920）と投稿（1080×1350）。右下にアプリを開く QR コード
+const SHARE_FONT = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", "Meiryo", sans-serif';
+const SHARE_THEME = {
+  poll: { label: "アンケート", sub: "回答をお願いします！", from: "#0A84FF", to: "#5E5CE6" },
+  pay: { label: "集金のお知らせ", sub: "期限までにお願いします！", from: "#FF9F0A", to: "#FF375F" },
+  ann: { label: "お知らせ", sub: "アプリで確認してね！", from: "#30B0C7", to: "#0A84FF" },
+};
+// 1文字ずつ測って折り返す（句読点・閉じかっこは行頭に来ないよう前の行に付ける）
+function wrapLines(ctx, text, maxW) {
+  const out = [];
+  for (const para of String(text ?? "").split("\n")) {
+    let line = "";
+    for (const ch of [...para]) {
+      if (ctx.measureText(line + ch).width > maxW && line) {
+        if (/^[、。，．・」』）)！？!?ー〜]$/.test(ch)) { line += ch; continue; }
+        out.push(line); line = ch;
+      } else line += ch;
+    }
+    out.push(line);
+  }
+  return out;
+}
+function roundRect(ctx, x, y, w, hh, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + hh, r); ctx.arcTo(x + w, y + hh, x, y + hh, r);
+  ctx.arcTo(x, y + hh, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+async function drawShareImage(kind, item, format) {
+  const W = 1080, H = format === "story" ? 1920 : 1350;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  const th = SHARE_THEME[kind];
+  const font = (wt, px) => `${wt} ${px}px ${SHARE_FONT}`;
+  // 背景
+  const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, th.from); g.addColorStop(1, th.to);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 0.12; ctx.fillStyle = "#fff";
+  ctx.beginPath(); ctx.arc(W * 0.92, H * 0.06, 260, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(W * 0.05, H * 0.97, 320, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+  const pad = 84, top = format === "story" ? 230 : 110; // ストーリーは上下に操作ボタンが重なるので余白を広く
+  // 旅行の名前とラベル
+  ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.font = font(600, 38); ctx.textBaseline = "top";
+  ctx.fillText(S.config.title || pageName(S.pid) || APP_TITLE, pad, top);
+  ctx.font = font(800, 46);
+  const lw = ctx.measureText(th.label).width + 56;
+  ctx.fillStyle = "#fff"; roundRect(ctx, pad, top + 66, lw, 76, 38); ctx.fill();
+  ctx.fillStyle = th.to; ctx.fillText(th.label, pad + 28, top + 80);
+  // 白いカード
+  const cardY = top + 180, cardX = pad - 24, cardW = W - (pad - 24) * 2;
+  const footH = 250, bottom = H - (format === "story" ? 260 : 90);
+  const cardH = bottom - footH - 40 - cardY;
+  ctx.save(); ctx.shadowColor = "rgba(0,0,0,.18)"; ctx.shadowBlur = 40; ctx.shadowOffsetY = 12;
+  ctx.fillStyle = "#fff"; roundRect(ctx, cardX, cardY, cardW, cardH, 44); ctx.fill(); ctx.restore();
+  const ix = cardX + 60, iw = cardW - 120, maxY = cardY + cardH - 50;
+  let y = cardY + 64;
+  // 見出し（長いときは文字を小さくして4行まで）
+  const title = kind === "poll" ? item.question : item.title || "お知らせ";
+  let size = format === "story" ? 76 : 62, lines;
+  for (; size >= 46; size -= 4) { ctx.font = font(800, size); lines = wrapLines(ctx, title, iw); if (lines.length <= 3) break; }
+  lines = lines.slice(0, 4);
+  ctx.fillStyle = "#1c1c1e";
+  for (const ln of lines) { ctx.fillText(ln, ix, y); y += size * 1.32; }
+  y += 26;
+  ctx.fillStyle = "#e5e5ea"; ctx.fillRect(ix, y, iw, 3); y += 44;
+  const info = (label, value) => {
+    if (y > maxY - 60) return;
+    ctx.font = font(600, 34); ctx.fillStyle = "#8e8e93"; ctx.fillText(label, ix, y);
+    ctx.font = font(700, 40); ctx.fillStyle = "#1c1c1e";
+    for (const ln of wrapLines(ctx, value, iw - 190).slice(0, 2)) { ctx.fillText(ln, ix + 190, y - 3); y += 56; }
+    y += 10;
+  };
+  if (kind === "poll") {
+    // 選択肢は横に流して並べる（入りきらない分は「ほか○個」）。下の「締切」などの行の分は空けておく
+    const compact = format !== "story"; // 投稿サイズは「締切・対象」を1行にまとめて、選択肢の場所を空ける
+    const infoRows = compact ? 1 : (isRankPoll(item) ? 1 : 0) + 2;
+    const reserve = infoRows * 66 + 60; // 下の「締切」「対象」と「ほか○個」の分
+    const opts = item.options ?? [];
+    const chipH = format === "story" ? 72 : 64, gap = 14;
+    ctx.font = font(700, format === "story" ? 38 : 34);
+    let cx = ix, rowY = y, shown = 0, lastBottom = y;
+    for (const o of opts) {
+      let t = o;
+      while (ctx.measureText(t).width > iw - 100 && t.length > 1) t = t.slice(0, -1);
+      if (t !== o) t = `${t.slice(0, -1)}…`;
+      const cw = ctx.measureText(t).width + 88;
+      if (cx > ix && cx + cw > ix + iw) { cx = ix; rowY += chipH + gap; }
+      if (rowY + chipH > maxY - reserve) break;
+      ctx.fillStyle = "#f2f2f7"; roundRect(ctx, cx, rowY, cw, chipH, chipH / 2); ctx.fill();
+      ctx.fillStyle = th.from; ctx.beginPath(); ctx.arc(cx + 36, rowY + chipH / 2, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#1c1c1e"; ctx.fillText(t, cx + 60, rowY + (chipH - (format === "story" ? 38 : 34)) / 2 - 2);
+      cx += cw + gap; shown++; lastBottom = rowY + chipH;
+    }
+    if (shown) y = lastBottom + 24;
+    if (shown < opts.length) { ctx.font = font(600, 32); ctx.fillStyle = "#8e8e93"; ctx.fillText(`ほか ${opts.length - shown}個`, ix, y); y += 54; }
+    y += 6;
+    if (compact) info("締切", [item.deadline ? fmtDeadline(item.deadline) : "なし", `対象 ${item.targets ? `${item.targets.length}人` : "全員"}`, isRankPoll(item) ? "順位投票" : null].filter(Boolean).join(" ・ "));
+    else {
+      if (isRankPoll(item)) info("形式", `順位を付けて投票（${pollDepth(item)}位まで）`);
+      info("締切", item.deadline ? fmtDeadline(item.deadline) : "なし");
+      info("対象", item.targets ? `${item.targets.length}人` : "全員");
+    }
+  } else if (kind === "pay") {
+    ctx.font = font(800, 120); ctx.fillStyle = th.to; ctx.fillText(yen(item.amount), ix, y);
+    const aw = ctx.measureText(yen(item.amount)).width;
+    ctx.font = font(700, 44); ctx.fillStyle = "#8e8e93"; ctx.fillText("/ 人", ix + aw + 20, y + 62);
+    y += 170;
+    info("期限", item.due ? item.due.replaceAll("-", "/") : "なし");
+    info("対象", item.targets ? `${item.targets.length}人` : "全員");
+    if (item.note) info("メモ", item.note);
+  } else {
+    ctx.font = font(500, 40); ctx.fillStyle = "#3a3a3c";
+    const body = wrapLines(ctx, item.body ?? "", iw);
+    const room = Math.max(1, Math.floor((maxY - y) / 60));
+    body.slice(0, room).forEach((ln, i) => { ctx.fillText(i === room - 1 && body.length > room ? `${ln.slice(0, -1)}…` : ln, ix, y); y += 60; });
+  }
+  // 下：ひとこと＋QR
+  const fy = bottom - footH;
+  const textW = W - pad * 2 - 230 - 36; // QR の左まで
+  let fs = 56;
+  ctx.font = font(800, fs);
+  while (ctx.measureText(th.sub).width > textW && fs > 34) { fs -= 2; ctx.font = font(800, fs); }
+  ctx.fillStyle = "#fff";
+  ctx.fillText(th.sub, pad, fy + 30);
+  ctx.font = font(600, 34); ctx.fillStyle = "rgba(255,255,255,.92)";
+  ctx.fillText("旅行ポータルのアプリから", pad, fy + 120);
+  ctx.fillText("QRコードで開けます", pad, fy + 168);
+  const qr = window.qrcode ?? await loadQr();
+  if (qr) {
+    const q = qr(0, "M"); q.addData(`${location.origin}${location.pathname}`); q.make();
+    const n = q.getModuleCount(), box = 230, qx = W - pad - box, qy = fy;
+    ctx.fillStyle = "#fff"; roundRect(ctx, qx, qy, box, box, 24); ctx.fill();
+    const m = 18, cell = (box - m * 2) / n;
+    ctx.fillStyle = "#1c1c1e";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) ctx.fillRect(qx + m + c * cell, qy + m + r * cell, Math.ceil(cell), Math.ceil(cell));
+  }
+  return cv;
+}
+// 画像の確認と保存・共有
+async function openShareImage(kind, item) {
+  let format = "story";
+  const img = h("img", { class: "share-preview", alt: "報告用の画像" });
+  const seg = segmented([{ value: "story", label: "ストーリー（縦長）" }, { value: "post", label: "投稿（4:5）" }], format);
+  const shareBtn = h("button", { class: "btn-filled" }, "共有する（インスタなど）");
+  const saveBtn = h("a", { class: "btn-filled ghost-btn", download: "" }, "画像を保存");
+  const close = () => box.remove();
+  const box = h("div", { class: "share-modal", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: "share-panel" },
+      h("div", { class: "share-head" }, h("b", null, "報告用の画像"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+      seg, h("div", { class: "share-stage" }, img),
+      h("div", { class: "share-actions" }, shareBtn, saveBtn),
+      h("div", { class: "cell-sub" }, "スマホは「共有する」からインスタのストーリー・投稿に送れます。うまくいかないときは「画像を保存」してから投稿してください。")));
+  document.body.append(box);
+  let blob = null;
+  const name = () => `${(kind === "poll" ? item.question : item.title || "お知らせ").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 30)}_${format}.png`;
+  const paint = async () => {
+    const cv = await drawShareImage(kind, item, format);
+    const url = cv.toDataURL("image/png");
+    img.src = url; saveBtn.href = url; saveBtn.download = name();
+    blob = await new Promise((res) => cv.toBlob(res, "image/png"));
+  };
+  seg.addEventListener("change", () => { format = seg.value; paint(); });
+  shareBtn.addEventListener("click", () => guard(null, async () => {
+    const file = blob && new File([blob], name(), { type: "image/png" });
+    if (file && navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); } catch (e) { if (e?.name !== "AbortError") throw e; }
+    } else { saveBtn.click(); toast("この端末では直接共有できないので、画像を保存しました"); }
+  }));
+  await paint();
 }
 
 // 印刷に使うパスワードの控えと QR の部品は、参加者の画面を開いたときに先に読んでおく

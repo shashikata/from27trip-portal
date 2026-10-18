@@ -1819,3 +1819,12 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .tbl-mini:disabled { color: var(--label-3); opacity: .5; }
 .tbl-mini[aria-label$="消す"] { color: var(--red); }
 .tbl-head-label { font-size: 11px; color: var(--label-2); padding: 0 4px; }
+
+/* インスタ用の報告画像 */
+.share-modal { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .5); }
+.share-panel { width: min(100%, 460px); max-height: calc(100dvh - 32px); overflow-y: auto; display: grid; gap: 12px; padding: 16px; border-radius: 18px; background: var(--bg); box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
+.share-head { display: flex; align-items: center; justify-content: space-between; font-size: 17px; }
+.share-stage { display: grid; place-items: center; background: var(--fill); border-radius: 12px; padding: 10px; }
+.share-preview { display: block; max-width: 100%; max-height: 56dvh; border-radius: 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, .15); }
+.share-actions { display: grid; gap: 8px; }
+.share-actions a.btn-filled { text-align: center; text-decoration: none; }
