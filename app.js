@@ -1403,16 +1403,29 @@ function noteEditor(n) {
   title.addEventListener("input", markDirty);
   body.addEventListener("input", markDirty);
 
+  const edit = (fn) => { fn(); markDirty(); paintGrid(); };
+  const swap = (a, i, j) => { [a[i], a[j]] = [a[j], a[i]]; };
+  const mini = (label, title, fn, disabled = false) => h("button", { type: "button", class: "tbl-mini", title, "aria-label": title, disabled, onclick: () => edit(fn) }, label);
+  // 行（見出しの行は動かさない）は ↑↓ で並べ替え・＋ で下に1行挟む・× で消す。列は一番上の ←→× で
   const paintGrid = () => {
     const width = Math.max(1, ...draft.map((r) => r.length));
     draft.forEach((r) => { while (r.length < width) r.push(""); });
-    grid.replaceChildren(h("table", { class: "note-table edit" }, h("tbody", null, draft.map((r, ri) => h("tr", null, r.map((v, ci) => {
-      const inp = h("input", { type: "text", value: v, "aria-label": `${ri + 1}行${ci + 1}列` });
-      inp.addEventListener("input", () => { draft[ri][ci] = inp.value; markDirty(); });
-      return h(ri === 0 ? "th" : "td", null, inp);
-    }))))));
+    const colTools = h("tr", { class: "tbl-tools-row" }, h("td", { class: "tbl-ctl" }), [...Array(width).keys()].map((ci) => h("td", { class: "tbl-ctl" },
+      mini("←", `${ci + 1}列目を左へ`, () => draft.forEach((r) => swap(r, ci, ci - 1)), ci === 0),
+      mini("→", `${ci + 1}列目を右へ`, () => draft.forEach((r) => swap(r, ci, ci + 1)), ci === width - 1),
+      mini("×", `${ci + 1}列目を消す`, () => { if (width > 1 && (draft.every((r) => !r[ci]) || confirm(`${ci + 1}列目を消しますか？`))) draft.forEach((r) => r.splice(ci, 1)); }, width === 1))));
+    grid.replaceChildren(h("table", { class: "note-table edit" }, h("tbody", null, colTools, draft.map((r, ri) => h("tr", null,
+      h("td", { class: "tbl-ctl row" }, ri === 0 ? h("span", { class: "tbl-head-label" }, "見出し") : [
+        mini("↑", `${ri}行目を上へ`, () => swap(draft, ri, ri - 1), ri <= 1),
+        mini("↓", `${ri}行目を下へ`, () => swap(draft, ri, ri + 1), ri === draft.length - 1),
+        mini("＋", `${ri}行目の下に行を挟む`, () => draft.splice(ri + 1, 0, Array(width).fill(""))),
+        mini("×", `${ri}行目を消す`, () => { if (r.every((x) => !x) || confirm(`${ri}行目を消しますか？`)) draft.splice(ri, 1); })]),
+      r.map((v, ci) => {
+        const inp = h("input", { type: "text", value: v, "aria-label": `${ri + 1}行${ci + 1}列` });
+        inp.addEventListener("input", () => { draft[ri][ci] = inp.value; markDirty(); });
+        return h(ri === 0 ? "th" : "td", null, inp);
+      }))))));
   };
-  const edit = (fn) => { fn(); markDirty(); paintGrid(); };
   const tableTools = h("div", { class: "table-tools" },
     h("button", { class: "pill", type: "button", onclick: () => edit(() => draft.push(Array(draft[0].length).fill(""))) }, "＋ 行"),
     h("button", { class: "pill", type: "button", onclick: () => edit(() => draft.forEach((r) => r.push(""))) }, "＋ 列"),
@@ -2155,7 +2168,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v53"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v54"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5300,6 +5313,7 @@ function rankPicker(p, mine, open, vote) {
   const redraw = () => scheduleRender();
   const tap = (o) => {
     if (!open) return;
+    dr.sel = null;
     const at = dr.order.indexOf(o);
     if (at >= 0) dr.order.splice(at, 1);
     else if (dr.order.length < d) {
@@ -5313,15 +5327,27 @@ function rankPicker(p, mine, open, vote) {
   const same = mine?.order && JSON.stringify(mine.order) === JSON.stringify(dr.order);
   return h("div", { class: "rank-pick" },
     h("div", { class: "cell-sub" }, `${d === choices.length ? "全員" : `上位${d}位まで`}に順位を付けてください（タップした順に1位・2位…。もう一度タップで外せます）${self ? "。自分には投票できません" : ""}`),
-    h("ol", { class: "rank-slots" }, [...Array(d).keys()].map((n) => h("li", { class: dr.order[n] ? "on" : null },
-      h("span", { class: "seq-no" }, n + 1), dr.order[n] ?? h("span", { class: "secondary" }, `${n + 1}位`)))),
+    // 順位の一覧は開け閉めできる（最初は閉じておく。選択肢のボタンにも順位の数字が付く）
+    // 埋まった枠を2つ続けてタップすると入れ替わる（最初からタップし直さなくても順番を直せる）
+    keptFold(`rankslots:${p.id}`, `あなたの順位（${dr.order.length} / ${d}位）`, [
+      open && dr.order.length > 1 ? h("div", { class: "cell-sub rank-swap-help" }, dr.sel != null ? `「${dr.order[dr.sel]}」と入れ替える枠をタップ（もう一度タップでやめる）` : "埋まった枠を2つタップすると順位を入れ替えられます") : null,
+      h("ol", { class: "rank-slots" }, [...Array(d).keys()].map((n) => h("li", {
+        class: [dr.order[n] ? "on" : "", dr.sel === n ? "sel" : ""].join(" ").trim() || null,
+        onclick: () => {
+          if (!open || !dr.order[n]) return;
+          if (dr.sel == null) dr.sel = n;
+          else if (dr.sel === n) dr.sel = null;
+          else { [dr.order[dr.sel], dr.order[n]] = [dr.order[n], dr.order[dr.sel]]; dr.sel = null; dr.dirty = true; }
+          redraw();
+        },
+      }, h("span", { class: "seq-no" }, n + 1), dr.order[n] ?? h("span", { class: "secondary" }, `${n + 1}位`))))]),
     h("div", { class: "poll-choices" }, choices.map((o) => {
       const at = dr.order.indexOf(o);
       return h("button", { class: `poll-choice${at >= 0 ? " ranked" : ""}`, disabled: !open || (at < 0 && dr.order.length >= d), onclick: () => tap(o) },
         at >= 0 ? h("span", { class: "rank-badge" }, at + 1) : null, o);
     })),
     open ? h("div", { class: "rank-actions" },
-      h("button", { class: "text-btn", disabled: !dr.order.length, onclick: () => { dr.order = []; dr.dirty = true; redraw(); } }, "やり直す"),
+      h("button", { class: "text-btn", disabled: !dr.order.length, onclick: () => { dr.order = []; dr.sel = null; dr.dirty = true; redraw(); } }, "やり直す"),
       h("button", { class: "btn-small", disabled: dr.order.length !== d || same, onclick: () => { dr.dirty = false; dr.key = JSON.stringify(dr.order); vote([...dr.order]); } }, same ? "投票済み" : mine ? "この順で投票し直す" : "この順で投票")) : null);
 }
 
