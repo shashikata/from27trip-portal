@@ -2186,7 +2186,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v58"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v59"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5349,16 +5349,21 @@ function rankPicker(p, mine, open, vote) {
     // 埋まった枠を2つ続けてタップすると入れ替わる（最初からタップし直さなくても順番を直せる）
     keptFold(`rankslots:${p.id}`, `あなたの順位（${dr.order.length} / ${d}位）`, [
       open && dr.order.length > 1 ? h("div", { class: "cell-sub rank-swap-help" }, dr.sel != null ? `「${dr.order[dr.sel]}」と入れ替える枠をタップ（もう一度タップでやめる）` : "埋まった枠を2つタップすると順位を入れ替えられます") : null,
+      // 枠は本物のボタンにする（li のままだと、端末によってはタップに反応しない）
       h("ol", { class: "rank-slots" }, [...Array(d).keys()].map((n) => h("li", {
         class: [dr.order[n] ? "on" : "", dr.sel === n ? "sel" : ""].join(" ").trim() || null,
-        onclick: () => {
+      }, h("button", {
+        type: "button", class: "rank-slot-btn", disabled: !open || !dr.order[n],
+        "aria-label": dr.order[n] ? `${n + 1}位 ${dr.order[n]}（タップして入れ替え）` : `${n + 1}位（空き）`,
+        onclick: (e) => {
+          e.preventDefault(); e.stopPropagation();
           if (!open || !dr.order[n]) return;
           if (dr.sel == null) dr.sel = n;
           else if (dr.sel === n) dr.sel = null;
           else { [dr.order[dr.sel], dr.order[n]] = [dr.order[n], dr.order[dr.sel]]; dr.sel = null; dr.dirty = true; }
           redraw();
         },
-      }, h("span", { class: "seq-no" }, n + 1), dr.order[n] ?? h("span", { class: "secondary" }, `${n + 1}位`))))]),
+      }, h("span", { class: "seq-no" }, n + 1), dr.order[n] ?? h("span", { class: "secondary" }, `${n + 1}位`)))))]),
     h("div", { class: "poll-choices" }, choices.map((o) => {
       const at = dr.order.indexOf(o);
       return h("button", { class: `poll-choice${at >= 0 ? " ranked" : ""}`, disabled: !open || (at < 0 && dr.order.length >= d), onclick: () => tap(o) },
