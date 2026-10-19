@@ -244,7 +244,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { msgRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
+const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -361,7 +361,9 @@ function startAdmin() {
   listen("ptClaims", C("ptClaims"), (s) => { if (s) S.ptClaims = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
-  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) S.msgRecent = toMap(s); });
+  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(300)), (s) => { if (s) { S.msgSrc.pub = toMap(s); mergeMsgs(); } });
+  listen("dmRecent", query(C("dms"), orderBy("at", "desc"), limit(300)), (s) => { if (s) { S.msgSrc.dm = toMap(s); mergeMsgs(); } });
+  moveDmsOut();
   listenLiveQuiz();
 }
 
@@ -522,7 +524,9 @@ function startMemberData(uid) {
   listen("checksMine", query(C("checks"), where("uid", "==", uid)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, mine: toMap(s) }; mergeChecks(); } });
   listen("checksShared", query(C("checks"), where("shared", "==", true)), (s) => { if (s) { S.checkSrc = { ...S.checkSrc, shared: toMap(s) }; mergeChecks(); } });
   // チャットは新しい順に80件だけ（自分に関係するものだけ使う。開いているチャットは別に全部受け取る）
-  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) S.msgRecent = toMap(s); }); // 見てよいかは使うときに判定（チームの所属が後から届くため）
+  listen("msgRecent", query(C("messages"), orderBy("at", "desc"), limit(80)), (s) => { if (s) { S.msgSrc.pub = toMap(s); mergeMsgs(); } }); // チームのチャットを見てよいかは使うときに判定（チームの所属が後から届くため）
+  // DM・管理者との連絡は自分が入っている分だけ（ルールで、当人どうしと管理者しか読めない）
+  listen("dmRecent", query(C("dms"), where("parties", "array-contains", uid)), (s) => { if (s) { S.msgSrc.dm = toMap(s); mergeMsgs(); } });
   syncExtPages();
 }
 
@@ -633,7 +637,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -2108,7 +2112,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2238,7 +2242,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v72"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v73"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6953,6 +6957,25 @@ function adminArchives({ withTitle = true } = {}) {
 // 開いているチャットだけ、そのチャットの全メッセージを受け取る。
 
 const dmKey = (a, b) => `dm:${[a, b].sort().join("_")}`;
+// DM と「管理者との連絡」は、当人どうし（と管理者）だけが読める dms に置く。全体・チームのチャットは messages
+const isPrivateChat = (key) => /^(dm|admin):/.test(key);
+const msgColl = (key) => (isPrivateChat(key) ? "dms" : "messages");
+const mergeMsgs = () => { S.msgRecent = new Map([...(S.msgSrc.pub ?? []), ...(S.msgSrc.dm ?? [])]); };
+// 管理者：前の版で messages に置いていた DM・管理者との連絡を dms へ移す（開いたときに毎回確かめる。移す分がなければ何もしない）
+async function moveDmsOut() {
+  if (!S.isAdmin) return;
+  const pid = S.pid;
+  try {
+    const snaps = await Promise.all(["admin:", "dm:"].map((p) => getDocs(query(C("messages"), where("chat", ">=", p), where("chat", "<", p.slice(0, -1) + ";")))));
+    const docs = snaps.flatMap((x) => x.docs);
+    for (let i = 0; i < docs.length; i += 200) {
+      if (S.pid !== pid) return;
+      const b = writeBatch(db);
+      docs.slice(i, i + 200).forEach((d) => { b.set(D("dms", d.id), d.data()); b.delete(d.ref); });
+      await b.commit();
+    }
+  } catch (e) { console.warn("moveDmsOut", e); }
+}
 const chatParts = (key) => { const [type, rest = ""] = key.split(/:(.*)/s); return { type, rest }; };
 const sortedMsgs = (map) => [...map.values()].sort((a, b) => (ts(a.at) || Date.now()) - (ts(b.at) || Date.now()) || (a.id < b.id ? -1 : 1));
 const senderName = (m) => m.from || memberName(m.uid);
@@ -7070,7 +7093,7 @@ function chatView() {
     chatImageCache.set(imgRef.id, Promise.resolve(dataUrl));
     const b = writeBatch(db);
     b.set(imgRef, { uid: S.user.uid, chat: current, data: dataUrl });
-    b.set(doc(C("messages")), baseMsg({ text: "", image: imgRef.id }));
+    b.set(doc(C(msgColl(current))), baseMsg({ text: "", image: imgRef.id }));
     fire(b.commit());
     rememberThread(current);
     stick = true;
@@ -7078,7 +7101,7 @@ function chatView() {
   const send = () => {
     const text = input.value.trim();
     if (!text || !current || !canPost(current)) return;
-    fire(addDoc(C("messages"), baseMsg({ text })));
+    fire(addDoc(C(msgColl(current)), baseMsg({ text })));
     input.value = "";
     autosize();
     rememberThread(current);
@@ -7099,7 +7122,9 @@ function chatView() {
     current = key; picking = false; stick = true; shownMsgs = CHAT_PAGE;
     unlisten("chatOpen");
     S.chatMsgs = new Map();
-    listen("chatOpen", query(C("messages"), where("chat", "==", key)), (s) => { if (s) S.chatMsgs = toMap(s); });
+    // DM は「自分が入っている」条件も付けないと、ルールで読ませてもらえない
+    const mineOnly = isPrivateChat(key) && !S.isAdmin ? [where("parties", "array-contains", S.user.uid)] : [];
+    listen("chatOpen", query(C(msgColl(key)), where("chat", "==", key), ...mineOnly), (s) => { if (s) S.chatMsgs = toMap(s); });
     rememberThread(key);
     paint();
   }
@@ -7169,7 +7194,7 @@ function chatView() {
           S.isAdmin ? h("button", { class: "chat-del", title: "削除", onclick: () => {
             if (!confirm("このメッセージを削除しますか？")) return;
             const b = writeBatch(db);
-            b.delete(D("messages", r.id));
+            b.delete(D(msgColl(r.chat), r.id));
             if (r.image) b.delete(D("chatImages", r.image));
             fire(b.commit(), "削除しました");
           } }, "削除") : null));
@@ -7935,12 +7960,13 @@ async function claimPt(qrId) {
       if (!teamId) return { ng: "チームに入っていないので受け取れません", q };
       log = { kind: "team", target: teamId, teamId, contributor: uid };
     }
-    Object.assign(log, { visibility: "public", delta: Number(q.points) || 0, reason: `QR「${q.title}」`, createdAt: serverTimestamp(), author: "QR", uid });
+    // qrId はセキュリティルールで「その QR の点数か・はじめての受け取りか」を確かめるため
+    Object.assign(log, { visibility: "public", delta: Number(q.points) || 0, reason: `QR「${q.title}」`.slice(0, 120), createdAt: serverTimestamp(), author: "QR", uid, qrId });
     tx.set(mineRef, { uid, qrId, at: serverTimestamp() });
     if (slotRef) tx.set(slotRef, { uid, qrId, at: serverTimestamp(), slot: true });
     tx.set(doc(C("pointLogs")), log);
     const patch = statsPatch([log]);
-    if (patch) tx.set(D("stats", "points"), { ...patch, uid }, { merge: true }); // uid 欄は参加者が書き込むためのもの（合計の計算には使わない）
+    if (patch) tx.set(D("stats", "points"), { ...patch, uid, qrId }, { merge: true }); // uid・qrId 欄はルールで確かめるためのもの（合計の計算には使わない）
     return { ok: true, q, team: log.kind === "team" ? teamName(log.target) : null };
   });
 }

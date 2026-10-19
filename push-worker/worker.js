@@ -79,9 +79,13 @@ async function isPageMember(token, uid, page, env) {
   const k = `${uid}|${page}`;
   const hit = memberCache.get(k);
   if (hit && Date.now() - hit.at < 600e3) return hit.ok;
-  const path = page === "root" ? `members/${uid}` : `profiles/${encodeURIComponent(page)}/members/${uid}`;
-  const res = await fetch(`https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`, { headers: { Authorization: `Bearer ${token}` } });
-  const ok = res.ok;
+  const get = (path) => fetch(`https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+  let ok = (await get(page === "root" ? `members/${uid}` : `profiles/${encodeURIComponent(page)}/members/${uid}`)).ok;
+  // 確定前ページにも入っている人は、その旅行が確定していないと見られない（Firestore のルールと同じ）
+  if (ok && page !== "lobby") {
+    const lobby = await get(`profiles/lobby/members/${uid}`);
+    if (lobby.ok) ok = (await lobby.json()).fields?.trips?.mapValue?.fields?.[page]?.booleanValue === true;
+  }
   if (memberCache.size > 2000) memberCache.clear();
   memberCache.set(k, { ok, at: Date.now() });
   return ok;

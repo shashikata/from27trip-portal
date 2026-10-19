@@ -1,10 +1,15 @@
 rules_version = '2';
 
-// 汎用のルール（機能を追加しても書き直さなくてよい形）
+// アクセスのルール（2026-10 に強化）
 //
 //   管理者    : すべて読み書きできる
-//   参加者    : 自分が参加している旅行（プロファイル）のデータを読める
-//               書けるのは uid 欄が自分になっているドキュメントだけ（「見ました」・位置など）
+//   参加者    : 自分が参加している旅行（プロファイル）のデータを読める。ただし
+//                 - 発表前のチーム表・部屋割り・車割り、非公開のメモ、非表示の動画・資料、スパイの本当のチーム、クイズの問題と正解は読めない
+//                 - DM・管理者との連絡は、当人どうしだけが読める（dms）
+//                 - 確定前ページにいる人は、確定した旅行のページだけ読める
+//                 - ほかの人の「見ました」・入金の報告・申請・通知の宛先・パスワード変更の記録は読めない
+//                 - ポイントQR の一覧は読めない（QR を読み取ったときの1件だけ）
+//               書けるのは、下の「参加者が書けるもの」に決めた形のデータだけ（それ以外はすべて管理者だけ）
 //   未登録の人: 何もできない
 //
 // データの置き場所
@@ -12,33 +17,188 @@ rules_version = '2';
 //   2つ目以降の旅行           : /profiles/{pid}/announcements … のようにプロファイルの下
 //   旅行の一覧                : /profiles/{pid}（root は1つ目の旅行を表す）
 //   アカウントの一覧          : /accounts/{loginId}（旅行をまたいでアカウントを使い回すため）
+//
+// 新しいコレクションを足したときは、下の READ_ALL か各ルールに追加しないと、参加者は読み書きできない（管理者はできる）
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() {
       return request.auth != null;
     }
-
     // 管理者のメールアドレス。config.js の ADMIN_IDS + EMAIL_DOMAIN と一致させる
     function isAdmin() {
       return signedIn()
         && request.auth.token.email in ['admin1@island.example.com', 'admin2@island.example.com', 'admin3@island.example.com'];
     }
-
-    function rootMember() {
-      return signedIn() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    function me() {
+      return request.auth.uid;
     }
 
-    function profileMember(pid) {
-      return signedIn() && exists(/databases/$(database)/documents/profiles/$(pid)/members/$(request.auth.uid));
+    // ページ（旅行）の中のドキュメントの場所。root はルート直下、それ以外は /profiles/{pid} の下
+    function base(pid) {
+      return pid == 'root'
+        ? '/databases/' + database + '/documents'
+        : '/databases/' + database + '/documents/profiles/' + pid;
+    }
+    function at(pid, coll, id) {
+      return path(base(pid) + '/' + coll + '/' + id);
+    }
+    // そのページの参加者か。確定前ページにも入っている人は、その旅行が「確定」してからでないと旅行のページは読めない
+    function isMember(pid) {
+      return signedIn() && exists(at(pid, 'members', me()))
+        && (pid == 'lobby' || !exists(at('lobby', 'members', me()))
+          || get(at('lobby', 'members', me())).data.get('trips', {}).get(pid, false) == true);
     }
 
-    // 書き込もうとしている（または消そうとしている）データの uid 欄が自分か
-    function ownsNew() {
-      return request.resource.data.get('uid', '') == request.auth.uid;
+    // ---- 読む
+    // 参加者がそのまま読めるもの
+    function readAll(coll) {
+      return coll in ['config', 'members', 'announcements', 'pointLogs', 'stats', 'quizAnswers', 'live',
+        'quizSabo', 'quizBets', 'polls', 'votes', 'payments', 'expenses', 'checklists', 'locGroups', 'locations',
+        'mapPins', 'messages', 'files', 'fileChunks', 'assignments'];
     }
-    function ownsOld() {
-      return resource.data.get('uid', '') == request.auth.uid;
+    // 1件ずつなら読めるもの（一覧は読めない）
+    function getOnly(coll) {
+      return coll in ['ptQrs', 'ptClaims', 'chatImages'];
+    }
+    function memberRead(coll) {
+      return readAll(coll)
+        || (coll in ['teamSets', 'teams', 'allocs'] && resource.data.published == true)
+        || (coll == 'memberships' && resource.data.published == true && (resource.data.hidden == false || resource.data.uid == me()))
+        || (coll == 'notes' && resource.data.shared == true)
+        || (coll in ['videos', 'archives'] && resource.data.visible == true)
+        || (coll == 'checks' && (resource.data.uid == me() || resource.data.shared == true))
+        || (coll in ['acks', 'payReports', 'pollRequests', 'pushSubs', 'pwChanged'] && resource.data.uid == me())
+        // DM・管理者との連絡は当人だけ
+        || (coll == 'dms' && me() in resource.data.parties);
+    }
+
+    // ---- 参加者が書けるもの
+    function d() {
+      return request.resource.data;
+    }
+    function only(keys) {
+      return d().keys().hasOnly(keys);
+    }
+    function mine() {
+      return d().get('uid', '') == me();
+    }
+    function wasMine() {
+      return resource.data.get('uid', '') == me();
+    }
+    function str(v, max) {
+      return v is string && v.size() <= max;
+    }
+    function strOrNull(v, max) {
+      return v == null || str(v, max);
+    }
+    function changed() {
+      return d().diff(resource.data).affectedKeys();
+    }
+
+    // 作る・書き換える（setDoc は、すでにあれば書き換え扱い）
+    function memberWrite(pid, coll, id) {
+      return mine() && (
+        // 「見ました」
+        (coll == 'acks' && only(['annId', 'uid', 'at']) && id == d().annId + '_' + me())
+        // 地図の位置共有
+        || (coll == 'locations' && only(['uid', 'lat', 'lng', 'acc', 'at']) && id == me() && d().lat is number && d().lng is number)
+        // アンケートの回答（受付中で、対象に入っているものだけ）
+        || (coll == 'votes' && only(['uid', 'pollId', 'choice', 'order', 'comment', 'at', 'firstAt'])
+            && id == d().pollId + '_' + me() && strOrNull(d().get('comment', null), 200) && canVote(pid, d().pollId))
+        // 入金の報告
+        || (coll == 'payReports' && only(['uid', 'paymentId', 'method', 'note', 'image', 'at'])
+            && id == d().paymentId + '_' + me() && exists(at(pid, 'payments', d().paymentId))
+            && strOrNull(d().get('note', null), 300) && strOrNull(d().get('image', null), 400000))
+        // アンケートの申請（作るだけ。承認・見送りは管理者）
+        || (coll == 'pollRequests' && request.method == 'create' && d().status == 'pending'
+            && only(['uid', 'question', 'options', 'deadline', 'allowComment', 'showResults', 'showName', 'status', 'createdAt'])
+            && str(d().question, 300) && d().options is list && d().options.size() <= 40)
+        // クイズの解答（正誤の判定は管理者だけ）
+        || (coll == 'quizAnswers' && id == d().quizId + '_' + string(d().index) + '_' + me()
+            && (request.method == 'create' ? !d().keys().hasAny(['judge']) : !changed().hasAny(['judge', 'uid', 'quizId', 'index'])))
+        // クイズの妨害・賭け（申し込みだけ。受付・却下は管理者）
+        || (coll == 'quizSabo' && request.method == 'create' && d().status == 'pending'
+            && only(['uid', 'quizId', 'run', 'forIndex', 'target', 'type', 'at', 'status']))
+        || (coll == 'quizBets' && request.method == 'create' && d().status == 'pending'
+            && only(['uid', 'quizId', 'run', 'kind', 'pick', 'amount', 'at', 'status']))
+        // チャット（全体・自分のチーム・自分と管理者・自分が入っている DM）
+        || (coll in ['messages', 'dms'] && request.method == 'create' && canPost(pid, coll))
+        || (coll == 'chatImages' && request.method == 'create' && only(['uid', 'chat', 'data']) && str(d().data, 400000))
+        // 立て替え（自分が払った分・自分が払った精算だけ）
+        || (coll == 'expenses' && request.method == 'create' && d().amount is int && d().amount > 0 && d().amount <= 10000000
+            && ((d().kind == 'expense' && d().payer == me() && only(['uid', 'kind', 'payer', 'title', 'amount', 'split', 'createdAt']) && str(d().title, 100))
+              || (d().kind == 'settle' && d().from == me() && only(['uid', 'kind', 'from', 'to', 'amount', 'createdAt']))))
+        // チェックリスト（共有の項目は、誰が付け外ししてもよい）
+        || (coll == 'checks' && only(['uid', 'listId', 'itemId', 'shared', 'at'])
+            && (id == d().listId + '_' + d().itemId + '_' + me() || (d().shared == true && id == d().listId + '_' + d().itemId + '_shared')))
+        // 通知の宛先
+        || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200))
+        // パスワードを変えた記録
+        || (coll == 'pwChanged' && only(['uid', 'at']) && id == me())
+        // ポイントQR を読み取った（同じ書き込みの中で、受け取りの記録・ポイント・合計を書く）
+        || (coll == 'ptClaims' && request.method == 'create' && only(['uid', 'qrId', 'at', 'slot']) && qrActive(pid, d().qrId)
+            && (id == d().qrId + '_u_' + me() || (d().get('slot', false) == true && id.matches(d().qrId + '_s[0-9]+'))))
+        || (coll == 'pointLogs' && request.method == 'create' && qrLogOk(pid))
+        || (coll == 'stats' && id == 'points' && qrClaimedNow(pid, d().get('qrId', ''))
+            && (request.method == 'create' || changed().hasOnly(['u', 't', 'uid', 'qrId'])))
+      );
+    }
+    // 消す（自分のものだけ。共有のチェックは誰でも外せる）
+    function memberDelete(coll) {
+      return (coll in ['acks', 'locations', 'votes', 'payReports', 'pollRequests', 'expenses', 'pushSubs'] && wasMine())
+        || (coll in ['quizSabo', 'quizBets'] && wasMine() && resource.data.status == 'pending')
+        || (coll == 'checks' && (wasMine() || resource.data.shared == true));
+    }
+    // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats は除く）
+    function ownsBefore(coll) {
+      return request.method == 'create' || coll == 'stats' || wasMine() || (coll == 'checks' && resource.data.shared == true);
+    }
+
+    function canVote(pid, pollId) {
+      let p = get(at(pid, 'polls', pollId)).data;
+      return p.get('open', true) != false && (p.get('targets', null) == null || me() in p.targets);
+    }
+    // 全体・自分のチームは messages、自分と管理者・自分が入っている DM は dms
+    function canPost(pid, coll) {
+      let c = d().chat;
+      return only(['uid', 'chat', 'text', 'at', 'parties', 'image']) && str(d().get('text', ''), 2000) && c is string && (
+        (coll == 'messages' && !('parties' in d()) && (c == 'all'
+          || (c.matches('team:.+') && exists(at(pid, 'memberships', c.split(':')[1] + '_' + me())))))
+        || (coll == 'dms' && ((c == 'admin:' + me() && d().parties == [me()])
+          || (c.matches('dm:.+') && me() in d().parties && d().parties.size() == 2 && c == 'dm:' + d().parties[0] + '_' + d().parties[1]))));
+    }
+    function qrActive(pid, qrId) {
+      return qrId is string && exists(at(pid, 'ptQrs', qrId)) && get(at(pid, 'ptQrs', qrId)).data.get('active', true) != false;
+    }
+    // この書き込みで、はじめて受け取りの記録を作っているか
+    function qrClaimedNow(pid, qrId) {
+      return qrId is string && qrId != ''
+        && existsAfter(at(pid, 'ptClaims', qrId + '_u_' + me()))
+        && !exists(at(pid, 'ptClaims', qrId + '_u_' + me()));
+    }
+    // QR のポイント記録：点数は QR に決めたとおり・自分か自分のチームにだけ
+    function qrLogOk(pid) {
+      let q = get(at(pid, 'ptQrs', d().qrId)).data;
+      return only(['kind', 'target', 'teamId', 'contributor', 'visibility', 'delta', 'reason', 'createdAt', 'author', 'uid', 'qrId'])
+        && d().author == 'QR' && d().visibility == 'public' && qrClaimedNow(pid, d().qrId)
+        && d().delta == q.get('points', 0) && str(d().reason, 120)
+        && ((d().kind == 'user' && d().target == me() && d().teamId == null)
+          || (d().kind == 'team' && d().contributor == me() && d().teamId == d().target
+              && get(at(pid, 'memberships', d().target + '_' + me())).data.setId == q.setId));
+    }
+
+    function canRead(pid, coll) {
+      return isAdmin() || (isMember(pid) && memberRead(coll));
+    }
+    function canGet(pid, coll) {
+      return isAdmin() || (isMember(pid) && (memberRead(coll) || getOnly(coll)));
+    }
+    function canWrite(pid, coll, id) {
+      return isAdmin() || (isMember(pid) && memberWrite(pid, coll, id) && ownsBefore(coll));
+    }
+    function canDelete(pid, coll) {
+      return isAdmin() || (isMember(pid) && memberDelete(coll));
     }
 
     // 旅行の一覧：ログインしていれば読める（どの旅行に入っているかを調べるため）
@@ -49,18 +209,18 @@ service cloud.firestore {
 
     // 2つ目以降の旅行のデータ
     match /profiles/{pid}/{coll}/{docId} {
-      allow read: if isAdmin() || profileMember(pid)
-        || (coll == 'members' && signedIn() && docId == request.auth.uid);
-      allow create, update: if isAdmin() || (profileMember(pid) && ownsNew());
-      allow delete: if isAdmin() || (profileMember(pid) && ownsOld());
+      allow get: if canGet(pid, coll) || (coll == 'members' && signedIn() && docId == me());
+      allow list: if canRead(pid, coll);
+      allow create, update: if canWrite(pid, coll, docId);
+      allow delete: if canDelete(pid, coll);
     }
 
     // 1つ目の旅行のデータ（ルート直下）
     match /{coll}/{docId} {
-      allow read: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || rootMember()
-        || (coll == 'members' && signedIn() && docId == request.auth.uid));
-      allow create, update: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || (rootMember() && ownsNew()));
-      allow delete: if coll != 'profiles' && coll != 'accounts' && (isAdmin() || (rootMember() && ownsOld()));
+      allow get: if coll != 'profiles' && coll != 'accounts' && (canGet('root', coll) || (coll == 'members' && signedIn() && docId == me()));
+      allow list: if coll != 'profiles' && coll != 'accounts' && canRead('root', coll);
+      allow create, update: if coll != 'profiles' && coll != 'accounts' && canWrite('root', coll, docId);
+      allow delete: if coll != 'profiles' && coll != 'accounts' && canDelete('root', coll);
     }
 
     // アカウントの一覧（管理者だけ）
