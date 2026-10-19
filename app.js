@@ -1482,7 +1482,7 @@ function noteEditor(n) {
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${n.title || "無題"}」を削除しますか？${n.files?.length ? `\n添付の PDF・写真（${n.files.length}件）も消えます。` : ""}`)) return;
           const ids = (n.files ?? []).map((f) => f.id);
-          fire(deleteDoc(D("notes", n.id)).then(() => ids.length && deleteFiles(ids)), "削除しました");
+          fire(deleteDoc(D("notes", n.id)).then(() => ids.length && deleteFiles(n.files ?? [])), "削除しました");
         } }, "削除"))),
   );
   let paintedFiles = null;
@@ -2232,7 +2232,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v70"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v71"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6499,12 +6499,45 @@ function adminAllocs({ withTitle = true } = {}) {
 }
 
 // ---------------------------------------------------------------- 添付ファイル（PDF・写真）
-// Firebase Storage は使わず（無料プランで使えないため）、Firestore に分けて置く：
-//   files/{id}           { name, type, size, chunks, uid, thumb(写真だけ・小さく縮めた画像), createdAt }
-//   fileChunks/{id}_{i}  { fileId, i, uid, data(Bytes・900KB ずつ) }   … Firestore は1件 1MB までなので分ける
-// 使う側（メモ・過去旅行資料）は { id, name, type, size } だけを持ち、中身は開くときだけ読む
+// 置き場所は2通り（Firebase Storage は無料プランで使えないため）：
+//   R2  … 通知用の Cloudflare Worker に R2 のバケットをつないであれば、そこに置く（容量が大きく、読み出しも無料）
+//          files/{id} { name, type, size, store: "r2", key: "{ページ}/{id}", uid, thumb, createdAt }
+//   Firestore … つないでいなければ、Firestore に分けて置く（アプリ全体で 1GB まで）
+//          files/{id} { name, type, size, chunks, uid, thumb, createdAt } と fileChunks/{id}_{i} { fileId, i, uid, data(Bytes・900KB ずつ) }
+// 使う側（メモ・過去旅行資料）は { id, name, type, size, store?, key? } だけを持ち、中身は開くときだけ読む
 const CHUNK_BYTES = 900 * 1024;
-const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;     // Firestore に置くとき
+const MAX_PDF_BYTES_R2 = 90 * 1024 * 1024;  // R2 に置くとき（Worker が受け取れる大きさの範囲）
+const workerBase = () => String(S.pushWorker ?? "").replace(/\/$/, "");
+// Worker に R2 がつながっているか（1回聞いたら覚えておく。URL が変わったら聞き直す）
+let r2Info = { url: null, ok: false, at: 0 };
+async function r2Ready(force = false) {
+  const url = workerBase();
+  if (!url) return false;
+  if (!force && r2Info.url === url && Date.now() - r2Info.at < 600e3) return r2Info.ok;
+  const ok = await fetch(`${url}/info`).then((r) => r.json()).then((j) => !!j.files).catch(() => false);
+  r2Info = { url, ok, at: Date.now() };
+  return ok;
+}
+async function workerFetch(path, init = {}) {
+  const res = await fetch(`${workerBase()}${path}`, { ...init, headers: { ...(init.headers ?? {}), Authorization: `Bearer ${await S.user.getIdToken()}` } });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `資料の置き場所とやりとりできませんでした（${res.status}）`);
+  return res;
+}
+// R2 に送る（進み具合が分かるように XMLHttpRequest で）
+async function putR2(key, blob, type, onProgress) {
+  const token = await S.user.getIdToken();
+  await new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", `${workerBase()}/file/${key}`);
+    x.setRequestHeader("Authorization", `Bearer ${token}`);
+    x.setRequestHeader("Content-Type", type);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => (x.status >= 200 && x.status < 300 ? resolve() : reject(new Error((() => { try { return JSON.parse(x.responseText).error; } catch { return null; } })() || `送れませんでした（${x.status}）`)));
+    x.onerror = () => reject(new Error("送れませんでした（電波を確認してください）"));
+    x.send(blob);
+  });
+}
 const isPdf = (f) => f.type === "application/pdf";
 const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
 const totalBytes = (lists) => lists.flat().reduce((a, f) => a + (Number(f?.size) || 0), 0);
@@ -6549,11 +6582,20 @@ async function uploadFile(file, onProgress = () => {}) {
     name = `${name.replace(/\.[a-z0-9]+$/i, "")}.jpg`;
   } else if (type === "application/pdf" || /\.pdf$/i.test(name)) {
     type = "application/pdf";
-    if (file.size > MAX_PDF_BYTES) throw new Error(`PDF は ${fmtBytes(MAX_PDF_BYTES)} までです（${name}：${fmtBytes(file.size)}）`);
   } else throw new Error(`PDF か写真を選んでください（${name}）`);
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const r2 = await r2Ready();
+  const max = r2 ? MAX_PDF_BYTES_R2 : MAX_PDF_BYTES;
+  if (blob.size > max) throw new Error(`PDF は ${fmtBytes(max)} までです（${name}：${fmtBytes(blob.size)}）`);
   const ref = doc(C("files"));
   const uid = S.user.uid;
+  name = name.slice(0, 120);
+  if (r2) {
+    const key = `${S.pid}/${ref.id}`;
+    await putR2(key, blob, type, onProgress);
+    await setDoc(ref, { name, type, size: blob.size, store: "r2", key, uid, thumb, createdAt: serverTimestamp() });
+    return { id: ref.id, name, type, size: blob.size, store: "r2", key };
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
   const n = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
   for (let i = 0; i < n; i += 8) { // 1回の送信は 10MB までなので 8つずつ
     const b = writeBatch(db);
@@ -6563,7 +6605,6 @@ async function uploadFile(file, onProgress = () => {}) {
     await b.commit();
     onProgress(Math.min(n, i + 8) / n);
   }
-  name = name.slice(0, 120);
   await setDoc(ref, { name, type, size: bytes.length, chunks: n, uid, thumb, createdAt: serverTimestamp() });
   return { id: ref.id, name, type, size: bytes.length };
 }
@@ -6572,11 +6613,11 @@ async function uploadFile(file, onProgress = () => {}) {
 const fileBlobs = new Map();
 function loadFileBlob(f) {
   if (!fileBlobs.has(f.id)) {
-    fileBlobs.set(f.id, getDocs(query(C("fileChunks"), where("fileId", "==", f.id))).then((s) => {
+    fileBlobs.set(f.id, (f.store === "r2" ? workerFetch(`/file/${f.key}`).then((r) => r.blob()).then((b) => new Blob([b], { type: f.type })) : getDocs(query(C("fileChunks"), where("fileId", "==", f.id))).then((s) => {
       const parts = s.docs.map((d) => d.data()).sort((a, b) => a.i - b.i).map((d) => d.data.toUint8Array());
       if (!parts.length) throw new Error("ファイルが見つかりません（削除された可能性があります）");
       return new Blob(parts, { type: f.type });
-    }).catch((e) => { fileBlobs.delete(f.id); throw e; }));
+    })).catch((e) => { fileBlobs.delete(f.id); throw e; }));
     while (fileBlobs.size > 6) fileBlobs.delete(fileBlobs.keys().next().value);
   }
   return fileBlobs.get(f.id);
@@ -6586,15 +6627,49 @@ const thumbOf = (f) => {
   if (!fileThumbs.has(f.id)) fileThumbs.set(f.id, getDoc(D("files", f.id)).then((d) => { const t = d.data()?.thumb ?? null; if (t) thumbReady.set(f.id, t); return t; }).catch(() => null));
   return fileThumbs.get(f.id);
 };
-async function deleteFiles(ids) {
-  for (const id of ids) {
-    const s = await getDocs(query(C("fileChunks"), where("fileId", "==", id)));
+// 消す（files は { id, store?, key? } の配列）。R2 の分は Worker に頼んで消す
+async function deleteFiles(files) {
+  for (const f of files) {
+    if (f.store === "r2") await workerFetch(`/file/${f.key}`, { method: "DELETE" }).catch((e) => console.warn("r2 delete", e));
+    const s = f.store === "r2" ? null : await getDocs(query(C("fileChunks"), where("fileId", "==", f.id)));
     const b = writeBatch(db);
-    s.docs.forEach((d) => b.delete(d.ref));
-    b.delete(D("files", id));
+    s?.docs.forEach((d) => b.delete(d.ref));
+    b.delete(D("files", f.id));
     await b.commit();
-    fileBlobs.delete(id);
+    fileBlobs.delete(f.id);
   }
+}
+
+// Firestore に置いてある資料（このページのメモ・過去旅行資料の分）を R2 に移す
+async function migrateFilesToR2(onProgress = () => {}) {
+  if (!(await r2Ready(true))) throw new Error("Worker に R2 がつながっていません");
+  const parents = [
+    ...[...S.notes.values()].map((n) => ({ ref: D("notes", n.id), files: n.files ?? [] })),
+    ...(inLobby() ? [...S.archives.values()].map((a) => ({ ref: D("archives", a.id), files: a.files ?? [] })) : []),
+  ].filter((p) => p.files.some((f) => f.store !== "r2"));
+  const total = parents.reduce((n, p) => n + p.files.filter((f) => f.store !== "r2").length, 0);
+  let done = 0;
+  for (const p of parents) {
+    const next = [];
+    for (const f of p.files) {
+      if (f.store === "r2") { next.push(f); continue; }
+      onProgress(done, total, f.name);
+      const blob = await loadFileBlob(f);
+      const key = `${S.pid}/${f.id}`;
+      await putR2(key, blob, f.type, () => {});
+      await updateDoc(D("files", f.id), { store: "r2", key, chunks: deleteField() });
+      next.push({ ...f, store: "r2", key });
+      done++;
+    }
+    await updateDoc(p.ref, { files: next });
+    // 移し終えてから、Firestore 側の中身を消す
+    for (const f of p.files.filter((x) => x.store !== "r2")) {
+      const s = await getDocs(query(C("fileChunks"), where("fileId", "==", f.id)));
+      for (let i = 0; i < s.docs.length; i += 20) { const b = writeBatch(db); s.docs.slice(i, i + 20).forEach((d) => b.delete(d.ref)); await b.commit(); }
+    }
+  }
+  onProgress(done, total, null);
+  return done;
 }
 
 // PDF は pdf.js（vendor/ に同梱）でページごとに絵にして表示する（iPhone の Safari は PDF を枠の中に出すと1ページ目しか見えないため）
@@ -6749,7 +6824,7 @@ function fileUploader(onDone, label = "PDF・写真を追加") {
 // 添付を外す（一覧から外して、中身も消す）
 function removeAttachment(ref, files, f) {
   if (!confirm(`「${f.name}」を削除しますか？`)) return;
-  fire(updateDoc(ref, { files: (files ?? []).filter((x) => x.id !== f.id) }).then(() => deleteFiles([f.id])), "削除しました");
+  fire(updateDoc(ref, { files: (files ?? []).filter((x) => x.id !== f.id) }).then(() => deleteFiles([f])), "削除しました");
 }
 
 // ---------------------------------------------------------------- 過去旅行資料（確定前ページ）
@@ -6820,7 +6895,7 @@ function adminArchives({ withTitle = true } = {}) {
         } }, "名前"),
         h("button", { class: "text-btn destructive", onclick: () => {
           if (!confirm(`「${a.title}」を削除しますか？\n中の写真・PDF（${a.files?.length ?? 0}件）もすべて消えます。`)) return;
-          fire(deleteDoc(D("archives", a.id)).then(() => deleteFiles((a.files ?? []).map((f) => f.id))), "削除しました");
+          fire(deleteDoc(D("archives", a.id)).then(() => deleteFiles(a.files ?? [])), "削除しました");
         } }, "削除")));
     return {
       el,
@@ -7381,6 +7456,7 @@ function adminPushSetup() {
   });
   const selfBtn = h("button", { class: "cell cell-button", onclick: testSelf }, "自分の端末にテスト通知");
   const status = pushStatusBox();
+  const store = fileStoreBox();
   // 入力欄を作り直すと打っている途中で消えるので、欄は1回だけ作る
   el.append(group("プッシュ通知の設定（管理者）", [
     field("Worker の URL", url),
@@ -7389,13 +7465,51 @@ function adminPushSetup() {
     h("button", { class: "cell cell-button", onclick: genKeys }, "通知用の鍵を作る（最初に1回）"),
     selfBtn,
     out,
-  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el);
+  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el, store.el);
   return {
     el,
     update() {
       if (document.activeElement !== url && !url.dataset.touched) url.value = S.pushWorker ?? "";
       selfBtn.disabled = !S.pushWorker;
       status.update();
+      store.update();
+    },
+  };
+}
+
+// 管理者：資料（PDF・写真）の置き場所。R2 がつながっていれば、Firestore に残っている分を移せる
+function fileStoreBox() {
+  const el = h("div");
+  let lastKey = null, ok = null, busy = false, prog = "", asking = false;
+  const local = () => [...[...S.notes.values()].flatMap((n) => n.files ?? []), ...(inLobby() ? [...S.archives.values()].flatMap((a) => a.files ?? []) : [])].filter((f) => f.store !== "r2");
+  const paint = () => {
+    const left = local();
+    const key = `${S.pushWorker}|${ok}|${busy}|${prog}|${left.length}|${S.pid}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    if (!S.pushWorker) { el.hidden = true; return; }
+    el.hidden = false;
+    const move = h("button", { class: "cell cell-button", disabled: busy || !ok || !left.length, onclick: () => guard(null, async () => {
+      if (!confirm(`このページの資料 ${left.length}件（${fmtBytes(totalBytes([left]))}）を R2 に移しますか？\n移している間はこの画面を閉じないでください。`)) return;
+      busy = true; paint();
+      try {
+        const n = await migrateFilesToR2((d, t, name) => { prog = name ? `${d + 1}/${t} ${name}` : ""; paint(); });
+        toast(`${n}件を R2 に移しました`);
+      } finally { busy = false; prog = ""; paint(); }
+    }) }, busy ? `移しています… ${prog}` : `このページの資料を R2 に移す（${left.length}件）`);
+    setKids(el, group("資料（PDF・写真）の置き場所", [
+      cell("いまの置き場所", h("span", { class: ok ? "get" : "secondary" }, ok === null ? "確認中…" : ok ? "Cloudflare R2（10GB まで無料）" : "Firestore（アプリ全体で 1GB まで）")),
+      ok ? move : null,
+      h("button", { class: "cell cell-button", onclick: () => { ok = null; paint(); r2Ready(true).then((v) => { ok = v; paint(); }); } }, "確認し直す"),
+    ], ok ? "新しく入れる資料は R2 に置かれます（PDF は1つ 90MB まで）。前から Firestore にある分は、上のボタンで移せます（ページごと）。"
+      : "Worker に R2 のバケットを「FILES」という名前でつなぐと、容量の大きい R2 に置けるようになります（手順は push-worker/README.md）。つなぐまでは今までどおり Firestore に置きます。"));
+  };
+  return {
+    el,
+    update() {
+      if (S.pushWorker && ok === null && !busy && !asking && r2Info.url !== workerBase()) { asking = true; r2Ready().then((v) => { ok = v; asking = false; paint(); }); }
+      else if (ok === null && r2Info.url === workerBase()) ok = r2Info.ok;
+      paint();
     },
   };
 }
