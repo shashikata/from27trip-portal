@@ -1942,3 +1942,25 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .fv-nav[hidden] { display: none; }
 .upl-btn { display: inline-flex; align-items: center; gap: 4px; }
 .upl-btn .icon { width: 16px; height: 16px; }
+
+/* 部屋割り・車割り */
+.alloc-kind { margin-bottom: 16px; }
+.alloc-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.alloc-tools .pill { display: inline-flex; align-items: center; gap: 4px; }
+.alloc-tools .pill .icon { width: 16px; height: 16px; }
+.alloc-head { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+.alloc-head .icon { width: 20px; height: 20px; color: var(--blue); }
+.alloc-n { margin-left: auto; font-size: 14px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.alloc-n.full { color: var(--green, #34C759); font-weight: 600; }
+.alloc-n.over { color: var(--red, #FF3B30); font-weight: 700; }
+.alloc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.alloc-chip { display: inline-flex; align-items: center; gap: 4px; padding: 5px 6px 5px 10px; border-radius: 999px; background: rgba(120, 120, 128, .14); font-size: 15px; }
+.alloc-chip.driver { background: rgba(10, 132, 255, .14); font-weight: 600; }
+.alloc-chip button { border: 0; background: none; padding: 0 4px; font: inherit; color: var(--label-2); cursor: pointer; line-height: 1; }
+.alloc-x { font-size: 17px; }
+.alloc-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.alloc-foot select { flex: 1; min-width: 0; max-width: 260px; }
+.alloc-foot .text-btn:first-of-type { margin-left: auto; }
+.alloc-mine .cell-main { gap: 2px; }
+.alloc-k { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--label-2); }
+.alloc-k .icon { width: 15px; height: 15px; }

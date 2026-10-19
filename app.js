@@ -7,7 +7,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
-  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction, Bytes,
+  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction, Bytes, arrayRemove,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
 
@@ -321,6 +321,10 @@ function startAdmin() {
   listen("members", C("members"), (s) => { S.members = toMap(s); refreshAdminLobbyAnn(); });
   listen("sets", C("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", C("teams"), (s) => { S.teams = toMap(s); });
+  if (pid !== LOBBY) {
+    listen("allocs", C("allocs"), (s) => { if (s) S.allocs = toMap(s); });
+    listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
+  }
   listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
   listen("logs", C("pointLogs"), (s) => { S.logSrc.all = toMap(s); scheduleStatsHeal(); });
@@ -461,6 +465,10 @@ function startMemberData(uid) {
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
+  if (!inLobby()) {
+    listen("allocs", published("allocs"), (s) => { if (s) S.allocs = toMap(s); });
+    listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
+  }
   const memRef = C("memberships");
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
   listen("membershipsVisible", query(memRef, where("published", "==", true), where("hidden", "==", false)), (s) => { S.memSrc.vis = toMap(s); memUpdate(); });
@@ -625,7 +633,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -944,6 +952,8 @@ function h(tag, props, ...kids) {
 
 // SF Symbols 風の線アイコン（24×24、currentColor で着色）
 const ICONS = {
+  bed: '<path d="M3 18V6"/><path d="M3 14h18v4"/><path d="M21 14v-1.5A3.5 3.5 0 0 0 17.5 9H11v5"/><circle cx="7" cy="11" r="2"/>',
+  car: '<path d="M4.5 13 6.6 7.4A2 2 0 0 1 8.5 6h7a2 2 0 0 1 1.9 1.4L19.5 13"/><path d="M3 13.5A1.5 1.5 0 0 1 4.5 12h15a1.5 1.5 0 0 1 1.5 1.5V17H3Z"/><path d="M6 17v2M18 17v2"/><circle cx="7" cy="14.5" r=".6"/><circle cx="17" cy="14.5" r=".6"/>',
   megaphone: '<path d="M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
   people: '<circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14c2.4 0 4 1.5 4.5 4"/>',
   flag: '<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>',
@@ -1979,19 +1989,24 @@ function memberHome({ compact = false } = {}) {
 
 function memberTeam({ compact = false } = {}) {
   const body = h("div");
-  const el = h("div", null, sectionTitle("チーム", compact), body);
+  const title = sectionTitle("チーム", compact);
+  const el = h("div", null, title, body);
   return {
     el,
     update() {
       const sets = sortedSets();
+      const uid = S.user.uid;
+      // 部屋割り・車割りが発表されていれば、チームの上に出す
+      const allocs = memberAllocGroups(uid);
+      title.textContent = ["チーム", ...Object.keys(ALLOC_KINDS).filter(allocShown).map((k) => ALLOC_KINDS[k].label)].join("・");
       if (!sets.length) {
-        body.replaceChildren(emptyState("lock", "チーム発表はまだです", "発表されるとここに表示されます。"));
+        body.replaceChildren(...(allocs.length ? allocs : [emptyState("lock", "チーム発表はまだです", "発表されるとここに表示されます。")]));
         return;
       }
-      const uid = S.user.uid;
       const mine = sets.map((s) => ({ set: s, team: S.teams.get(teamOfIn(uid, s.id)), real: S.teams.get(trueTeamOf(uid, s.id)) }));
       const isSpy = mine.some((x) => x.real);
       body.replaceChildren(
+        ...allocs,
         group("あなたのチーム", mine.flatMap(({ set, team, real }) => [
           cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"),
           team && teamLeader(team) ? cell(h("span", { class: "team-leader-note" }, "👑 リーダー"), teamLeader(team) === uid ? "あなた" : memberName(teamLeader(team))) : null,
@@ -2087,7 +2102,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2217,7 +2232,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v69"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v70"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6298,6 +6313,191 @@ function adminVideos({ withTitle = true } = {}) {
   };
 }
 
+// ---------------------------------------------------------------- 部屋割り・車割り
+//   allocs/{id}    { kind: "room" | "car", name, capacity(人数・0 は決めない), members: [uid], driver(車の運転する人), order, published }
+//   config/allocs  { room: 発表したか, car: 発表したか }   … 参加者は published の分だけ読む（チーム表と同じ）
+const ALLOC_KINDS = {
+  room: { label: "部屋", title: "部屋割り", sample: "例：201号室", icon: "bed" },
+  car: { label: "車", title: "車割り", sample: "例：1号車（たろうの車）", icon: "car" },
+};
+const sortedAllocs = (kind) => [...S.allocs.values()].filter((a) => a.kind === kind)
+  .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || byNatural(a.name, b.name));
+const allocOf = (kind, uid) => sortedAllocs(kind).find((a) => (a.members ?? []).includes(uid));
+const allocShown = (kind) => !!S.allocCfg?.[kind] && sortedAllocs(kind).length > 0;
+// 名前を並べる（車は運転する人を先頭に「🚗」付きで）
+const allocNames = (a, ms = (a.members ?? []).filter((u) => S.members.has(u))) =>
+  [...ms].sort((x, y) => (x === a.driver ? -1 : y === a.driver ? 1 : byNatural(S.members.get(x)?.loginId ?? "", S.members.get(y)?.loginId ?? "")))
+    .map((u) => (a.kind === "car" && u === a.driver ? `🚗${memberName(u)}` : memberName(u)));
+const allocCount = (a) => (a.members ?? []).filter((u) => S.members.has(u)).length;
+
+// 参加者：チームの欄の上に出す（発表された分だけ）
+function memberAllocGroups(uid) {
+  const kinds = Object.keys(ALLOC_KINDS).filter(allocShown);
+  if (!kinds.length) return [];
+  const mine = kinds.map((k) => {
+    const a = allocOf(k, uid);
+    const others = a ? allocNames(a, (a.members ?? []).filter((u) => u !== uid && S.members.has(u))) : [];
+    return h("div", { class: "cell alloc-mine" },
+      h("div", { class: "cell-main" }, h("span", { class: "alloc-k" }, icon(ALLOC_KINDS[k].icon), ALLOC_KINDS[k].label),
+        h("b", null, a ? a.name : "まだ決まっていません"),
+        a ? h("div", { class: "cell-sub" }, k === "car" && a.driver === uid ? "あなたが運転します・" : "", others.length ? `一緒：${others.join("・")}` : "ほかにはいません") : null));
+  });
+  return [
+    group("あなたの部屋・車", mine),
+    ...kinds.map((k) => group(ALLOC_KINDS[k].title, sortedAllocs(k).map((a) => {
+      const me = (a.members ?? []).includes(uid);
+      return h("div", { class: `cell team-cell${me ? " me" : ""}` },
+        h("div", { class: "cell-main" },
+          h("div", { class: "team-label strong" }, a.name, me ? h("span", { class: "tint you" }, "あなた") : null),
+          h("div", { class: "cell-sub" }, allocNames(a).join("・") || "まだいません")));
+    }), k === "car" ? "🚗 は運転する人です。" : null)),
+  ];
+}
+
+function adminAllocs({ withTitle = true } = {}) {
+  let kind = "room";
+  const kindSeg = segmented(Object.entries(ALLOC_KINDS).map(([value, k]) => ({ value, label: k.title })), kind);
+  kindSeg.addEventListener("change", () => { kind = kindSeg.value; last = null; paint(); });
+  const publish = toggle();
+  const publishNote = h("span");
+  publish.addEventListener("change", () => {
+    const v = publish.checked, k = ALLOC_KINDS[kind];
+    if (!confirm(v ? `${k.title}を発表しますか？参加者全員に表示されます。` : `${k.title}の発表を取り消して、非公開に戻しますか？`)) { publish.checked = !v; return; }
+    const b = writeBatch(db);
+    sortedAllocs(kind).forEach((a) => b.update(D("allocs", a.id), { published: v }));
+    b.set(D("config", "allocs"), { [kind]: v }, { merge: true });
+    fire(b.commit(), v ? `${k.title}を発表しました` : "非公開に戻しました");
+  });
+  const name = h("input", { type: "text", class: "plain", maxlength: "40" });
+  const cap = h("input", { type: "number", class: "plain", min: "0", max: "99", inputmode: "numeric", placeholder: "決めない" });
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    if (!name.value.trim()) return toast("名前を入れてください", true);
+    fire(addDoc(C("allocs"), { kind, name: name.value.trim(), capacity: Math.max(0, Math.min(99, Number(cap.value) || 0)), members: [], driver: null, order: Date.now(), published: !!S.allocCfg?.[kind] }), "追加しました");
+    name.value = "";
+  } }, group(null, [h("div", { class: "cell" }, name), field("定員（人）", cap)]), h("button", { class: "btn-filled", type: "submit" }, "追加する"));
+  const summary = h("div");
+  const list = h("div", { class: "stack" });
+  const tools = h("div", { class: "alloc-tools" });
+  const el = h("div", null, withTitle ? largeTitle("部屋・車") : null, h("div", { class: "alloc-kind" }, kindSeg),
+    group(null, [field("参加者に発表", publish)], publishNote), keptFold("newAlloc", "＋ 追加する", form, false), summary, tools, list);
+  redrawOnLeave(el);
+
+  // 移す：元の部屋（車）から外して、新しいほうに入れる
+  const moveTo = (uid, to) => {
+    if (to?.capacity && allocCount(to) >= to.capacity && !confirm(`「${to.name}」は定員（${to.capacity}人）に達しています。それでも入れますか？`)) return;
+    const b = writeBatch(db);
+    const from = allocOf(kind, uid);
+    if (from) b.update(D("allocs", from.id), { members: arrayRemove(uid), ...(from.driver === uid ? { driver: null } : {}) });
+    if (to) b.update(D("allocs", to.id), { members: arrayUnion(uid) });
+    fire(b.commit());
+  };
+  // 未割り当ての人を、空きの多いところから順に入れる（並びはばらばら）
+  const autoFill = () => {
+    const as = sortedAllocs(kind);
+    if (!as.length) return toast(`先に${ALLOC_KINDS[kind].label}を追加してください`, true);
+    const rest = sortedMembers().filter((m) => !allocOf(kind, m.id)).map((m) => m.id);
+    if (!rest.length) return toast("未割り当ての人はいません");
+    for (let i = rest.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [rest[i], rest[j]] = [rest[j], rest[i]]; }
+    const count = new Map(as.map((a) => [a.id, allocCount(a)]));
+    const add = new Map();
+    const left = [];
+    for (const uid of rest) {
+      const open = as.filter((a) => !a.capacity || count.get(a.id) < a.capacity);
+      if (!open.length) { left.push(uid); continue; }
+      // 定員があるところは空きの割合、ないところは人数の少なさで選ぶ
+      const room = (a) => (a.capacity ? (a.capacity - count.get(a.id)) / a.capacity : 1 / (1 + count.get(a.id)));
+      const best = open.reduce((x, y) => (room(y) > room(x) ? y : x));
+      count.set(best.id, count.get(best.id) + 1);
+      add.set(best.id, [...(add.get(best.id) ?? []), uid]);
+    }
+    if (!add.size) return toast("空きがありません（定員を増やすか、追加してください）", true);
+    const b = writeBatch(db);
+    add.forEach((uids, id) => b.update(D("allocs", id), { members: arrayUnion(...uids) }));
+    fire(b.commit(), `${rest.length - left.length}人を入れました${left.length ? `（${left.length}人は空きがなく入れられませんでした）` : ""}`);
+  };
+  const clearAll = () => {
+    const as = sortedAllocs(kind);
+    if (!as.length || !confirm(`${ALLOC_KINDS[kind].title}を全部外しますか？（${ALLOC_KINDS[kind].label}は残ります）`)) return;
+    const b = writeBatch(db);
+    as.forEach((a) => b.update(D("allocs", a.id), { members: [], driver: null }));
+    fire(b.commit(), "全部外しました");
+  };
+  const printAllocs = () => {
+    const k = ALLOC_KINDS[kind], as = sortedAllocs(kind);
+    const rest = sortedMembers().filter((m) => !allocOf(kind, m.id));
+    const root = h("div", { id: "print-root", class: "print-report print-poll" },
+      h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, k.title), h("h1", { class: "rp-poll-title" }, `${S.config.title || APP_TITLE} ${k.title}`),
+        h("p", { class: "rp-sub" }, `${as.length}${k.label === "部屋" ? "部屋" : "台"}・${sortedMembers().length - rest.length} / ${sortedMembers().length}人　・　印刷 ${new Date().toLocaleString("ja-JP", { dateStyle: "short", timeStyle: "short" })}`),
+        h("table", { class: "rp-table" }, h("thead", null, h("tr", null, h("th", null, k.label), h("th", null, "人数"), h("th", null, "メンバー"))),
+          h("tbody", null, as.map((a) => h("tr", null, h("td", null, a.name), h("td", null, `${allocCount(a)}${a.capacity ? ` / ${a.capacity}` : ""}人`), h("td", null, allocNames(a).join("、") || "–"))))),
+        rest.length ? h("div", { class: "rp-block" }, h("h3", null, `未割り当て（${rest.length}人）`), h("p", null, rest.map((m) => m.name).join("、"))) : null,
+        kind === "car" ? h("p", { class: "rp-sub" }, "🚗 は運転する人") : null));
+    printReport(root, k.title);
+  };
+  setKids(tools,
+    h("button", { class: "pill", onclick: autoFill }, icon("shuffle"), "未割り当ての人を自動で入れる"),
+    h("button", { class: "pill", onclick: printAllocs }, icon("table"), "印刷"),
+    h("button", { class: "pill neg", onclick: clearAll }, "全部外す"));
+
+  const card = (a0) => {
+    let a = a0;
+    const head = h("div", { class: "alloc-head" });
+    const chips = h("div", { class: "alloc-chips" });
+    const add = h("select", { class: "inline-select", "aria-label": "人を追加" });
+    add.addEventListener("change", () => { const uid = add.value; add.value = ""; if (uid) moveTo(uid, a); });
+    const el = h("article", { class: "card alloc-card" }, head, chips, h("div", { class: "alloc-foot" }, add,
+      h("button", { class: "text-btn", onclick: () => {
+        const n = prompt("名前", a.name);
+        if (n == null || !n.trim()) return;
+        const c = prompt("定員（人）。決めないときは 0", String(a.capacity ?? 0));
+        if (c == null) return;
+        fire(updateDoc(D("allocs", a.id), { name: n.trim(), capacity: Math.max(0, Math.min(99, Number(c) || 0)) }), "変更しました");
+      } }, "変更"),
+      h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${a.name}」を削除しますか？（入っている人は未割り当てに戻ります）`)) fire(deleteDoc(D("allocs", a.id)), "削除しました"); } }, "削除")));
+    return {
+      el,
+      patch(next) {
+        a = next;
+        const n = allocCount(a);
+        const over = a.capacity && n > a.capacity;
+        setKids(head, icon(ALLOC_KINDS[a.kind].icon), h("b", null, a.name),
+          h("span", { class: `alloc-n${over ? " over" : a.capacity && n === a.capacity ? " full" : ""}` }, `${n}${a.capacity ? ` / ${a.capacity}` : ""}人`));
+        const ms = (a.members ?? []).filter((u) => S.members.has(u));
+        setKids(chips, ms.length ? [...ms].sort((x, y) => byNatural(S.members.get(x)?.loginId ?? "", S.members.get(y)?.loginId ?? "")).map((u) =>
+          h("span", { class: `alloc-chip${a.kind === "car" && a.driver === u ? " driver" : ""}` },
+            a.kind === "car" ? h("button", { class: "alloc-drive", type: "button", title: a.driver === u ? "運転する人から外す" : "運転する人にする",
+              onclick: () => fire(updateDoc(D("allocs", a.id), { driver: a.driver === u ? null : u })) }, a.driver === u ? "🚗" : "○") : null,
+            memberName(u),
+            h("button", { class: "alloc-x", type: "button", "aria-label": `${memberName(u)}を外す`, onclick: () => moveTo(u, null) }, "×"))) : h("span", { class: "secondary" }, "まだいません"));
+        const free = sortedMembers().filter((m) => !allocOf(a.kind, m.id));
+        const elsewhere = sortedMembers().filter((m) => { const x = allocOf(a.kind, m.id); return x && x.id !== a.id; });
+        add.replaceChildren(h("option", { value: "" }, "＋ 人を入れる"),
+          free.length ? h("optgroup", { label: "未割り当て" }, free.map((m) => h("option", { value: m.id }, m.name))) : null,
+          elsewhere.length ? h("optgroup", { label: "ほかから移す" }, elsewhere.map((m) => h("option", { value: m.id }, `${m.name}（${allocOf(a.kind, m.id).name}）`))) : null);
+      },
+    };
+  };
+  let last = null;
+  const paint = () => {
+    const k = ALLOC_KINDS[kind];
+    const key = `${kind}|${DATA_VER}`;
+    if (key === last) return;
+    last = key;
+    publish.checked = !!S.allocCfg?.[kind];
+    publishNote.textContent = publish.checked ? `発表中：参加者の「チーム」の欄に${k.title}が出ています。` : `まだ発表していません。決まったらオンにすると、参加者の「チーム」の欄に出ます。`;
+    name.placeholder = k.sample;
+    const as = sortedAllocs(kind);
+    const rest = sortedMembers().filter((m) => !allocOf(kind, m.id));
+    setKids(summary, group(null, [cell("割り当て済み", `${sortedMembers().length - rest.length} / ${sortedMembers().length}人`),
+      rest.length ? h("div", { class: "cell" }, h("div", { class: "cell-main" }, h("b", null, `未割り当て（${rest.length}人）`), h("div", { class: "cell-sub" }, rest.map((m) => m.name).join("・")))) : null]));
+    if (!as.length) { list._rows?.clear(); setKids(list, emptyState(k.icon, `${k.label}がありません`, `「＋ 追加する」で${k.label}を作ってください。`)); return; }
+    if (!list._rows?.size) list.replaceChildren();
+    keyedList(list, as, card, (row, a) => row.patch(a));
+  };
+  return { el, update() { if (!typingIn(el)) paint(); } };
+}
+
 // ---------------------------------------------------------------- 添付ファイル（PDF・写真）
 // Firebase Storage は使わず（無料プランで使えないため）、Firestore に分けて置く：
 //   files/{id}           { name, type, size, chunks, uid, thumb(写真だけ・小さく縮めた画像), createdAt }
@@ -7972,6 +8172,7 @@ const ADMIN_TABS = [
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
+  { key: "allocs", icon: "bed", label: "部屋・車", view: adminAllocs, sheet: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
   { key: "checklist", icon: "list", label: "チェック", view: checklistAdmin, sheet: true },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
