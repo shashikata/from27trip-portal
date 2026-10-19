@@ -1888,3 +1888,11 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .push-banner .text-btn { flex: none; font-size: 14px; }
 .desk-ask { padding: 0 20px; }
 .desk-ask .push-banner { margin: 10px 0 0; }
+
+/* 管理者：通知の受け取り状況 */
+.group-body > .fold { margin: 0; }
+.group-body > .fold > summary { font-size: 15px; font-weight: 600; padding: 11px 16px; color: var(--blue); }
+.group-body > .fold > summary .icon { color: var(--label-3); }
+.push-who .cell { padding-left: 24px; }
+.push-off { padding: 0 16px 12px; line-height: 1.7; }
+.push-who .cell-main small { color: var(--label-2); font-size: 13px; margin-top: 2px; }

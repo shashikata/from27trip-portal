@@ -2197,7 +2197,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v66"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v67"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6779,6 +6779,7 @@ function adminPushSetup() {
     toast(pushResultText(r), !r.devices);
   });
   const selfBtn = h("button", { class: "cell cell-button", onclick: testSelf }, "自分の端末にテスト通知");
+  const status = pushStatusBox();
   // 入力欄を作り直すと打っている途中で消えるので、欄は1回だけ作る
   el.append(group("プッシュ通知の設定（管理者）", [
     field("Worker の URL", url),
@@ -6787,12 +6788,66 @@ function adminPushSetup() {
     h("button", { class: "cell cell-button", onclick: genKeys }, "通知用の鍵を作る（最初に1回）"),
     selfBtn,
     out,
-  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"));
+  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el);
   return {
     el,
     update() {
       if (document.activeElement !== url && !url.dataset.touched) url.value = S.pushWorker ?? "";
       selfBtn.disabled = !S.pushWorker;
+      status.update();
+    },
+  };
+}
+
+// 管理者：このページで「通知を受け取る」をオンにした人・まだの人（pushSubs をその場で1回読む。押すと読み直す）
+// 端末側で通知を切ったりアプリを消したりしても、次に送って「もう使われていない」と返るまでは残る
+const deviceKind = (ua = "") => (/iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "その他");
+function pushStatusBox() {
+  const el = h("div");
+  let loadedPid = null, busy = false, subs = null, lastKey = null;
+  const paint = () => {
+    // 中身が変わったときだけ描き直す（開いた欄が閉じないように）
+    const key = `${S.pushWorker}|${busy}|${subs?.length}|${sortedMembers().map((m) => m.id + m.name).join()}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    if (!S.pushWorker) { el.hidden = true; return; }
+    el.hidden = false;
+    const reload = h("button", { class: "cell cell-button", onclick: () => load() }, icon("refresh"), busy ? "読み込み中…" : "読み直す");
+    if (!subs) { setKids(el, group("通知の受け取り状況", [reload])); return; }
+    const by = new Map();
+    for (const d of subs) { if (!by.has(d.uid)) by.set(d.uid, []); by.get(d.uid).push(d); }
+    const ms = sortedMembers();
+    const on = ms.filter((m) => by.has(m.id));
+    const off = ms.filter((m) => !by.has(m.id));
+    const mine = by.get(S.user.uid)?.length ?? 0;
+    const row = (m) => {
+      const ds = by.get(m.id);
+      const kinds = [...ds.reduce((c, d) => c.set(deviceKind(d.ua), (c.get(deviceKind(d.ua)) ?? 0) + 1), new Map())].map(([k, n]) => (n > 1 ? `${k}×${n}` : k)).join("・");
+      const last = ds.reduce((a, d) => (ts(d.at) > ts(a?.at) ? d : a), null);
+      return h("div", { class: "cell" }, h("span", { class: "cell-main" }, h("b", null, m.name), h("small", null, `${kinds}・${fmtDate(last?.at)}にオン`)));
+    };
+    setKids(el, group("通知の受け取り状況", [
+      cell("受け取る設定", h("b", { class: on.length === ms.length && ms.length ? "get" : "" }, `${on.length} / ${ms.length}人`)),
+      on.length ? fold(`設定済み（${on.length}人）`, h("div", { class: "push-who" }, on.map(row)), false) : null,
+      off.length ? fold(`まだの人（${off.length}人）`, h("div", { class: "push-who push-off" }, off.map((m) => m.name).join("・")), true) : null,
+      mine ? cell("管理者（自分）の端末", h("span", { class: "secondary" }, `${mine}台`)) : null,
+      reload,
+    ], "このページで「通知を受け取る」をオンにした人です（端末と、オンにした日時）。スマホ側で通知を切ったりアプリを消したりした人は、次に通知を送ったときに自動で外れます。"));
+  };
+  const load = async () => {
+    if (busy) return;
+    busy = true; loadedPid = S.pid; paint();
+    try {
+      const snap = await getDocs(collection(db, ...pageBase(S.pid), "pushSubs"));
+      subs = snap.docs.map((d) => d.data()).filter((d) => d.sub?.endpoint);
+    } catch (e) { toast(`受け取り状況：${errMsg(e)}`, true); }
+    busy = false; paint();
+  };
+  return {
+    el,
+    update() {
+      if (S.pushWorker && loadedPid !== S.pid) { subs = null; load(); return; }
+      paint();
     },
   };
 }
