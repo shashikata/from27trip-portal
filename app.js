@@ -2175,6 +2175,7 @@ function settingsView({ withTitle = true } = {}) {
     withTitle ? largeTitle("設定") : null,
     switchBox,
     pushBox.el,
+    pushAdmin?.el,
     profiles.el,
     group(null, [
       cell("ID", emailToId(S.user.email)),
@@ -2193,7 +2194,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v64"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v65"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2231,7 +2232,6 @@ function settingsView({ withTitle = true } = {}) {
         field("参加者同士でも見られる", locAllSwitch),
       ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
         locGroupsBox.el,
-        pushAdmin.el,
         exportBox(),
         S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
@@ -6675,6 +6675,37 @@ function openPushDialog({ title, body, pid = S.pid, groups = [{ label: "全員",
   document.body.append(box);
 }
 
+// アプリを開いたときに「通知を受け取りますか？」と聞く欄（受け取る設定になったら・「あとで」を押したら出さない）
+const PUSH_ASK_KEY = "island.pushAskLater";
+function pushBanner() {
+  const el = h("div", { class: "push-banner", hidden: true });
+  let subscribed = null, lastKey = null, checking = false;
+  const later = () => { try { localStorage.setItem(PUSH_ASK_KEY, String(Date.now() + 3 * 86400e3)); } catch { /* なくても動く */ } el.hidden = true; };
+  const paint = async (force) => {
+    const until = (() => { try { return Number(localStorage.getItem(PUSH_ASK_KEY) || 0); } catch { return 0; } })();
+    const perm = typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+    const key = `${S.pushWorker}|${perm}|${subscribed}|${until > Date.now()}`;
+    if (!force && key === lastKey) return;
+    lastKey = key;
+    if (!S.pushWorker || until > Date.now() || perm === "denied") { el.hidden = true; return; }
+    // iPhone の Safari のタブで開いているとき：ホーム画面に追加すれば受け取れることを知らせる
+    if (isIOS() && !isStandalone()) {
+      el.hidden = false;
+      setKids(el, icon("megaphone"), h("div", { class: "push-banner-text" }, h("b", null, "通知を受け取るには"), h("span", null, "共有ボタン（□↑）→「ホーム画面に追加」で置いたアイコンから開いてください")),
+        h("button", { class: "text-btn", onclick: later }, "あとで"));
+      return;
+    }
+    if (!pushSupported()) { el.hidden = true; return; }
+    if (subscribed === null && !checking) { checking = true; subscribed = !!(await currentSub().catch(() => null)); checking = false; return paint(true); }
+    if (subscribed && perm === "granted") { el.hidden = true; return; }
+    el.hidden = false;
+    const yes = h("button", { class: "btn-small", onclick: () => guard(yes, async () => { await enablePush(); subscribed = true; toast("通知を受け取るようにしました"); paint(true); }) }, "受け取る");
+    setKids(el, icon("megaphone"), h("div", { class: "push-banner-text" }, h("b", null, "通知を受け取りますか？"), h("span", null, "お知らせ・アンケート・集金などがスマホに届きます")),
+      yes, h("button", { class: "text-btn", onclick: later }, "あとで"));
+  };
+  return { el, update: () => paint() };
+}
+
 // 設定画面の「通知」欄（全員）と、管理者の「プッシュ通知の設定」
 function pushSettingsBox() {
   const el = h("div");
@@ -6683,7 +6714,13 @@ function pushSettingsBox() {
     const key = `${S.pushWorker}|${typeof Notification !== "undefined" ? Notification.permission : ""}`;
     if (!force && key === lastKey) return; // 状態が変わったときだけ描き直す
     lastKey = key;
-    if (!S.pushWorker) { setKids(el, null); return; }
+    // 管理者がまだ設定していないときも欄は出しておく（どこにあるか分かるように）
+    if (!S.pushWorker) {
+      setKids(el, group("通知", [cell("この端末", h("span", { class: "secondary" }, "準備中"))],
+        S.isAdmin ? "下の「プッシュ通知の設定（管理者）」で Worker の URL を保存すると、ここで「通知を受け取る」を押せるようになります。"
+          : "管理者が通知の設定をすると、ここで「通知を受け取る」を押せるようになります。"));
+      return;
+    }
     const sub = await currentSub().catch(() => null);
     const on = !!sub && Notification.permission === "granted";
     const needInstall = isIOS() && !isStandalone();
@@ -7567,7 +7604,8 @@ function buildMobileShell(allTabs) {
   const chip = S.isAdmin ? null : meChip();
   const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, adminName(S.user.email)) : chip);
-  const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
+  const ask = pushBanner();
+  const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, ask.el, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
   const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 44);
   window.addEventListener("scroll", onScroll, { passive: true });
@@ -7576,6 +7614,7 @@ function buildMobileShell(allTabs) {
     update() {
       appName.paint();
       paintStatus(status);
+      ask.update();
       chip?.paint();
       const tab = tabs.find((t) => t.key === S.tab) ?? tabs[0];
       navTitle.textContent = tab.label;
@@ -7673,12 +7712,14 @@ function buildDesktopShell(tabs) {
   deskSideOpen = sideIdx >= 0 ? (t) => { if (!DESK_SIDE_KEYS.has(t.key)) return false; showInSide(t); return true; } : null;
   // 参加者：受付中のアンケートと、期限内・未入金の集金を画面の一番上に出す
   const payTop = S.isAdmin || inLobby() ? null : memberMoney({ pinned: "only" });
-  const root = h("div", { class: "desk" }, header, payTop ? h("div", { class: "desk-paytop" }, payTop.top) : null, grid);
+  const ask = pushBanner();
+  const root = h("div", { class: "desk" }, header, h("div", { class: "desk-ask" }, ask.el), payTop ? h("div", { class: "desk-paytop" }, payTop.top) : null, grid);
   return {
     root,
     update() {
       title.paint();
       paintStatus(status);
+      ask.update();
       chip?.paint();
       views.forEach((v, i) => { if (i !== sideIdx || !sideTab) v.update(); });
       sideView?.update();
@@ -7734,7 +7775,8 @@ function buildMemberPageShell() {
     }, sec.label))));
   const main = h("main", null, sections.map((sec) => h("section", { class: "page-section", id: `sec-${sec.key}` }, sec.view.el)));
   const payTop = sections.find((x) => x.key === "money").view.top;
-  const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, summary.el, payTop, jump, main));
+  const ask = pushBanner();
+  const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, ask.el, summary.el, payTop, jump, main));
 
   // スクロール位置に合わせて、上部のボタンの選択状態とナビゲーションバーの表示を変える
   const onScroll = () => {
@@ -7758,6 +7800,7 @@ function buildMemberPageShell() {
       switcher.paint();
       navTitle.textContent = t;
       paintStatus(status);
+      ask.update();
       chip?.paint();
       summary.update();
       sections.forEach((sec) => sec.view.update());
