@@ -298,7 +298,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .ann-images img { width: 100%; height: 100%; aspect-ratio: 16 / 10; object-fit: cover; display: block; cursor: zoom-in; }
 .ann-images.n3 img { aspect-ratio: auto; min-height: 90px; }
 .ann-images.n3 img:first-child { aspect-ratio: 4 / 3; }
-.ann-actions { display: flex; justify-content: flex-end; gap: 16px; margin: 4px -4px -10px 0; }
+.ann-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 16px; margin: 4px -4px -10px 0; }
 
 .thumbs { display: flex; gap: 8px; padding: 12px 16px; flex-wrap: wrap; }
 .thumb { position: relative; }
@@ -1865,3 +1865,14 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .desk-btn.desk-refresh { padding-left: 8px; padding-right: 8px; color: var(--label-2); }
 .desk-btn.desk-refresh .icon { width: 17px; height: 17px; }
 .spinning .icon { animation: spin .8s linear infinite; }
+
+/* プッシュ通知の鍵 */
+.key-row { align-items: flex-start; gap: 10px; }
+.key-row .cell-main { gap: 4px; min-width: 0; }
+.key-text { display: block; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; line-height: 1.4; word-break: break-all; user-select: all; -webkit-user-select: all; color: var(--label-2); }
+
+/* iPhone：印刷画面を開くボタン */
+.print-go { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .45); }
+.print-go-panel { width: min(100%, 380px); display: grid; gap: 12px; padding: 20px; border-radius: 18px; background: var(--bg); text-align: center; box-shadow: 0 20px 60px rgba(0, 0, 0, .3); }
+.print-go-panel b { font-size: 17px; }
+.print-go-panel .cell-sub { text-align: left; }

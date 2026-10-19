@@ -645,6 +645,8 @@ function setMyProfiles(list) {
 const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { /* 保存できなくても動く */ } };
 
 function startProfile() {
+  // プッシュ通知の中継先（Cloudflare Worker の URL）。profiles/root に置く（ログインしていれば誰でも読める）
+  listen("pushCfg", doc(db, "profiles", ROOT), (s) => { S.pushWorker = s?.exists() ? (s.data().pushWorker || null) : null; resyncPush(); });
   if (S.isAdmin) {
     startAdmin();
     listen("profiles", collection(db, "profiles"), (s) => { if (s) { S.profiles = toMap(s); syncExtPages(); } });
@@ -1284,6 +1286,7 @@ function announcementCard(a, { admin = false } = {}) {
     ackBox(a, admin),
     admin && a.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのお知らせ（固定・削除は確定前ページで）") : null,
     admin && !a.fromLobby ? h("div", { class: "ann-actions" },
+      S.pushWorker ? h("button", { class: "text-btn", onclick: () => openPushDialog({ title: a.title, body: a.body ?? "", pid: S.pid, groups: [{ label: "宛先の人", uids: ackAudience(a).map((m) => m.id) }] }) }, icon("megaphone"), "通知を送る") : null,
       h("button", { class: "text-btn", onclick: () => openShareImage("ann", a) }, icon("photo"), "報告用の画像"),
       h("button", { class: "text-btn", onclick: () => fire(updateDoc(D("announcements", a.id), { pinned: !a.pinned })) }, a.pinned ? "固定を解除" : "固定"),
       h("button", { class: "text-btn destructive", onclick: () => deleteAnnouncement(a) }, "削除"),
@@ -2166,9 +2169,12 @@ function settingsView({ withTitle = true } = {}) {
     else if (hits.length > 1) setKids(switchBox, group("アカウントの切り替え", hits.map((id) => h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, id) }, icon("people"), `参加者アカウント（${spec.name}・${id}）に切り替える`)), `「${spec.name}」さんが${hits.length}人いるので、IDで選んでください。`));
     else getDocs(query(collection(db, "accounts"), where("name", "==", spec.name))).then((qs) => paintSwitch(qs.docs[0]?.id ?? spec.id ?? null, spec.name)).catch(() => paintSwitch(spec.id ?? null, spec.name));
   } else paintSwitch(null);
+  const pushBox = pushSettingsBox();
+  const pushAdmin = S.isAdmin ? adminPushSetup() : null;
   const el = h("div", null,
     withTitle ? largeTitle("設定") : null,
     switchBox,
+    pushBox.el,
     profiles.el,
     group(null, [
       cell("ID", emailToId(S.user.email)),
@@ -2187,7 +2193,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v63"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v64"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2196,6 +2202,8 @@ function settingsView({ withTitle = true } = {}) {
     update() {
       profiles.update();
       locGroupsBox.update();
+      pushBox.update();
+      pushAdmin?.update();
       if (!S.isAdmin || built) return;
       built = true;
       const titleInput = h("input", { type: "text", value: S.config.title ?? APP_TITLE });
@@ -2223,6 +2231,7 @@ function settingsView({ withTitle = true } = {}) {
         field("参加者同士でも見られる", locAllSwitch),
       ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
         locGroupsBox.el,
+        pushAdmin.el,
         exportBox(),
         S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
     },
@@ -2239,6 +2248,8 @@ function adminAnnouncements() {
   const targetCell = field("宛先", target);
   const pinned = toggle();
   const ack = toggle();
+  const pushT = toggle(true);
+  const pushCell = field("通知も送る", pushT);
   const fileInput = h("input", { type: "file", accept: "image/*", multiple: true, hidden: true });
   const preview = h("div", { class: "thumbs" });
   const images = [];
@@ -2273,6 +2284,14 @@ function adminAnnouncements() {
     onsubmit: (e) => {
       e.preventDefault();
       if (scope.value !== "all" && !target.value) return toast("宛先を選んでください", true);
+      // 通知も送る：宛先の人の端末へ（チーム宛ては、チーム表を発表済みのときだけ）
+      if (S.pushWorker && pushT.checked) {
+        const t = S.teams.get(target.value);
+        const hiddenTeam = scope.value === "team" && !S.sets.get(t?.setId)?.published;
+        const uids = scope.value === "all" ? sortedMembers().map((m) => m.id) : scope.value === "team" ? membersOfTeam(target.value, { includeHidden: true }).map((m) => m.id) : [target.value];
+        if (hiddenTeam) toast("チーム表を発表していないので、通知は送りませんでした");
+        else sendPush({ uids, title: title.value.trim(), body: body.value.trim() }).then((r) => toast(pushResultText(r)), (e) => toast(`通知：${errMsg(e)}`, true));
+      }
       fire(addDoc(C("announcements"), {
         title: title.value.trim(),
         body: body.value.trim(),
@@ -2293,7 +2312,7 @@ function adminAnnouncements() {
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
       h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned), field("見ましたボタン", ack)],
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
       "「チーム」宛ては、そのチーム表を発表するまで届きません。"),
     btn,
   );
@@ -2304,6 +2323,7 @@ function adminAnnouncements() {
     el,
     update() {
       ongoing.update();
+      pushCell.hidden = !S.pushWorker;
       refreshTarget();
       const page = paged("adminAnn", sortAnnouncements(merged(S.annSrc)), 20);
       setKids(list, page.items.length ? page.items.map((a) => announcementCard(a, { admin: true })) : emptyState("megaphone", "まだありません"), page.more);
@@ -5515,6 +5535,7 @@ function adminMoney({ withTitle = true } = {}) {
   nameOpts.addEventListener("change", () => { if (nameOpts.checked) nameChecks.set(sortedMembers().map((m) => m.id)); paintPollForm(); });
   rankT.addEventListener("change", paintPollForm);
   const pollWho = targetPicker(null);
+  const pollPush = toggle(true), pollPushCell = field("作ったら通知する", pollPush);
   paintPollForm();
   const pollForm = h("form", { onsubmit: (e) => {
     e.preventDefault();
@@ -5530,6 +5551,9 @@ function adminMoney({ withTitle = true } = {}) {
     if (rankT.checked && nameOpts.checked && noSelf.checked && options.length < 3) return toast("「自分には投票できない」順位投票は、選択肢を3人以上にしてください", true);
     const targets = pollWho.value();
     if (targets && !targets.length) return toast("対象を1人以上選んでください", true);
+    // 通知は答えてもらう人（対象者）だけに送る
+    if (S.pushWorker && pollPush.checked) sendPush({ uids: targets ?? sortedMembers().map((m) => m.id), title: `アンケート：${q.value.trim()}`, body: `回答をお願いします${deadline.value ? `（締切 ${fmtDeadline(deadline.value)}）` : ""}` })
+      .then((r) => toast(pushResultText(r)), (e2) => toast(`通知：${errMsg(e2)}`, true));
     fire(addDoc(C("polls"), {
       question: q.value.trim(), options, optionUids, noSelf: nameOpts.checked && noSelf.checked,
       rank: rankT.checked, depth: rankT.checked && Math.floor(Number(depth.value)) > 0 ? Math.floor(Number(depth.value)) : null,
@@ -5541,7 +5565,7 @@ function adminMoney({ withTitle = true } = {}) {
       field("順位をつけて投票する", rankT), depthCell, field("締切（なしでもOK）", deadline),
       field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom), field("誰が何に入れたかを出さない", anon)],
       "「参加者の名前にする」は「誰が一番〇〇？」のような投票向けで、選択肢にする人を選べます。「順位をつけて投票する」は、1人ずつ「優しいと思う順」のように順位を付けて投票し、1位＝多い点…の合計点で集計します（何位まで付けるかは空欄なら全部）。クイズの「投票当て」に使うアンケートは、答えがばれないよう「集計を見せる」をオフにしてください。「出さない」をオンにすると、管理者の画面でも点数・票数だけを表示します。"),
-    group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el)], "「全員」は、あとから追加した参加者も自動で対象になります。"),
+    group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el), pollPushCell], "「全員」は、あとから追加した参加者も自動で対象になります。通知は答えてもらう人だけに届きます。"),
     h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
 
   // 新しい集金
@@ -5551,6 +5575,7 @@ function adminMoney({ withTitle = true } = {}) {
   const note = h("textarea", { rows: "2", class: "plain", placeholder: "振込先・渡し方など（参加者に表示されます）" });
   const who = h("select", { class: "inline-select" });
   const payChecks = memberChecks([]);
+  const payPush = toggle(true), payPushCell = field("作ったら対象者に通知する", payPush);
   const payChecksCell = h("div", { class: "cell", hidden: true }, payChecks.el);
   who.addEventListener("change", () => {
     // アンケートの回答を選んだら、その回答をした人にチェックを付けた状態にする（そこから足したり外したりできる）
@@ -5568,10 +5593,12 @@ function adminMoney({ withTitle = true } = {}) {
       targets = payChecks.value();
       if (!targets.length) return toast("対象を1人以上選んでください", true);
     }
+    if (S.pushWorker && payPush.checked) sendPush({ uids: targets ?? sortedMembers().map((m) => m.id), title: `集金：${title.value.trim()}`, body: `${yen(Math.max(0, Number(amount.value) || 0))} / 人${due.value ? `（期限 ${due.value.replaceAll("-", "/")}）` : ""}` })
+      .then((r) => toast(pushResultText(r)), (e2) => toast(`通知：${errMsg(e2)}`, true));
     fire(addDoc(C("payments"), { title: title.value.trim(), amount: Math.max(0, Number(amount.value) || 0), due: due.value || null, note: note.value.trim(), targets, records: {}, createdAt: serverTimestamp() }), "集金を作りました");
     title.value = ""; amount.value = ""; note.value = ""; who.value = "all"; payChecksCell.hidden = true;
   } },
-    group("新しい集金", [h("div", { class: "cell" }, title), field("1人あたり（円）", amount), field("期限", due), h("div", { class: "cell" }, note), field("対象", who), payChecksCell],
+    group("新しい集金", [h("div", { class: "cell" }, title), field("1人あたり（円）", amount), field("期限", due), h("div", { class: "cell" }, note), field("対象", who), payChecksCell, payPushCell],
       "「アカウントから選ぶ」でチェックした人だけが対象になります。「アンケートの回答」を選ぶと、その回答をした人にチェックが付いた状態になり、そこから足したり外したりできます。対象はあとからでも変えられます。"),
     h("button", { class: "btn-filled", type: "submit" }, "集金を作る"));
 
@@ -5616,6 +5643,8 @@ function adminMoney({ withTitle = true } = {}) {
       }))),
       p.fromLobby ? null : targetEditor(p, "polls"),
       h("div", { class: "poll-actions" },
+        S.pushWorker ? h("button", { class: "text-btn", onclick: () => openPushDialog({ title: `アンケート：${p.question}`, body: pollOpen(p) ? `回答をお願いします${p.deadline ? `（締切 ${fmtDeadline(p.deadline)}）` : ""}` : "結果が出ました", pid: isExt(p.id) ? extPid(p.id) : S.pid,
+          groups: [{ label: "未回答の人だけ", uids: none.map((m) => m.id) }, { label: "対象者全員", uids: ms.map((m) => m.id) }] }) }, icon("megaphone"), "通知を送る") : null,
         h("button", { class: "text-btn", onclick: () => guard(null, () => printPollResult(p)) }, icon("table"), "結果を印刷"),
         h("button", { class: "text-btn", onclick: () => openShareImage("poll", p) }, icon("photo"), "報告用の画像"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
@@ -5667,6 +5696,8 @@ function adminMoney({ withTitle = true } = {}) {
       }) : none(onlyUnpaid ? "未入金の人はいません" : "対象の人がいません"))]),
       isExt(p.id) ? h("div", { class: "cell-sub from-lobby" }, `${pageName(extPid(p.id))}の集金です（そのページの対象者を全員表示しています。このページにいない人には「${pageName(extPid(p.id))}より」と付けています）。入金の記録はここでも付けられます。対象者の変更・削除は${pageName(extPid(p.id))}で行ってください。`) : targetEditor(p, "payments"),
       isExt(p.id) ? null : h("div", { class: "poll-actions" },
+        S.pushWorker ? h("button", { class: "text-btn", onclick: () => openPushDialog({ title: `集金：${p.title}`, body: `${yen(p.amount)} / 人${p.due ? `（期限 ${p.due.replaceAll("-", "/")}）` : ""}`, pid: S.pid,
+          groups: [{ label: "未入金の人だけ", uids: payTargets(p).filter((m) => recordOf(p, m.id).status === "unpaid").map((m) => m.id) }, { label: "対象者全員", uids: payTargets(p).map((m) => m.id) }] }) }, icon("megaphone"), "通知を送る") : null,
         h("button", { class: "text-btn", onclick: () => openShareImage("pay", p) }, icon("photo"), "報告用の画像"),
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
@@ -5690,6 +5721,7 @@ function adminMoney({ withTitle = true } = {}) {
     el,
     update() {
       if (typingIn(el)) return;
+      pollPushCell.hidden = payPushCell.hidden = !S.pushWorker;
       if (tab.value === "exp") {
         if (body.firstChild !== exp.el) body.replaceChildren(exp.el);
         exp.update();
@@ -6521,6 +6553,201 @@ function loadQr() {
   return qrLoading;
 }
 
+// ---------------------------------------------------------------- プッシュ通知
+// 受け取る側：ホーム画面に追加したアプリ（iPhone は iOS 16.4 以降）で「通知を受け取る」を押すと、
+//   その端末の宛先（PushSubscription）を、入っているページの pushSubs/{宛先のハッシュ} に { uid, sub } で置く。
+// 送る側（管理者）：宛先を集めて、Cloudflare Worker（push-worker/worker.js）に渡す。Worker が暗号化して Apple / Google へ送る。
+//   Worker は Firebase のログイン（ID トークン）を確かめ、管理者だけに送らせる。
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const b64uBytes = (s) => { const t = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)); return Uint8Array.from(t, (c) => c.charCodeAt(0)); };
+const bytesB64u = (buf) => { let t = ""; for (const b of new Uint8Array(buf)) t += String.fromCharCode(b); return btoa(t).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+async function subId(endpoint) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return [...new Uint8Array(d)].slice(0, 20).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const pushPages = () => (S.isAdmin ? [S.pid] : S.myProfiles.map((p) => p.id)).filter(Boolean);
+async function workerKey() {
+  const r = await fetch(`${S.pushWorker.replace(/\/$/, "")}/key`);
+  const j = await r.json();
+  if (!j.key) throw new Error(j.error || "通知の中継先から鍵を受け取れませんでした");
+  return j.key;
+}
+async function currentSub() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+async function saveSub(sub) {
+  const id = await subId(sub.endpoint);
+  const data = { uid: S.user.uid, sub: sub.toJSON(), ua: navigator.userAgent.slice(0, 150), at: serverTimestamp() };
+  await Promise.all(pushPages().map((pid) => setDoc(doc(db, ...pageBase(pid), "pushSubs", id), data).catch((e) => console.warn("pushSub", pid, e))));
+  try { localStorage.setItem("island.pushSynced", `${S.user.uid}|${id}|${pushPages().join(",")}`); } catch { /* なくても動く */ }
+}
+async function enablePush() {
+  if (!S.pushWorker) throw new Error("管理者がまだ通知の設定をしていません");
+  if (!pushSupported()) throw new Error(isIOS() ? "iPhone は「ホーム画面に追加」したアプリから開いてください（iOS 16.4 以降）" : "この端末・ブラウザは通知に対応していません");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw new Error("通知が許可されませんでした。端末の設定でこのアプリの通知をオンにしてください");
+  const key = b64uBytes(await workerKey());
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  // 鍵を作り直した後は、古い宛先では届かないので作り直す
+  const old = sub?.options?.applicationServerKey;
+  if (sub && old && bytesB64u(old) !== bytesB64u(key)) { await sub.unsubscribe().catch(() => {}); sub = null; }
+  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  await saveSub(sub);
+}
+async function disablePush() {
+  const sub = await currentSub();
+  if (sub) {
+    const id = await subId(sub.endpoint);
+    await Promise.all(pushPages().map((pid) => deleteDoc(doc(db, ...pageBase(pid), "pushSubs", id)).catch(() => {})));
+    await sub.unsubscribe().catch(() => {});
+  }
+  try { localStorage.removeItem("island.pushSynced"); } catch { /* なくても動く */ }
+}
+// 受け取る設定にしている端末は、入っているページが増えたときなどに宛先を置き直す（変わったときだけ書く）
+async function resyncPush() {
+  try {
+    if (!S.user || !S.pushWorker || !pushSupported() || Notification.permission !== "granted") return;
+    const sub = await currentSub();
+    if (!sub) return;
+    const want = `${S.user.uid}|${await subId(sub.endpoint)}|${pushPages().join(",")}`;
+    if (localStorage.getItem("island.pushSynced") === want) return;
+    await saveSub(sub);
+  } catch (e) { console.warn("resyncPush", e); }
+}
+
+// 管理者：通知を送る（uids に入っている人の端末へ。null なら、そのページで受け取る設定にしている全員）
+async function sendPush({ pid = S.pid, uids = null, title, body = "", tag = "" }) {
+  if (!S.pushWorker) throw new Error("通知の中継先（Worker の URL）が設定されていません");
+  const want = uids ? new Set(uids) : null;
+  const snap = await getDocs(collection(db, ...pageBase(pid), "pushSubs"));
+  const docs = snap.docs.filter((d) => d.data().sub?.endpoint && (!want || want.has(d.data().uid)));
+  if (!docs.length) return { people: 0, devices: 0, ok: 0, gone: 0, failed: 0 };
+  const token = await S.user.getIdToken();
+  const url = `${location.origin}${location.pathname}`;
+  let ok = 0, gone = 0, failed = 0;
+  for (let i = 0; i < docs.length; i += 40) {
+    const part = docs.slice(i, i + 40);
+    const res = await fetch(`${S.pushWorker.replace(/\/$/, "")}/send`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ subs: part.map((d) => d.data().sub), title, body, url, tag }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || `送れませんでした（${res.status}）`);
+    for (const r of j.results ?? []) {
+      if (r.status >= 200 && r.status < 300) ok++;
+      else if (r.status === 404 || r.status === 410) { gone++; const d = part.find((x) => x.data().sub.endpoint === r.endpoint); if (d) deleteDoc(d.ref).catch(() => {}); } // もう使われていない宛先は消す
+      else failed++;
+    }
+  }
+  return { people: new Set(docs.map((d) => d.data().uid)).size, devices: docs.length, ok, gone, failed };
+}
+const pushResultText = (r) => (!r.devices ? "通知を受け取る設定にしている人がいませんでした"
+  : `${r.people}人（${r.devices}台）に送りました${r.gone ? `・使われていない宛先 ${r.gone}件を整理しました` : ""}${r.failed ? `・${r.failed}件は失敗しました` : ""}`);
+
+// 送る前の確認画面（文面を直せる・送る相手を選べる）
+function openPushDialog({ title, body, pid = S.pid, groups = [{ label: "全員", uids: null }] }) {
+  const t = h("input", { type: "text", class: "plain", value: String(title ?? "").slice(0, 100), maxlength: "100" });
+  const b = h("textarea", { class: "plain", rows: "3", maxlength: "300" });
+  b.value = String(body ?? "").slice(0, 300);
+  const who = segmented(groups.map((g, i) => ({ value: String(i), label: `${g.label}${g.uids ? `（${g.uids.length}人）` : ""}` })), "0");
+  const send = h("button", { class: "btn-filled" }, icon("megaphone"), "通知を送る");
+  const close = () => box.remove();
+  const box = h("div", { class: "share-modal", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: "share-panel" },
+      h("div", { class: "share-head" }, h("b", null, "通知を送る"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+      groups.length > 1 ? who : h("div", { class: "cell-sub" }, `送る相手：${groups[0].label}${groups[0].uids ? `（${groups[0].uids.length}人）` : ""}`),
+      group(null, [h("div", { class: "cell" }, t), h("div", { class: "cell" }, b)]),
+      send,
+      h("div", { class: "cell-sub" }, "「通知を受け取る」をオンにしている人のスマホに届きます。押すとアプリが開きます。")));
+  send.addEventListener("click", () => guard(send, async () => {
+    if (!t.value.trim()) return toast("見出しを入れてください", true);
+    const g = groups[Number(who.value)] ?? groups[0];
+    if (g.uids && !g.uids.length) return toast("送る相手がいません", true);
+    const r = await sendPush({ pid, uids: g.uids, title: t.value.trim(), body: b.value.trim() });
+    toast(pushResultText(r), !r.devices);
+    if (r.devices) close();
+  }));
+  document.body.append(box);
+}
+
+// 設定画面の「通知」欄（全員）と、管理者の「プッシュ通知の設定」
+function pushSettingsBox() {
+  const el = h("div");
+  let lastKey = null;
+  const paint = async (force) => {
+    const key = `${S.pushWorker}|${typeof Notification !== "undefined" ? Notification.permission : ""}`;
+    if (!force && key === lastKey) return; // 状態が変わったときだけ描き直す
+    lastKey = key;
+    if (!S.pushWorker) { setKids(el, null); return; }
+    const sub = await currentSub().catch(() => null);
+    const on = !!sub && Notification.permission === "granted";
+    const needInstall = isIOS() && !isStandalone();
+    setKids(el, group("通知", [
+      cell("この端末", h("span", { class: on ? "get" : "secondary" }, on ? "受け取る" : needInstall ? "ホーム画面に追加が必要" : !pushSupported() ? "対応していません" : Notification.permission === "denied" ? "端末の設定でオフ" : "受け取らない")),
+      needInstall ? null : h("button", { class: "cell cell-button", disabled: !pushSupported(), onclick: (e) => guard(e.currentTarget, async () => {
+        if (on) { await disablePush(); toast("通知を止めました"); } else { await enablePush(); toast("通知を受け取るようにしました"); }
+        paint(true);
+      }) }, icon("megaphone"), on ? "通知を止める" : "通知を受け取る"),
+    ], needInstall ? "iPhone は、Safari の共有ボタン →「ホーム画面に追加」でアイコンを作り、そのアイコンから開くと通知を受け取れます（iOS 16.4 以降）。"
+      : "お知らせ・アンケート・集金などを管理者が送ると、この端末に届きます。端末ごとにオンにしてください。"));
+  };
+  return { el, update: () => paint() };
+}
+function adminPushSetup() {
+  const url = h("input", { type: "url", class: "plain", placeholder: "https://trip-push.○○.workers.dev", autocapitalize: "none", autocorrect: "off" });
+  url.addEventListener("input", () => { url.dataset.touched = "1"; });
+  const out = h("div");
+  const el = h("div");
+  const save = () => guard(null, async () => {
+    const v = url.value.trim().replace(/\/$/, "");
+    if (v && !/^https:\/\/[^\s]+$/.test(v)) return toast("https:// から始まる URL を入れてください", true);
+    await setDoc(doc(db, "profiles", ROOT), { pushWorker: v || null }, { merge: true });
+    toast(v ? "保存しました" : "通知の設定を外しました");
+  });
+  const test = () => guard(null, async () => {
+    const r = await fetch(`${url.value.trim().replace(/\/$/, "")}/key`).then((x) => x.json());
+    if (!r.key) throw new Error(r.error || "鍵を受け取れませんでした");
+    setKids(out, cell("つながりました", h("span", { class: "mono secondary" }, `${r.key.slice(0, 16)}…`)));
+    toast("つながりました");
+  });
+  const genKeys = () => guard(null, async () => {
+    if (!confirm("通知用の鍵を新しく作りますか？\n作り直すと、これまで通知を受け取る設定にしていた人は、もう一度「通知を受け取る」を押す必要があります。")) return;
+    const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const pub = bytesB64u(await crypto.subtle.exportKey("raw", k.publicKey));
+    const priv = (await crypto.subtle.exportKey("jwk", k.privateKey)).d;
+    const copyRow = (label, v) => h("div", { class: "cell key-row" }, h("div", { class: "cell-main" }, h("b", null, label), h("code", { class: "key-text" }, v)),
+      h("button", { class: "btn-small", onclick: () => navigator.clipboard?.writeText(v).then(() => toast(`${label}をコピーしました`), () => toast("コピーできませんでした。長押しで選んでコピーしてください", true)) }, "コピー"));
+    setKids(out, group("できた鍵（Cloudflare に貼る）", [copyRow("VAPID_PUBLIC_KEY", pub), copyRow("VAPID_PRIVATE_KEY", priv)],
+      "VAPID_PRIVATE_KEY は他の人に見せないでください（この画面を閉じると二度と表示されません）。アプリには保存していません。"));
+  });
+  const testSelf = () => guard(null, async () => {
+    const r = await sendPush({ uids: [S.user.uid], title: "テスト通知", body: "この端末に通知が届けば設定は完了です" });
+    toast(pushResultText(r), !r.devices);
+  });
+  const selfBtn = h("button", { class: "cell cell-button", onclick: testSelf }, "自分の端末にテスト通知");
+  // 入力欄を作り直すと打っている途中で消えるので、欄は1回だけ作る
+  el.append(group("プッシュ通知の設定（管理者）", [
+    field("Worker の URL", url),
+    h("button", { class: "cell cell-button", onclick: save }, "URL を保存"),
+    h("button", { class: "cell cell-button", onclick: test }, "つながるか確かめる"),
+    h("button", { class: "cell cell-button", onclick: genKeys }, "通知用の鍵を作る（最初に1回）"),
+    selfBtn,
+    out,
+  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"));
+  return {
+    el,
+    update() {
+      if (document.activeElement !== url && !url.dataset.touched) url.value = S.pushWorker ?? "";
+      selfBtn.disabled = !S.pushWorker;
+    },
+  };
+}
+
 // ---------------------------------------------------------------- インスタ用の報告画像（管理者）
 // アンケート・集金・お知らせを作ったときに、みんなへ知らせる画像を端末の中で描く（サーバーには何も送らない）。
 // ストーリー（1080×1920）と投稿（1080×1350）。右下にアプリを開く QR コード
@@ -6764,8 +6991,7 @@ async function printCredentials(rows, mode) {
   const done = () => { root.remove(); document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
   window.addEventListener("afterprint", done);
   // 画像（QR）の描画を待ってから印刷画面を開く
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  window.print();
+  await startPrint();
 }
 
 // ---------------------------------------------------------------- ポイントQR
@@ -6902,8 +7128,7 @@ async function printPtQrs(qs, mm) {
   document.body.classList.add("printing");
   const done = () => { root.remove(); document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
   window.addEventListener("afterprint", done);
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  window.print();
+  await startPrint();
 }
 
 // ---------------------------------------------------------------- データを PDF で出力（管理者）
@@ -7080,6 +7305,19 @@ async function printPollResult(p) {
     h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, "アンケート結果"), h("h1", { class: "rp-poll-title" }, p.question), h("p", { class: "rp-sub" }, meta), ...blocks));
   await printReport(root, `${p.question.slice(0, 30)}_結果`);
 }
+// 印刷画面を開く。iPhone / iPad の Safari は「押した直後」でないと開かない（準備で待つと無視される）ので、
+// 準備ができたら「印刷・PDFにする」ボタンを出して、それを押したときに開く
+async function startPrint() {
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  if (!isIOS()) { window.print(); return; }
+  document.querySelector(".print-go")?.remove();
+  const go = h("div", { class: "print-go" }, h("div", { class: "print-go-panel" },
+    h("b", null, "印刷の準備ができました"),
+    h("button", { class: "btn-filled", onclick: () => { go.remove(); window.print(); } }, icon("table"), "印刷・PDFにする"),
+    h("button", { class: "text-btn", onclick: () => { go.remove(); window.dispatchEvent(new Event("afterprint")); } }, "やめる"),
+    h("div", { class: "cell-sub" }, "PDF にするときは、開いた画面の共有ボタン（□↑）から「ファイルに保存」。ホーム画面のアイコンから開いていて反応しないときは、Safari で開き直してください。")));
+  document.body.append(go);
+}
 async function printReport(root, fileTitle) {
   const txt = root.textContent;
   await Promise.race([
@@ -7093,8 +7331,7 @@ async function printReport(root, fileTitle) {
   document.title = fileTitle; // PDF に保存するときのファイル名
   const done = () => { root.remove(); document.body.classList.remove("printing"); document.title = prevTitle; window.removeEventListener("afterprint", done); };
   window.addEventListener("afterprint", done);
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  window.print();
+  await startPrint();
 }
 
 async function exportPdf(parts) {
@@ -7114,8 +7351,7 @@ async function exportPdf(parts) {
   document.title = `${S.config.title || APP_TITLE}_データ`; // 保存するときのファイル名になる
   const done = () => { root.remove(); document.body.classList.remove("printing"); document.title = prevTitle; window.removeEventListener("afterprint", done); };
   window.addEventListener("afterprint", done);
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  window.print();
+  await startPrint();
 }
 function exportBox() {
   const checks = new Map(EXPORT_PARTS.map((p) => [p.key, toggle(true)]));

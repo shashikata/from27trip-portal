@@ -1,6 +1,6 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v63";
+const CACHE = "island-v64";
 const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
@@ -71,4 +71,29 @@ self.addEventListener("fetch", (e) => {
         .catch(() => caches.match("./index.html"))),
     );
   }
+});
+
+// ---- プッシュ通知（管理者が送った通知を表示する。押すとアプリを開く）
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch { d = { title: e.data?.text?.() ?? "お知らせ" }; }
+  const title = d.title || "旅行ポータル";
+  e.waitUntil(self.registration.showNotification(title, {
+    body: d.body || "",
+    icon: "icon-192.png",
+    badge: "icon-192.png",
+    tag: d.tag || undefined,
+    data: { url: d.url || self.registration.scope },
+  }));
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = e.notification.data?.url || self.registration.scope;
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const open = wins.find((w) => w.url.startsWith(self.registration.scope));
+    if (open) { await open.focus(); return; }
+    await self.clients.openWindow(url);
+  })());
 });
