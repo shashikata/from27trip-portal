@@ -7,7 +7,7 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, connectFirestoreEmulator,
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
-  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction,
+  writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction, Bytes,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
 
@@ -347,6 +347,7 @@ function startAdmin() {
   }
   listen("expenses", C("expenses"), (s) => { S.expenses = toMap(s); });
   if (pid === LOBBY) listen("videos", C("videos"), (s) => { if (s) S.videos = toMap(s); });
+  if (pid === LOBBY) listen("archives", C("archives"), (s) => { if (s) S.archives = toMap(s); });
   listen("checklists", C("checklists"), (s) => { S.checklists = toMap(s); });
   listen("checks", C("checks"), (s) => { S.checks = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
@@ -502,6 +503,7 @@ function startMemberData(uid) {
   }
   listen("acks", query(C("acks"), where("uid", "==", uid)), (s) => { if (s) mergeSrc("acks", "trip", toMap(s)); });
   if (inLobby()) listen("videos", query(C("videos"), where("visible", "==", true)), (s) => { if (s) S.videos = toMap(s); });
+  if (inLobby()) listen("archives", query(C("archives"), where("visible", "==", true)), (s) => { if (s) S.archives = toMap(s); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
@@ -623,7 +625,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -1390,6 +1392,7 @@ function noteDisplay(n) {
           h("thead", null, h("tr", null, Array.from({ length: width }, (_, i) => h("th", null, rows[0][i] ?? "")))),
           h("tbody", null, rows.slice(1).map((r) => h("tr", null, Array.from({ length: width }, (_, i) => h("td", null, r[i] ?? "")))))))
       : h("p", { class: "note-body" }, n.body || ""),
+    n.files?.length ? fileList(n.files) : null,
   );
 }
 
@@ -1455,19 +1458,32 @@ function noteEditor(n) {
     dirty = false; saveBtn.disabled = true; el.classList.remove("dirty");
   });
 
+  // PDF・写真の添付（保存ボタンとは別に、選んだらすぐ載る）
+  const files = h("div");
+  const attach = h("div", { class: "note-files" }, files, fileUploader((metas) => updateDoc(D("notes", n.id), { files: arrayUnion(...metas) })));
   const el = h("article", { class: "card note editor", "data-note": n.id },
     h("div", { class: "note-head" }, icon(n.type === "table" ? "table" : "note"), title),
     n.type === "table" ? [grid, tableTools] : body,
+    attach,
     h("div", { class: "note-foot" },
       moveBtn,
       h("div", { class: "note-actions" },
         saveBtn,
-        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${n.title || "無題"}」を削除しますか？`)) fire(deleteDoc(D("notes", n.id)), "削除しました"); } }, "削除"))),
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(`「${n.title || "無題"}」を削除しますか？${n.files?.length ? `\n添付の PDF・写真（${n.files.length}件）も消えます。` : ""}`)) return;
+          const ids = (n.files ?? []).map((f) => f.id);
+          fire(deleteDoc(D("notes", n.id)).then(() => ids.length && deleteFiles(ids)), "削除しました");
+        } }, "削除"))),
   );
+  let paintedFiles = null;
   return {
     el,
     patch(next) {
       n = next;
+      if (paintedFiles !== n.files) { // 写真の並びは変わったときだけ描き直す（ちらつかないように）
+        paintedFiles = n.files;
+        setKids(files, n.files?.length ? fileList(n.files, { onRemove: (f) => removeAttachment(D("notes", n.id), n.files, f) }) : null);
+      }
       moveBtn.replaceChildren(icon("arrows"), n.shared ? "管理者用へ移す" : "全体公開へ移す");
       el.classList.toggle("shared", !!n.shared);
       if (dirty) return;
@@ -1487,9 +1503,12 @@ function notesView({ admin = false, compact = false, withTitle = true } = {}) {
   // 参加者：全体公開の分だけ
   if (!admin) {
     const list = h("div", { class: "stack" });
+    let last = null;
     return {
       el: h("div", null, withTitle ? sectionTitle("表・メモ", compact) : null, list),
       update() {
+        if (last === S.notes) return; // 変わったときだけ描き直す（添付の写真がちらつかないように）
+        last = S.notes;
         const notes = sortedNotes().filter((n) => n.shared);
         list.replaceChildren(...(notes.length ? notes.map(noteDisplay) : [emptyState("note", "まだありません")]));
       },
@@ -2068,7 +2087,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2198,7 +2217,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v68"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v69"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6279,6 +6298,363 @@ function adminVideos({ withTitle = true } = {}) {
   };
 }
 
+// ---------------------------------------------------------------- 添付ファイル（PDF・写真）
+// Firebase Storage は使わず（無料プランで使えないため）、Firestore に分けて置く：
+//   files/{id}           { name, type, size, chunks, uid, thumb(写真だけ・小さく縮めた画像), createdAt }
+//   fileChunks/{id}_{i}  { fileId, i, uid, data(Bytes・900KB ずつ) }   … Firestore は1件 1MB までなので分ける
+// 使う側（メモ・過去旅行資料）は { id, name, type, size } だけを持ち、中身は開くときだけ読む
+const CHUNK_BYTES = 900 * 1024;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const isPdf = (f) => f.type === "application/pdf";
+const fmtBytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`);
+const totalBytes = (lists) => lists.flat().reduce((a, f) => a + (Number(f?.size) || 0), 0);
+
+// 写真を JPEG に縮める（長い辺 maxSide・maxBytes 以下）。compressImage（お知らせ・チャット用の小さい画像）より大きく残す
+async function imageToJpeg(file, maxSide, maxBytes) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = () => rej(new Error(`画像を読み込めませんでした（${file.name ?? "写真"}）`));
+      i.src = url;
+    });
+    let side = maxSide, quality = 0.85;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const scale = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = h("canvas", { width: Math.max(1, Math.round(img.naturalWidth * scale)), height: Math.max(1, Math.round(img.naturalHeight * scale)) });
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", quality));
+      if (blob && blob.size <= maxBytes) return blob;
+      if (quality > 0.6) quality -= 0.1;
+      else side = Math.round(side * 0.8);
+    }
+    throw new Error("画像を十分に小さくできませんでした");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+const blobToDataURL = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+
+// 1つ送る。中身（分けた分）を全部送り終えてから files/{id} を置くので、途中で止まっても半端なファイルは出ない
+async function uploadFile(file, onProgress = () => {}) {
+  let blob = file, type = file.type, name = file.name || "ファイル", thumb = null;
+  if (/^image\//.test(type)) {
+    blob = await imageToJpeg(file, 2400, 1.8 * 1048576);
+    thumb = await blobToDataURL(await imageToJpeg(blob, 360, 40 * 1024));
+    type = "image/jpeg";
+    name = `${name.replace(/\.[a-z0-9]+$/i, "")}.jpg`;
+  } else if (type === "application/pdf" || /\.pdf$/i.test(name)) {
+    type = "application/pdf";
+    if (file.size > MAX_PDF_BYTES) throw new Error(`PDF は ${fmtBytes(MAX_PDF_BYTES)} までです（${name}：${fmtBytes(file.size)}）`);
+  } else throw new Error(`PDF か写真を選んでください（${name}）`);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const ref = doc(C("files"));
+  const uid = S.user.uid;
+  const n = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
+  for (let i = 0; i < n; i += 8) { // 1回の送信は 10MB までなので 8つずつ
+    const b = writeBatch(db);
+    for (let k = i; k < Math.min(n, i + 8); k++) {
+      b.set(D("fileChunks", `${ref.id}_${k}`), { fileId: ref.id, i: k, uid, data: Bytes.fromUint8Array(bytes.subarray(k * CHUNK_BYTES, (k + 1) * CHUNK_BYTES)) });
+    }
+    await b.commit();
+    onProgress(Math.min(n, i + 8) / n);
+  }
+  name = name.slice(0, 120);
+  await setDoc(ref, { name, type, size: bytes.length, chunks: n, uid, thumb, createdAt: serverTimestamp() });
+  return { id: ref.id, name, type, size: bytes.length };
+}
+
+// 中身を読む（開いた分だけ手元に置いておく。大きいので最近の数件まで）
+const fileBlobs = new Map();
+function loadFileBlob(f) {
+  if (!fileBlobs.has(f.id)) {
+    fileBlobs.set(f.id, getDocs(query(C("fileChunks"), where("fileId", "==", f.id))).then((s) => {
+      const parts = s.docs.map((d) => d.data()).sort((a, b) => a.i - b.i).map((d) => d.data.toUint8Array());
+      if (!parts.length) throw new Error("ファイルが見つかりません（削除された可能性があります）");
+      return new Blob(parts, { type: f.type });
+    }).catch((e) => { fileBlobs.delete(f.id); throw e; }));
+    while (fileBlobs.size > 6) fileBlobs.delete(fileBlobs.keys().next().value);
+  }
+  return fileBlobs.get(f.id);
+}
+const fileThumbs = new Map(), thumbReady = new Map(); // 読み終えた小さい画像は、描き直すときすぐ出す
+const thumbOf = (f) => {
+  if (!fileThumbs.has(f.id)) fileThumbs.set(f.id, getDoc(D("files", f.id)).then((d) => { const t = d.data()?.thumb ?? null; if (t) thumbReady.set(f.id, t); return t; }).catch(() => null));
+  return fileThumbs.get(f.id);
+};
+async function deleteFiles(ids) {
+  for (const id of ids) {
+    const s = await getDocs(query(C("fileChunks"), where("fileId", "==", id)));
+    const b = writeBatch(db);
+    s.docs.forEach((d) => b.delete(d.ref));
+    b.delete(D("files", id));
+    await b.commit();
+    fileBlobs.delete(id);
+  }
+}
+
+// PDF は pdf.js（vendor/ に同梱）でページごとに絵にして表示する（iPhone の Safari は PDF を枠の中に出すと1ページ目しか見えないため）
+const PDFJS = "vendor/pdfjs-3.11.174/";
+let pdfjsLoading = null;
+function loadPdfJs() {
+  pdfjsLoading ??= new Promise((resolve, reject) => {
+    const sc = h("script", { src: `${PDFJS}pdf.min.js` });
+    sc.onload = () => {
+      const lib = window.pdfjsLib;
+      if (!lib) { pdfjsLoading = null; return reject(new Error("PDF を表示する部品を読み込めませんでした")); }
+      lib.GlobalWorkerOptions.workerSrc = `${PDFJS}pdf.worker.min.js`;
+      resolve(lib);
+    };
+    sc.onerror = () => { pdfjsLoading = null; sc.remove(); reject(new Error("PDF を表示する部品を読み込めませんでした（電波を確認してください）")); };
+    document.head.append(sc);
+  });
+  return pdfjsLoading;
+}
+async function renderPdf(blob, box, zoomBar, urls) {
+  const lib = await loadPdfJs();
+  const pdf = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), cMapUrl: `${PDFJS}cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS}standard_fonts/` }).promise;
+  const first = (await pdf.getPage(1)).getViewport({ scale: 1 });
+  const pagesEl = h("div", { class: "fv-pages" });
+  const holders = Array.from({ length: pdf.numPages }, (_, i) => h("div", { class: "fv-page", "data-page": String(i + 1), style: `aspect-ratio: ${first.width} / ${first.height}` }, h("span", { class: "fv-pageno" }, `${i + 1}`)));
+  pagesEl.append(...holders);
+  let zoom = 1;
+  // 1ページずつ、画面に近づいたら描く。描いたら JPEG の画像に置き換えて、キャンバスのメモリを返す（iPhone はキャンバスのメモリが少ない）
+  const draw = async (holder) => {
+    const n = Number(holder.dataset.page);
+    const want = zoom;
+    const page = await pdf.getPage(n);
+    const vp1 = page.getViewport({ scale: 1 });
+    holder.style.aspectRatio = `${vp1.width} / ${vp1.height}`;
+    const px = Math.min(2600, (holder.clientWidth || box.clientWidth) * Math.min(2, window.devicePixelRatio || 1));
+    const vp = page.getViewport({ scale: px / vp1.width });
+    const cv = h("canvas", { width: Math.floor(vp.width), height: Math.floor(vp.height) });
+    await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    const jpg = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.88));
+    cv.width = cv.height = 0;
+    if (!jpg || want !== zoom) return;
+    const u = URL.createObjectURL(jpg);
+    urls.push(u);
+    holder.dataset.drawn = String(want);
+    holder.replaceChildren(h("img", { src: u, alt: `${n}ページ` }));
+  };
+  const io = new IntersectionObserver((es) => es.forEach((e) => {
+    if (e.isIntersecting && e.target.dataset.drawn !== String(zoom)) draw(e.target).catch((err) => console.warn("pdf page", err));
+  }), { root: box, rootMargin: "1200px 0px" });
+  const setZoom = (z) => {
+    zoom = z;
+    pagesEl.style.width = `${z * 100}%`;
+    pagesEl.style.maxWidth = `${1100 * z}px`;
+    label.textContent = `${Math.round(z * 100)}%`;
+    holders.forEach((x) => { io.unobserve(x); io.observe(x); }); // 拡大した大きさで描き直す
+  };
+  const steps = [1, 1.5, 2, 3];
+  const label = h("span", { class: "fv-zoom-label" }, "100%");
+  setKids(zoomBar,
+    h("button", { class: "text-btn", "aria-label": "縮小", onclick: () => setZoom(steps[Math.max(0, steps.indexOf(zoom) - 1)]) }, "−"), label,
+    h("button", { class: "text-btn", "aria-label": "拡大", onclick: () => setZoom(steps[Math.min(steps.length - 1, steps.indexOf(zoom) + 1)]) }, "＋"),
+    h("span", { class: "secondary" }, `${pdf.numPages}ページ`));
+  setKids(box, pagesEl);
+  holders.forEach((x) => io.observe(x));
+}
+
+// 開いて見る画面（PDF：全ページ・拡大縮小 / 写真：前後に送れる）。「保存」で端末に保存
+function openFileViewer(f, siblings = [f]) {
+  const urls = [];
+  const box = h("div", { class: "fv-body" });
+  const zoomBar = h("div", { class: "fv-zoom" });
+  const save = h("a", { class: "btn-small fv-save", hidden: true }, "保存");
+  const nameEl = h("b", { class: "fv-name" });
+  const prev = h("button", { class: "fv-nav prev", "aria-label": "前の写真" }, "‹");
+  const next = h("button", { class: "fv-nav next", "aria-label": "次の写真" }, "›");
+  const onKey = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+    if (e.key === "ArrowLeft" && !prev.hidden) prev.click();
+    if (e.key === "ArrowRight" && !next.hidden) next.click();
+  };
+  const close = () => { el.remove(); urls.forEach((u) => URL.revokeObjectURL(u)); document.removeEventListener("keydown", onKey, true); };
+  const el = h("div", { class: "file-viewer", role: "dialog", "aria-modal": "true" },
+    h("div", { class: "fv-head" }, nameEl, save, h("button", { class: "text-btn", onclick: close }, "閉じる")), zoomBar, box, prev, next);
+  let cur = f, seq = 0;
+  const show = (g) => {
+    cur = g;
+    const mine = ++seq;
+    const i = siblings.findIndex((x) => x.id === g.id);
+    prev.hidden = isPdf(g) || i <= 0;
+    next.hidden = isPdf(g) || i < 0 || i >= siblings.length - 1;
+    nameEl.textContent = g.name;
+    save.hidden = true;
+    setKids(zoomBar);
+    setKids(box, h("div", { class: "fv-loading" }, `読み込み中…（${fmtBytes(g.size)}）`));
+    loadFileBlob(g).then(async (blob) => {
+      if (mine !== seq) return;
+      const u = URL.createObjectURL(blob);
+      urls.push(u);
+      Object.assign(save, { href: u, download: g.name, hidden: false });
+      if (isPdf(g)) await renderPdf(blob, box, zoomBar, urls);
+      else setKids(box, h("img", { class: "fv-img", src: u, alt: g.name }));
+    }).catch((e) => { if (mine === seq) setKids(box, h("div", { class: "fv-loading" }, errMsg(e))); });
+  };
+  prev.addEventListener("click", () => { const i = siblings.findIndex((x) => x.id === cur.id); if (i > 0) show(siblings[i - 1]); });
+  next.addEventListener("click", () => { const i = siblings.findIndex((x) => x.id === cur.id); if (i < siblings.length - 1) show(siblings[i + 1]); });
+  document.addEventListener("keydown", onKey, true);
+  document.body.append(el);
+  show(f);
+}
+
+// 添付の一覧（PDF は1行ずつ、写真は小さい画像を並べる）。onRemove を渡すと「削除」が出る（管理者）
+function fileList(files, { onRemove } = {}) {
+  const pdfs = files.filter(isPdf), imgs = files.filter((f) => !isPdf(f));
+  return h("div", { class: "file-list" },
+    pdfs.map((f) => h("div", { class: "file-row" },
+      h("button", { class: "file-open", type: "button", onclick: () => openFileViewer(f) },
+        h("span", { class: "file-ic" }, "PDF"), h("span", { class: "file-name" }, f.name), h("small", null, fmtBytes(f.size))),
+      onRemove ? h("button", { class: "text-btn destructive", type: "button", onclick: () => onRemove(f) }, "削除") : null)),
+    imgs.length ? h("div", { class: "file-grid" }, imgs.map((f) => {
+      const ready = thumbReady.get(f.id);
+      const b = h("button", { class: "file-thumb", type: "button", "aria-label": f.name, onclick: () => openFileViewer(f, imgs) }, ready ? h("img", { src: ready, alt: "" }) : icon("photo"));
+      if (!ready) thumbOf(f).then((src) => { if (src) b.replaceChildren(h("img", { src, alt: "" })); });
+      return h("div", { class: "file-thumb-wrap" }, b,
+        onRemove ? h("button", { class: "thumb-x", type: "button", "aria-label": `${f.name}を削除`, onclick: () => onRemove(f) }, icon("xmark")) : null);
+    })) : null);
+}
+
+// 「PDF・写真を追加」ボタン。選んだものを順に送り、送れた分を onDone(メタ情報の配列) に渡す
+function fileUploader(onDone, label = "PDF・写真を追加") {
+  const input = h("input", { type: "file", accept: "application/pdf,.pdf,image/*", multiple: true, hidden: true });
+  const status = h("span", { class: "upl-status" });
+  const btn = h("label", { class: "pill upl-btn" }, icon("plus"), label, input);
+  input.addEventListener("change", () => guard(null, async () => {
+    const list = [...input.files];
+    input.value = "";
+    if (!list.length) return;
+    btn.classList.add("busy");
+    const done = [];
+    try {
+      for (const [k, f] of list.entries()) {
+        const head = list.length > 1 ? `${k + 1}/${list.length} ` : "";
+        status.textContent = `${head}${f.name} を送信中…`;
+        try { done.push(await uploadFile(f, (p) => { status.textContent = `${head}${f.name} ${Math.round(p * 100)}%`; })); }
+        catch (e) { console.error(e); toast(errMsg(e), true); }
+      }
+    } finally { status.textContent = ""; btn.classList.remove("busy"); }
+    if (done.length) { await onDone(done); toast(`${done.length}件を追加しました`); }
+  }));
+  return h("div", { class: "uploader" }, btn, status);
+}
+
+// 添付を外す（一覧から外して、中身も消す）
+function removeAttachment(ref, files, f) {
+  if (!confirm(`「${f.name}」を削除しますか？`)) return;
+  fire(updateDoc(ref, { files: (files ?? []).filter((x) => x.id !== f.id) }).then(() => deleteFiles([f.id])), "削除しました");
+}
+
+// ---------------------------------------------------------------- 過去旅行資料（確定前ページ）
+//   archives/{id}  { title, note, visible, order, files: [{ id, name, type, size }], createdAt }
+const sortedArchives = () => [...S.archives.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || ts(b.createdAt) - ts(a.createdAt));
+
+function memberArchives({ compact = false } = {}) {
+  const list = h("div", { class: "stack" });
+  const el = h("div", null, sectionTitle("過去旅行資料", compact), list);
+  let last = null;
+  return {
+    el,
+    update() {
+      if (last === S.archives) return; // 写真の並びを描き直すとちらつくので、変わったときだけ
+      last = S.archives;
+      const as = sortedArchives().filter((a) => a.visible);
+      setKids(list, as.length ? as.map((a) => h("article", { class: "card archive" },
+        h("div", { class: "note-head" }, icon("photo"), h("h3", null, a.title)),
+        a.note ? h("p", { class: "note-body" }, a.note) : null,
+        a.files?.length ? fileList(a.files) : h("p", { class: "secondary" }, "まだ資料がありません")))
+        : emptyState("photo", "まだありません", "過去の旅行の写真や資料が公開されるとここに表示されます。"));
+    },
+  };
+}
+
+function adminArchives({ withTitle = true } = {}) {
+  const title = h("input", { type: "text", class: "plain", placeholder: "例：2025 夏 沖縄旅行", maxlength: "60" });
+  const note = h("input", { type: "text", class: "plain", placeholder: "ひとこと（任意）", maxlength: "120" });
+  const form = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    if (!title.value.trim()) return toast("名前を入れてください", true);
+    const order = Math.min(0, ...sortedArchives().map((a) => a.order ?? 0)) - 1; // 新しいものを一番上に
+    fire(addDoc(C("archives"), { title: title.value.trim(), note: note.value.trim(), visible: false, order, files: [], createdAt: serverTimestamp() }), "作りました（非表示）");
+    title.value = note.value = "";
+  } },
+    group("旅行の資料を作る", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, note)],
+      "旅行ごとに1つ作り、その中に写真・PDF を入れます。作ったときは非表示なので、資料を入れてから「表示」にしてください。"),
+    h("button", { class: "btn-filled", type: "submit" }, "作る"));
+  const usage = h("div", { class: "cell-sub archive-usage" });
+  const list = h("div", { class: "stack" });
+  const el = h("div", null, withTitle ? largeTitle("過去旅行資料") : null, keptFold("newArchive", "＋ 旅行の資料を作る", form, !S.archives.size), usage, list);
+  redrawOnLeave(el);
+  const move = (as, i, d) => {
+    if (!as[i] || !as[i + d]) return;
+    const b = writeBatch(db);
+    as.forEach((a, k) => b.update(D("archives", a.id), { order: k === i ? i + d : k === i + d ? i : k }));
+    fire(b.commit());
+  };
+  const card = (a0) => {
+    let a = a0;
+    const vis = toggle(!!a.visible);
+    vis.addEventListener("change", () => fire(updateDoc(D("archives", a.id), { visible: vis.checked }), vis.checked ? "表示にしました" : "非表示にしました"));
+    const head = h("div", { class: "note-head" });
+    const sub = h("p", { class: "note-body" });
+    const files = h("div");
+    const up = h("button", { class: "text-btn" }, "↑");
+    const down = h("button", { class: "text-btn" }, "↓");
+    const visLabel = h("span");
+    const el = h("article", { class: "card archive editor" }, head, sub, files,
+      fileUploader((metas) => updateDoc(D("archives", a.id), { files: arrayUnion(...metas) })),
+      h("div", { class: "video-actions" },
+        h("label", { class: "video-vis" }, vis, visLabel), up, down,
+        h("button", { class: "text-btn", onclick: () => {
+          const t = prompt("資料の名前", a.title);
+          if (t == null || !t.trim()) return;
+          const nt = prompt("ひとこと（空でもよい）", a.note ?? "");
+          fire(updateDoc(D("archives", a.id), { title: t.trim(), note: (nt ?? a.note ?? "").trim() }), "変更しました");
+        } }, "名前"),
+        h("button", { class: "text-btn destructive", onclick: () => {
+          if (!confirm(`「${a.title}」を削除しますか？\n中の写真・PDF（${a.files?.length ?? 0}件）もすべて消えます。`)) return;
+          fire(deleteDoc(D("archives", a.id)).then(() => deleteFiles((a.files ?? []).map((f) => f.id))), "削除しました");
+        } }, "削除")));
+    return {
+      el,
+      patch(next, i, as) {
+        a = next;
+        vis.checked = !!a.visible;
+        visLabel.textContent = a.visible ? "表示中" : "非表示";
+        el.classList.toggle("hidden-video", !a.visible);
+        setKids(head, icon("photo"), h("h3", null, a.title), h("small", { class: "secondary" }, `${a.files?.length ?? 0}件・${fmtBytes(totalBytes([a.files ?? []]))}`));
+        sub.textContent = a.note ?? "";
+        sub.hidden = !a.note;
+        setKids(files, a.files?.length ? fileList(a.files, { onRemove: (f) => removeAttachment(D("archives", a.id), a.files, f) }) : h("p", { class: "secondary" }, "まだ資料がありません"));
+        up.disabled = i === 0;
+        down.disabled = i === as.length - 1;
+        up.onclick = () => move(as, i, -1);
+        down.onclick = () => move(as, i, 1);
+      },
+    };
+  };
+  let last = null;
+  return {
+    el,
+    update() {
+      if (last === S.archives) return;
+      last = S.archives;
+      const as = sortedArchives();
+      usage.textContent = as.length ? `${as.length}件・表示中 ${as.filter((a) => a.visible).length}件・資料の合計 ${fmtBytes(totalBytes(as.map((a) => a.files ?? [])))}（無料枠はアプリ全体で 1GB まで。PDF は1つ 20MB まで、写真は自動で縮小）` : "";
+      if (!as.length) { list._rows?.clear(); return setKids(list, emptyState("photo", "まだありません", "「＋ 旅行の資料を作る」から、旅行ごとに写真・PDF をまとめられます。")); }
+      if (!list._rows?.size) list.replaceChildren();
+      keyedList(list, as, (a) => card(a), (row, a) => row.patch(a, as.indexOf(a), as));
+    },
+  };
+}
+
 // ---------------------------------------------------------------- チャット
 //
 //   messages/{自動}  { uid(送った人), chat, text, at, parties: [uid, uid] (DM と管理者連絡のみ), from(管理者の表示名) }
@@ -7561,6 +7937,7 @@ const LOBBY_MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "money", icon: "check", label: "出欠・集金", view: memberMoney },
   { key: "videos", icon: "play", label: "過去動画", view: memberVideos },
+  { key: "archives", icon: "photo", label: "過去旅行資料", view: memberArchives },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -7571,6 +7948,7 @@ const LOBBY_ADMIN_TABS = [
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
   { key: "videos", icon: "play", label: "過去動画", view: adminVideos, sheet: true },
+  { key: "archives", icon: "photo", label: "過去旅行資料", view: adminArchives, sheet: true },
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -7850,6 +8228,7 @@ function buildMemberPageShell() {
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "money", label: "出欠・集金", view: memberMoney({ compact: true, pinned: "split" }) },
     { key: "videos", label: "過去動画", view: memberVideos({ compact: true }) },
+    { key: "archives", label: "過去旅行資料", view: memberArchives({ compact: true }) },
   ] : [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },

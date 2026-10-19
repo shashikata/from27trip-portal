@@ -1,6 +1,6 @@
 // 電波がない状態でもアプリ本体（画面）を開けるようにするためのキャッシュ。
 // データ（お知らせ・ポイント）は Firestore 側のオフラインキャッシュが担当する。
-const CACHE = "island-v68";
+const CACHE = "island-v69";
 const TILES = "island-tiles-v1"; // 地図の絵（一度見た範囲を保存しておく）
 const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
 const PRECACHE = [
@@ -50,6 +50,15 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy));
+      return res;
+    })));
+    return;
+  }
+
+  // PDF を表示する部品（vendor/）：大きいので時間がかかっても待つ（4秒で打ち切ってトップ画面を返さない）。一度取ったら保存
+  if (url.origin === self.location.origin && url.pathname.includes("/vendor/")) {
+    e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
     })));
     return;
