@@ -104,9 +104,11 @@ const mergeSrc = (key, part, val) => { S.lobbySrc[key] = { ...S.lobbySrc[key], [
 function refreshAdminLobbyAnn() {
   if (!S.lobbyAnnRaw) return;
   // この旅行にまだ誰も確定していないときは出さない（関係する人がいないため）
-  S.annSrc.lobby = S.members.size ? new Map([...S.lobbyAnnRaw].filter(([, a]) => a.scope === "all" || (a.scope === "user" && S.members.has(a.target)))) : new Map();
+  S.annSrc.lobby = S.members.size ? new Map([...S.lobbyAnnRaw].filter(([, a]) => a.scope === "all" || (a.scope === "user" && S.members.has(a.target)) || (a.scope === "users" && annTargets(a).some((u) => S.members.has(u))))) : new Map();
   DATA_VER++;
 }
+// お知らせの宛先（個人宛て：1人は target、2人以上は targets に入る）
+const annTargets = (a) => (a.scope === "users" ? a.targets ?? [] : a.scope === "user" ? [a.target] : []);
 const relevantHere = (x) => !x.fromLobby || !x.targets || x.targets.some((uid) => S.members.has(uid));
 const confirmedTrips = (m) => Object.keys(tripsOf(m)).filter((k) => tripsOf(m)[k] === true);
 // 確定前ページのデータを合流用に読み込む（id と、ほかのデータを指す欄に "L:" を付ける）
@@ -536,7 +538,7 @@ const mayHaveOlder = () => !S.isAdmin && ((S.feedRaw.ann?.size ?? 0) >= S.annLim
 // 受け取ったお知らせ・ポイントのうち、自分が見てよいものだけを残す（宛先・公開範囲は画面側で判定する）
 function refreshFeed(uid) {
   const teams = new Set(myTeamIds(uid));
-  const annOk = (a) => a.scope === "all" || (a.scope === "user" && a.target === uid) || (a.scope === "team" && teams.has(a.target));
+  const annOk = (a) => a.scope === "all" || ((a.scope === "user" || a.scope === "users") && annTargets(a).includes(uid)) || (a.scope === "team" && teams.has(a.target));
   const logOk = (l) => l.visibility === "public" || (l.visibility === "private" && l.target === uid) || (l.visibility === "team" && teams.has(l.teamId));
   const keep = (m, ok) => new Map([...(m ?? [])].filter(([, v]) => ok(v)));
   S.annSrc = { pinned: keep(S.feedRaw.pinned, annOk), recent: keep(S.feedRaw.ann, annOk), lobbyPinned: keep(S.feedRaw.lobbyPinned, annOk), lobby: keep(S.feedRaw.lobby, annOk) };
@@ -1226,10 +1228,10 @@ function ackAudience(a) {
   // 確定前ページのお知らせを旅行のページで見るときは、確定前ページの参加者全員で数える
   if (a.fromLobby && S.lobbyMembers) {
     const lm = [...S.lobbyMembers.values()].sort((x, y) => byNatural(x.loginId, y.loginId));
-    return a.scope === "user" ? lm.filter((m) => m.id === a.target) : lm;
+    return a.scope === "user" || a.scope === "users" ? lm.filter((m) => annTargets(a).includes(m.id)) : lm;
   }
   if (a.scope === "team") return membersOfTeam(a.target, { includeHidden: true });
-  if (a.scope === "user") return sortedMembers().filter((m) => m.id === a.target);
+  if (a.scope === "user" || a.scope === "users") return sortedMembers().filter((m) => annTargets(a).includes(m.id));
   return sortedMembers();
 }
 
@@ -1272,6 +1274,7 @@ function announcementCard(a, { admin = false } = {}) {
   let scope = "全員";
   if (a.scope === "team") scope = admin ? `${teamName(a.target)} のみ` : `チーム限定（${teamName(a.target)}）`;
   if (a.scope === "user") scope = admin ? `${memberName(a.target)} のみ` : "あなた宛て";
+  if (a.scope === "users") scope = admin ? `${annTargets(a).map(memberName).join("・")} のみ` : `あなた宛て（${annTargets(a).length}人）`;
   return h("article", { class: `card ann${a.pinned ? " pinned" : ""}`, "data-ann": a.id },
     h("div", { class: "ann-meta" },
       a.pinned ? h("span", { class: "ann-pin" }, icon("pin"), "固定") : null,
@@ -2194,7 +2197,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v65"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v66"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2246,6 +2249,9 @@ function adminAnnouncements() {
   const scope = segmented([{ value: "all", label: "全員" }, ...(inLobby() ? [] : [{ value: "team", label: "チーム" }]), { value: "user", label: "個人" }]);
   const target = h("select", { "aria-label": "宛先" });
   const targetCell = field("宛先", target);
+  // 個人宛て：何人でも選べる（1人なら従来どおり scope "user"、2人以上は scope "users"）
+  const people = memberChecks([]);
+  const peopleCell = h("div", { class: "cell" }, people.el);
   const pinned = toggle();
   const ack = toggle();
   const pushT = toggle(true);
@@ -2265,9 +2271,10 @@ function adminAnnouncements() {
   renderPreview();
 
   const refreshTarget = () => {
-    targetCell.hidden = scope.value === "all";
+    targetCell.hidden = scope.value !== "team";
+    peopleCell.hidden = scope.value !== "user";
     if (scope.value === "team") fillSelect(target, teamOptions(), "選択");
-    if (scope.value === "user") fillSelect(target, sortedMembers().map((m) => ({ value: m.id, label: m.name })), "選択");
+    if (scope.value === "user") people.refresh();
   };
   scope.addEventListener("change", () => { target.value = ""; refreshTarget(); });
 
@@ -2283,20 +2290,24 @@ function adminAnnouncements() {
   const form = h("form", {
     onsubmit: (e) => {
       e.preventDefault();
-      if (scope.value !== "all" && !target.value) return toast("宛先を選んでください", true);
+      const picked = scope.value === "user" ? sortedMembers().map((m) => m.id).filter((id) => people.value().includes(id)) : [];
+      if (scope.value === "team" && !target.value) return toast("宛先を選んでください", true);
+      if (scope.value === "user" && !picked.length) return toast("宛先の人を1人以上選んでください", true);
+      const to = scope.value === "all" ? { scope: "all", target: null }
+        : scope.value === "team" ? { scope: "team", target: target.value }
+        : picked.length === 1 ? { scope: "user", target: picked[0] } : { scope: "users", target: null, targets: picked };
       // 通知も送る：宛先の人の端末へ（チーム宛ては、チーム表を発表済みのときだけ）
       if (S.pushWorker && pushT.checked) {
         const t = S.teams.get(target.value);
         const hiddenTeam = scope.value === "team" && !S.sets.get(t?.setId)?.published;
-        const uids = scope.value === "all" ? sortedMembers().map((m) => m.id) : scope.value === "team" ? membersOfTeam(target.value, { includeHidden: true }).map((m) => m.id) : [target.value];
+        const uids = scope.value === "all" ? sortedMembers().map((m) => m.id) : scope.value === "team" ? membersOfTeam(target.value, { includeHidden: true }).map((m) => m.id) : picked;
         if (hiddenTeam) toast("チーム表を発表していないので、通知は送りませんでした");
         else sendPush({ uids, title: title.value.trim(), body: body.value.trim() }).then((r) => toast(pushResultText(r)), (e) => toast(`通知：${errMsg(e)}`, true));
       }
       fire(addDoc(C("announcements"), {
         title: title.value.trim(),
         body: body.value.trim(),
-        scope: scope.value,
-        target: scope.value === "all" ? null : target.value,
+        ...to,
         images: [...images],
         pinned: pinned.checked,
         ack: ack.checked,
@@ -2306,14 +2317,15 @@ function adminAnnouncements() {
       title.value = body.value = "";
       pinned.checked = false;
       ack.checked = false;
+      people.set([]);
       images.length = 0;
       renderPreview();
     },
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
       h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
-      "「チーム」宛ては、そのチーム表を発表するまで届きません。"),
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, peopleCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
+      "「個人」は何人でも選べます。「チーム」宛ては、そのチーム表を発表するまで届きません。"),
     btn,
   );
 
