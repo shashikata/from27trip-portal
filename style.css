@@ -1858,3 +1858,10 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .card .fold > summary { font-size: 15px; font-weight: 600; padding: 10px 2px; color: var(--blue); }
 .card .fold > summary .icon { color: var(--label-3); }
 .card .fold[open] > summary { padding-bottom: 6px; }
+
+/* 更新ボタン（小さめ） */
+.nav-left .nav-refresh .icon { width: 19px; height: 19px; }
+.nav-left .nav-refresh { color: var(--label-2); width: 34px; }
+.desk-btn.desk-refresh { padding-left: 8px; padding-right: 8px; color: var(--label-2); }
+.desk-btn.desk-refresh .icon { width: 17px; height: 17px; }
+.spinning .icon { animation: spin .8s linear infinite; }

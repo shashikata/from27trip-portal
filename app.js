@@ -956,6 +956,7 @@ const ICONS = {
   note: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
   table: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 5v14M15 5v14"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
+  refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
   yen: '<path d="M7 4l5 7 5-7M12 11v9M8 13.5h8M8 17h8"/>',
   map: '<path d="M9 4.5 3.5 6.5v13l5.5-2 6 2 5.5-2v-13l-5.5 2-6-2Z"/><path d="M9 4.5v13M15 6.5v13"/>',
   locate: '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="7.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22"/>',
@@ -2186,7 +2187,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v62"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v63"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -7328,7 +7329,7 @@ function buildMobileShell(allTabs) {
       },
     }, icon(t.icon), h("span", null, t.label))));
   const chip = S.isAdmin ? null : meChip();
-  const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
+  const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, adminName(S.user.email)) : chip);
   const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, main), nav);
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
@@ -7408,7 +7409,7 @@ function buildDesktopShell(tabs) {
   const status = statusBar();
   const chip = S.isAdmin || inLobby() ? null : meChip();
   const actions = h("div", { class: "desk-actions" },
-    topTabs.map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)));
+    topTabs.map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)), refreshButton("desk"));
   const header = h("header", { class: "desk-bar" },
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
     S.isAdmin ? h("span", { class: "badge static" }, adminName(S.user.email)) : null,
@@ -7451,6 +7452,21 @@ function buildDesktopShell(tabs) {
   };
 }
 
+// 更新ボタン：新しい版があれば取り込み、なければそのまま読み込み直す
+function refreshButton(kind = "nav") {
+  return h("button", { class: kind === "desk" ? "desk-btn desk-refresh" : "nav-gear nav-refresh", title: "更新", "aria-label": "更新", onclick: (e) => refreshApp(e.currentTarget) }, icon("refresh"));
+}
+async function refreshApp(btn) {
+  btn?.classList.add("spinning");
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration?.();
+    await Promise.race([reg?.update(), new Promise((r) => setTimeout(r, 3000))]);
+    // 新しい版を入れている途中なら、入れ替わったところで自動で読み直される（下の controllerchange）。少し待っても来なければ読み直す
+    if (reg?.installing || reg?.waiting) { setTimeout(() => location.reload(), 4000); return; }
+  } catch { /* 確認できなくても読み直す */ }
+  location.reload();
+}
+
 // 参加者のスマホ：タブを使わず1ページにまとめる。上部のボタンで各セクションへ移動する
 function buildMemberPageShell() {
   const lobby = inLobby();
@@ -7470,7 +7486,7 @@ function buildMemberPageShell() {
   const chip = lobby ? null : meChip();
   const navTitle = h("div", { class: "nav-title" });
   const gear = h("div", { class: "nav-left" }, (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS).filter((t) => t.sheet && !t.desktopOnly).map((t) =>
-    h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))));
+    h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const switcher = profileSwitcher("big");
   const title = h("h1", { class: "large-title" }, switcher);
