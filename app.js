@@ -641,6 +641,7 @@ function cachedProfiles() {
 }
 function setMyProfiles(list) {
   S.myProfiles = list;
+  resyncPush(); // 入っているページが変わったら、通知の宛先も置き直す
   if (!S.isAdmin && S.pid && subs.has("msgRecent")) syncExtPages(); // 入っている旅行が増えたら、その旅行の集金・立て替えも受け取る
   try { if (list.length) localStorage.setItem(profsKey(), JSON.stringify(list)); } catch { /* 保存できなくても動く */ }
 }
@@ -2197,7 +2198,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v67"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v68"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6567,7 +6568,8 @@ function loadQr() {
 
 // ---------------------------------------------------------------- プッシュ通知
 // 受け取る側：ホーム画面に追加したアプリ（iPhone は iOS 16.4 以降）で「通知を受け取る」を押すと、
-//   その端末の宛先（PushSubscription）を、入っているページの pushSubs/{宛先のハッシュ} に { uid, sub } で置く。
+//   その端末の宛先（PushSubscription）を、入っているページの pushSubs/{宛先のハッシュ}_{uid} に { uid, sub } で置く。
+//   （1台を2つのアカウントで使う人（管理者⇄参加者の切り替えなど）でも、上書きし合わないように uid ごとに分ける）
 // 送る側（管理者）：宛先を集めて、Cloudflare Worker（push-worker/worker.js）に渡す。Worker が暗号化して Apple / Google へ送る。
 //   Worker は Firebase のログイン（ID トークン）を確かめ、管理者だけに送らせる。
 const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -6591,11 +6593,22 @@ async function currentSub() {
   const reg = await navigator.serviceWorker.getRegistration();
   return reg ? reg.pushManager.getSubscription() : null;
 }
+const PUSH_SYNC_KEY = "island.pushSynced2";
+const subDocId = async (endpoint, uid) => `${await subId(endpoint)}_${uid}`;
+// 前の版（v64〜v67）は宛先のハッシュだけを id にしていた。自分の分なら消す（ほかのアカウントの分はそのアカウントが消す）
+async function dropLegacySub(pid, endpoint) {
+  const ref = doc(db, ...pageBase(pid), "pushSubs", await subId(endpoint));
+  const old = await getDoc(ref).catch(() => null);
+  if (old?.exists() && old.data().uid === S.user.uid) await deleteDoc(ref).catch(() => {});
+}
 async function saveSub(sub) {
-  const id = await subId(sub.endpoint);
+  const id = await subDocId(sub.endpoint, S.user.uid);
   const data = { uid: S.user.uid, sub: sub.toJSON(), ua: navigator.userAgent.slice(0, 150), at: serverTimestamp() };
-  await Promise.all(pushPages().map((pid) => setDoc(doc(db, ...pageBase(pid), "pushSubs", id), data).catch((e) => console.warn("pushSub", pid, e))));
-  try { localStorage.setItem("island.pushSynced", `${S.user.uid}|${id}|${pushPages().join(",")}`); } catch { /* なくても動く */ }
+  await Promise.all(pushPages().map(async (pid) => {
+    await setDoc(doc(db, ...pageBase(pid), "pushSubs", id), data).catch((e) => console.warn("pushSub", pid, e));
+    await dropLegacySub(pid, sub.endpoint);
+  }));
+  try { localStorage.setItem(PUSH_SYNC_KEY, `${S.user.uid}|${id}|${pushPages().join(",")}`); } catch { /* なくても動く */ }
 }
 async function enablePush() {
   if (!S.pushWorker) throw new Error("管理者がまだ通知の設定をしていません");
@@ -6614,11 +6627,14 @@ async function enablePush() {
 async function disablePush() {
   const sub = await currentSub();
   if (sub) {
-    const id = await subId(sub.endpoint);
-    await Promise.all(pushPages().map((pid) => deleteDoc(doc(db, ...pageBase(pid), "pushSubs", id)).catch(() => {})));
+    const id = await subDocId(sub.endpoint, S.user.uid);
+    await Promise.all(pushPages().map(async (pid) => {
+      await deleteDoc(doc(db, ...pageBase(pid), "pushSubs", id)).catch(() => {});
+      await dropLegacySub(pid, sub.endpoint);
+    }));
     await sub.unsubscribe().catch(() => {});
   }
-  try { localStorage.removeItem("island.pushSynced"); } catch { /* なくても動く */ }
+  try { localStorage.removeItem(PUSH_SYNC_KEY); } catch { /* なくても動く */ }
 }
 // 受け取る設定にしている端末は、入っているページが増えたときなどに宛先を置き直す（変わったときだけ書く）
 async function resyncPush() {
@@ -6626,18 +6642,27 @@ async function resyncPush() {
     if (!S.user || !S.pushWorker || !pushSupported() || Notification.permission !== "granted") return;
     const sub = await currentSub();
     if (!sub) return;
-    const want = `${S.user.uid}|${await subId(sub.endpoint)}|${pushPages().join(",")}`;
-    if (localStorage.getItem("island.pushSynced") === want) return;
+    const want = `${S.user.uid}|${await subDocId(sub.endpoint, S.user.uid)}|${pushPages().join(",")}`;
+    if (localStorage.getItem(PUSH_SYNC_KEY) === want) return;
     await saveSub(sub);
   } catch (e) { console.warn("resyncPush", e); }
 }
 
+// 管理者：すべてのページの pushSubs を集める。宛先は、入っているページ（確定前ページだけの人もいる）に置かれるので、
+// 送る相手がどのページに置いたかに関係なく届くように全部見る。同じ宛先（端末）は1つにまとめる
+const allPushPids = () => [...new Set([ROOT, LOBBY, ...S.profiles.keys()])];
+async function collectPushSubs(pids = allPushPids()) {
+  const snaps = await Promise.all(pids.map((pid) => getDocs(collection(db, ...pageBase(pid), "pushSubs")).catch(() => null)));
+  return snaps.flatMap((s) => s?.docs ?? []).filter((d) => d.data().sub?.endpoint);
+}
 // 管理者：通知を送る（uids に入っている人の端末へ。null なら、そのページで受け取る設定にしている全員）
 async function sendPush({ pid = S.pid, uids = null, title, body = "", tag = "" }) {
   if (!S.pushWorker) throw new Error("通知の中継先（Worker の URL）が設定されていません");
   const want = uids ? new Set(uids) : null;
-  const snap = await getDocs(collection(db, ...pageBase(pid), "pushSubs"));
-  const docs = snap.docs.filter((d) => d.data().sub?.endpoint && (!want || want.has(d.data().uid)));
+  const found = (await collectPushSubs(want ? allPushPids() : [pid])).filter((d) => !want || want.has(d.data().uid));
+  const byEndpoint = new Map();
+  for (const d of found) { const e = d.data().sub.endpoint; if (!byEndpoint.has(e)) byEndpoint.set(e, []); byEndpoint.get(e).push(d); }
+  const docs = [...byEndpoint.values()].map((ds) => ds[0]);
   if (!docs.length) return { people: 0, devices: 0, ok: 0, gone: 0, failed: 0 };
   const token = await S.user.getIdToken();
   const url = `${location.origin}${location.pathname}`;
@@ -6652,11 +6677,11 @@ async function sendPush({ pid = S.pid, uids = null, title, body = "", tag = "" }
     if (!res.ok) throw new Error(j.error || `送れませんでした（${res.status}）`);
     for (const r of j.results ?? []) {
       if (r.status >= 200 && r.status < 300) ok++;
-      else if (r.status === 404 || r.status === 410) { gone++; const d = part.find((x) => x.data().sub.endpoint === r.endpoint); if (d) deleteDoc(d.ref).catch(() => {}); } // もう使われていない宛先は消す
+      else if (r.status === 404 || r.status === 410) { gone++; (byEndpoint.get(r.endpoint) ?? []).forEach((d) => deleteDoc(d.ref).catch(() => {})); } // もう使われていない宛先は消す
       else failed++;
     }
   }
-  return { people: new Set(docs.map((d) => d.data().uid)).size, devices: docs.length, ok, gone, failed };
+  return { people: new Set(found.map((d) => d.data().uid)).size, devices: docs.length, ok, gone, failed };
 }
 const pushResultText = (r) => (!r.devices ? "通知を受け取る設定にしている人がいませんでした"
   : `${r.people}人（${r.devices}台）に送りました${r.gone ? `・使われていない宛先 ${r.gone}件を整理しました` : ""}${r.failed ? `・${r.failed}件は失敗しました` : ""}`);
@@ -6799,7 +6824,7 @@ function adminPushSetup() {
   };
 }
 
-// 管理者：このページで「通知を受け取る」をオンにした人・まだの人（pushSubs をその場で1回読む。押すと読み直す）
+// 管理者：このページの参加者のうち「通知を受け取る」をオンにした人・まだの人（全ページの pushSubs をその場で1回読む。押すと読み直す）
 // 端末側で通知を切ったりアプリを消したりしても、次に送って「もう使われていない」と返るまでは残る
 const deviceKind = (ua = "") => (/iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "その他");
 function pushStatusBox() {
@@ -6820,6 +6845,7 @@ function pushStatusBox() {
     const on = ms.filter((m) => by.has(m.id));
     const off = ms.filter((m) => !by.has(m.id));
     const mine = by.get(S.user.uid)?.length ?? 0;
+    const others = [...by].filter(([uid]) => uid !== S.user.uid && !S.members.has(uid)).reduce((n, [, ds]) => n + ds.length, 0);
     const row = (m) => {
       const ds = by.get(m.id);
       const kinds = [...ds.reduce((c, d) => c.set(deviceKind(d.ua), (c.get(deviceKind(d.ua)) ?? 0) + 1), new Map())].map(([k, n]) => (n > 1 ? `${k}×${n}` : k)).join("・");
@@ -6831,15 +6857,21 @@ function pushStatusBox() {
       on.length ? fold(`設定済み（${on.length}人）`, h("div", { class: "push-who" }, on.map(row)), false) : null,
       off.length ? fold(`まだの人（${off.length}人）`, h("div", { class: "push-who push-off" }, off.map((m) => m.name).join("・")), true) : null,
       mine ? cell("管理者（自分）の端末", h("span", { class: "secondary" }, `${mine}台`)) : null,
+      others ? cell("ほかの管理者・このページにいない人", h("span", { class: "secondary" }, `${others}台`)) : null,
       reload,
-    ], "このページで「通知を受け取る」をオンにした人です（端末と、オンにした日時）。スマホ側で通知を切ったりアプリを消したりした人は、次に通知を送ったときに自動で外れます。"));
+    ], "このページの参加者のうち「通知を受け取る」をオンにした人です（端末と、オンにした日時。ほかのページでオンにした分も含む）。スマホ側で通知を切ったりアプリを消したりした人は、次に通知を送ったときに自動で外れます。"));
   };
   const load = async () => {
     if (busy) return;
     busy = true; loadedPid = S.pid; paint();
     try {
-      const snap = await getDocs(collection(db, ...pageBase(S.pid), "pushSubs"));
-      subs = snap.docs.map((d) => d.data()).filter((d) => d.sub?.endpoint);
+      // 同じ人の同じ端末が複数のページに置かれているので、人と端末の組で1つにする
+      const seen = new Map();
+      for (const d of (await collectPushSubs()).map((x) => x.data())) {
+        const k = `${d.uid}|${d.sub.endpoint}`;
+        if (!seen.has(k) || ts(d.at) > ts(seen.get(k).at)) seen.set(k, d);
+      }
+      subs = [...seen.values()];
     } catch (e) { toast(`受け取り状況：${errMsg(e)}`, true); }
     busy = false; paint();
   };
