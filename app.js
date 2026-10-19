@@ -659,7 +659,13 @@ const savePid = (pid) => { try { localStorage.setItem(pidKey(), pid); } catch { 
 
 function startProfile() {
   // プッシュ通知の中継先（Cloudflare Worker の URL）。profiles/root に置く（ログインしていれば誰でも読める）
-  listen("pushCfg", doc(db, "profiles", ROOT), (s) => { S.pushWorker = s?.exists() ? (s.data().pushWorker || null) : null; resyncPush(); });
+  listen("pushCfg", doc(db, "profiles", ROOT), (s) => {
+    const d = s?.exists() ? s.data() : {};
+    S.pushWorker = d.pushWorker || null;
+    S.reminders = d.reminders ?? null;        // 自動リマインドの設定（管理者が決める）
+    S.reminderLast = d.reminderLast ?? null;  // Worker が最後に確かめた時刻
+    resyncPush();
+  });
   if (S.isAdmin) {
     startAdmin();
     listen("profiles", collection(db, "profiles"), (s) => { if (s) { S.profiles = toMap(s); syncExtPages(); } });
@@ -2232,7 +2238,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v71"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v72"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5692,6 +5698,7 @@ function adminMoney({ withTitle = true } = {}) {
       h("div", { class: "poll-actions" },
         S.pushWorker ? h("button", { class: "text-btn", onclick: () => openPushDialog({ title: `アンケート：${p.question}`, body: pollOpen(p) ? `回答をお願いします${p.deadline ? `（締切 ${fmtDeadline(p.deadline)}）` : ""}` : "結果が出ました", pid: isExt(p.id) ? extPid(p.id) : S.pid,
           groups: [{ label: "未回答の人だけ", uids: none.map((m) => m.id) }, { label: "対象者全員", uids: ms.map((m) => m.id) }] }) }, icon("megaphone"), "通知を送る") : null,
+        remindToggle(p, "polls", !!p.deadline && pollOpen(p)),
         h("button", { class: "text-btn", onclick: () => guard(null, () => printPollResult(p)) }, icon("table"), "結果を印刷"),
         h("button", { class: "text-btn", onclick: () => openShareImage("poll", p) }, icon("photo"), "報告用の画像"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
@@ -5745,6 +5752,7 @@ function adminMoney({ withTitle = true } = {}) {
       isExt(p.id) ? null : h("div", { class: "poll-actions" },
         S.pushWorker ? h("button", { class: "text-btn", onclick: () => openPushDialog({ title: `集金：${p.title}`, body: `${yen(p.amount)} / 人${p.due ? `（期限 ${p.due.replaceAll("-", "/")}）` : ""}`, pid: S.pid,
           groups: [{ label: "未入金の人だけ", uids: payTargets(p).filter((m) => recordOf(p, m.id).status === "unpaid").map((m) => m.id) }, { label: "対象者全員", uids: payTargets(p).map((m) => m.id) }] }) }, icon("megaphone"), "通知を送る") : null,
+        remindToggle(p, "payments", !!p.due),
         h("button", { class: "text-btn", onclick: () => openShareImage("pay", p) }, icon("photo"), "報告用の画像"),
         !inLobby() && S.profiles.has(LOBBY) ? h("button", { class: "text-btn", onclick: () => guard(null, () => movePaymentsToLobby([p.id])) }, "確定前ページへ移す") : null,
         h("button", { class: "text-btn destructive", onclick: () => {
@@ -7457,6 +7465,7 @@ function adminPushSetup() {
   const selfBtn = h("button", { class: "cell cell-button", onclick: testSelf }, "自分の端末にテスト通知");
   const status = pushStatusBox();
   const store = fileStoreBox();
+  const remind = remindBox();
   // 入力欄を作り直すと打っている途中で消えるので、欄は1回だけ作る
   el.append(group("プッシュ通知の設定（管理者）", [
     field("Worker の URL", url),
@@ -7465,7 +7474,7 @@ function adminPushSetup() {
     h("button", { class: "cell cell-button", onclick: genKeys }, "通知用の鍵を作る（最初に1回）"),
     selfBtn,
     out,
-  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el, store.el);
+  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el, remind.el, store.el);
   return {
     el,
     update() {
@@ -7473,8 +7482,64 @@ function adminPushSetup() {
       selfBtn.disabled = !S.pushWorker;
       status.update();
       store.update();
+      remind.update();
     },
   };
+}
+
+// ---- 自動リマインド（Worker が1時間ごとに確かめて、締切・期限が近いのにまだの人へ通知する）
+const REMIND_SLOTS = [
+  { key: "poll24", slot: "h24", label: "アンケート：締切の24時間前" },
+  { key: "poll3", slot: "h3", label: "アンケート：締切の3時間前" },
+  { key: "payEve", slot: "eve", label: "集金：期限の前日 20時" },
+  { key: "payDay", slot: "day", label: "集金：期限の当日 9時" },
+];
+const REMIND_SLOT_TEXT = { h24: "24時間前", h3: "3時間前", eve: "前日", day: "当日" };
+// 締切・期限があるアンケート・集金のカードに出す（1件ずつオフにできる）
+function remindToggle(p, coll, hasDate) {
+  if (!S.reminders?.on || !hasDate) return null;
+  const done = Object.entries(p.reminded ?? {}).filter(([, v]) => v).map(([k]) => REMIND_SLOT_TEXT[k]).filter(Boolean);
+  return h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX(coll, p.id), { noRemind: !p.noRemind }), p.noRemind ? "自動リマインドをオンにしました" : "自動リマインドをオフにしました") },
+    icon("clock"), p.noRemind ? "自動リマインド：オフ" : `自動リマインド：オン${done.length ? `（${done.join("・")}に送信済み）` : ""}`);
+}
+function remindBox() {
+  const el = h("div");
+  const out = h("div");
+  let lastKey = null;
+  const save = (patch) => fire(setDoc(doc(db, "profiles", ROOT), { reminders: { ...(S.reminders ?? { poll24: true, poll3: true, payEve: true, payDay: true }), ...patch } }, { merge: true }));
+  const ask = (dry) => guard(null, async () => {
+    if (!dry && !confirm("いま送る時刻になっているものを、すぐに送りますか？")) return;
+    const r = await workerFetch("/remind", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dry }) }).then((x) => x.json());
+    if (r.skipped) return setKids(out, cell(r.skipped));
+    const items = r.items ?? [];
+    setKids(out, group(dry ? "いま送るとしたら" : "送りました", items.length ? items.map((x) => h("div", { class: "cell" }, h("div", { class: "cell-main" },
+      h("b", null, x.title), h("div", { class: "cell-sub" }, `${REMIND_SLOT_TEXT[x.slot] ?? ""}・${pageName(x.page)}・まだの人 ${x.people}人（端末 ${x.devices}台）${dry ? "" : `・届いた ${x.sent}台`}`))))
+      : [cell("いま送る時刻のものはありません")], dry ? "まだ送っていません。送る時刻になると、1時間以内に自動で送られます。" : null));
+  });
+  const paint = () => {
+    const c = S.reminders ?? {};
+    const key = JSON.stringify([S.pushWorker, c, S.reminderLast?.at?.seconds]);
+    if (key === lastKey) return;
+    lastKey = key;
+    if (!S.pushWorker) { el.hidden = true; return; }
+    el.hidden = false;
+    const on = toggle(!!c.on);
+    on.addEventListener("change", () => save({ on: on.checked }));
+    const rows = REMIND_SLOTS.map((x) => {
+      const t = toggle(c[x.key] !== false);
+      t.disabled = !c.on;
+      t.addEventListener("change", () => save({ [x.key]: t.checked }));
+      return field(x.label, t);
+    });
+    const last = S.reminderLast?.at?.toDate ? `${fmtDate(S.reminderLast.at)}（${S.reminderLast.items ?? 0}件・${S.reminderLast.sent ?? 0}台に送信）` : "まだ動いていません";
+    setKids(el, group("自動リマインド", [
+      field("自動リマインド", on), ...rows,
+      cell("最後に確かめた時刻", h("span", { class: "secondary" }, last)),
+      h("button", { class: "cell cell-button", onclick: () => ask(true) }, "送る予定を確かめる（送らない）"),
+      h("button", { class: "cell cell-button", onclick: () => ask(false) }, "今すぐ送る"),
+    ], "締切・期限が近いのに、まだ回答・入金の報告をしていない人にだけ届きます。1件ずつ止めたいときは、アンケート・集金のカードの「自動リマインド」を押してください。Worker の設定（サービスアカウントと1時間ごとの実行）が必要です（手順は push-worker/README.md）。"), out);
+  };
+  return { el, update: paint };
 }
 
 // 管理者：資料（PDF・写真）の置き場所。R2 がつながっていれば、Firestore に残っている分を移せる
