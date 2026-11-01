@@ -1964,3 +1964,37 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .alloc-mine .cell-main { gap: 2px; }
 .alloc-k { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--label-2); }
 .alloc-k .icon { width: 15px; height: 15px; }
+
+/* 参加者のアンケート：小さめに・回答済みと締め切ったものは1行にたたむ */
+.poll-card.member { gap: 8px; padding: 12px 14px; margin-bottom: 10px; }
+.poll-card.member .poll-head b { font-size: 15.5px; }
+.poll-card.member .poll-choices { gap: 6px; }
+.poll-card.member .poll-choice { flex: 0 1 auto; min-height: 36px; padding: 0 16px; border-radius: 999px; font-size: 14.5px; font-weight: 600; }
+.poll-card.member .poll-choice .icon { width: 15px; height: 15px; }
+.poll-card.member .poll-comment input { padding: 7px 10px; font-size: 14px; }
+.poll-card.member .cell-sub { font-size: 12.5px; }
+.poll-card.member .rank-slots li { min-height: 32px; font-size: 14px; }
+.poll-fold { padding: 0; margin-bottom: 8px; overflow: hidden; }
+.poll-fold > summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; min-height: 44px; }
+.poll-fold > summary::-webkit-details-marker { display: none; }
+.poll-fold > summary .pf-q { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.poll-fold > summary .pf-a { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--blue); background: color-mix(in srgb, var(--blue) 12%, transparent); padding: 2px 10px; border-radius: 999px; }
+.poll-fold > summary .pf-a.none { color: var(--label-2); background: var(--fill); }
+.poll-fold > summary .tint { flex: none; font-size: 11.5px; font-weight: 700; color: var(--green); }
+.poll-fold > summary .tint.closed { color: var(--label-3); }
+.poll-fold > summary .icon { flex: none; width: 16px; height: 16px; color: var(--label-3); transition: transform .2s; }
+.poll-fold[open] > summary .icon { transform: rotate(90deg); }
+.poll-fold > .poll-card { background: none; border-radius: 0; margin: 0; padding-top: 0; box-shadow: none; }
+.poll-fold > .poll-card .poll-head { display: none; }
+.poll-list > .fold { margin: 4px 0 8px; }
+.poll-list > .fold > summary { font-size: 15px; padding: 6px 4px; color: var(--label-2); }
+@media (max-width: 420px) { .poll-fold > summary .pf-a { max-width: 34%; } }
+
+/* PC の参加者：出欠・集金などを右の2列を合わせた広い欄に出す */
+.desk-grid.member-side > [data-panel=points] { display: none; }
+.desk-grid.member-side > [data-panel=notes] { grid-column: span 2; }
+.desk.side-money .desk-paytop { display: none; }
+.rank-actions { flex-wrap: wrap; row-gap: 6px; }
+.rank-actions .btn-small, .rank-actions .text-btn { white-space: nowrap; }
+.share-panel .btn-filled.ghost-btn { margin-top: 0; }
+.share-panel .btn-filled { margin: 0; }
