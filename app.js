@@ -2242,7 +2242,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v74"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v75"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5505,6 +5505,54 @@ const sortedPollReqs = () => [...S.pollReqs.values()].sort((a, b) => ts(a.create
 const pendingPollReqs = () => sortedPollReqs().filter((r) => r.status === "pending");
 const splitOptions = (text) => [...new Set(String(text).split(/[/／,、\n]/).map((x) => x.trim()).filter(Boolean))];
 // 提案者の名前は showProposer のときだけ参加者に出す（管理者には常に出す）
+// ---- アンケートの補足（管理者があとから書き足す）
+//   polls/{id}.notes = [{ id, text, at }]   … 参加者のカードにも出す。新しく足すと、回答済みの人にも「新しい補足」と出る
+const pollNotes = (p) => (Array.isArray(p.notes) ? p.notes : []);
+const noteTime = (n) => (n.at?.toDate ? n.at.toDate() : n.at ? new Date(n.at) : null);
+const fmtNoteTime = (n) => { const d = noteTime(n); return d ? `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}` : ""; };
+function pollNotesView(p, { admin = false } = {}) {
+  const ns = pollNotes(p);
+  if (!ns.length) return null;
+  return h("div", { class: "poll-notes" }, ns.map((n) => h("div", { class: "poll-note" },
+    h("div", { class: "poll-note-head" }, icon("megaphone"), h("b", null, "管理者からの補足"), h("small", null, fmtNoteTime(n)),
+      admin ? h("span", { class: "poll-note-actions" },
+        h("button", { class: "text-btn", type: "button", onclick: () => {
+          const t = prompt("補足を直す", n.text);
+          if (t == null || !t.trim()) return;
+          fire(updateDoc(DX("polls", p.id), { notes: ns.map((x) => (x.id === n.id ? { ...x, text: t.trim().slice(0, 500) } : x)) }), "直しました");
+        } }, "直す"),
+        h("button", { class: "text-btn destructive", type: "button", onclick: () => {
+          if (confirm("この補足を消しますか？")) fire(updateDoc(DX("polls", p.id), { notes: ns.filter((x) => x.id !== n.id) }), "消しました");
+        } }, "消す")) : null),
+    h("div", { class: "poll-note-text" }, n.text))));
+}
+// 管理者：補足を書く欄（アンケートごとに1つ作って使い回す。描き直しても書きかけが消えないように）
+const noteDrafts = new Map();
+function pollNoteEditor(p, targetUids) {
+  let d = noteDrafts.get(p.id);
+  if (!d) {
+    const text = h("textarea", { class: "plain", rows: "2", maxlength: "500", placeholder: "例：雨の場合は集合を9時に変更します" });
+    const pushT = toggle(true);
+    const pushCell = h("label", { class: "poll-note-push" }, pushT, "対象者に通知する");
+    const add = h("button", { class: "btn-small", type: "button" }, "補足を追加");
+    d = { text, pushT, pushCell, add, el: null };
+    add.addEventListener("click", () => {
+      const v = text.value.trim();
+      if (!v) return toast("補足を書いてください", true);
+      const note = { id: Math.random().toString(36).slice(2, 10), text: v.slice(0, 500), at: new Date() };
+      fire(updateDoc(DX("polls", d.p.id), { notes: arrayUnion(note) }), "補足を追加しました");
+      if (S.pushWorker && pushT.checked) sendPush({ pid: isExt(d.p.id) ? extPid(d.p.id) : S.pid, uids: d.uids, title: `アンケート：${d.p.question}`, body: `補足：${v}`.slice(0, 300) })
+        .then((r) => toast(pushResultText(r)), (e) => toast(`通知：${errMsg(e)}`, true));
+      text.value = "";
+    });
+    d.el = keptFold(`pnote:${p.id}`, "＋ 補足を書き足す", h("div", { class: "poll-note-form" }, text, h("div", { class: "poll-note-row" }, pushCell, add),
+      h("div", { class: "cell-sub" }, "参加者のアンケートの上に表示されます。回答済みの人にも「新しい補足」と出ます。")));
+    noteDrafts.set(p.id, d);
+  }
+  d.p = p; d.uids = targetUids;
+  d.pushCell.hidden = !S.pushWorker;
+  return d.el;
+}
 const proposedLabel = (p) => (!p.proposedBy ? null
   : p.showProposer !== false ? h("small", { class: "proposed-by" }, `${memberName(p.proposedBy)}さんの提案`)
   : S.isAdmin ? h("small", { class: "proposed-by off" }, `${memberName(p.proposedBy)}さんの提案（名前は非公開）`) : h("small", { class: "proposed-by" }, "参加者の提案"));
@@ -5694,6 +5742,8 @@ function adminMoney({ withTitle = true } = {}) {
     return h("article", { class: "card poll-card" },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null, proposedLabel(p)),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
+      pollNotesView(p, { admin: true }),
+      pollNoteEditor(p, ms.map((m) => m.id)),
       isRankPoll(p) ? rankPollResult(p, votes, !p.anonymous, true) : (() => {
         const bars = (excludeSelf) => {
           const pts = pollScores(p, votes, { excludeSelf });
@@ -5934,6 +5984,7 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
         const answerText = mine ? (rank ? (mine.order ?? []).map((o, i) => `${i + 1}位 ${o}`).join("・") : mine.choice) : "";
         const card = h("article", { class: `card poll-card member${!mine && open ? " todo" : ""}` },
           h("div", { class: "poll-head" }, h("b", null, p.question, proposedLabel(p)), h("span", { class: `tint${open ? "" : " closed"}` }, open ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
+          pollNotesView(p),
           rank ? rankPicker(p, mine, open, vote)
             : h("div", { class: "poll-choices" }, p.options.map((o) => h("button", { class: `poll-choice${mine?.choice === o ? " on" : ""}`, disabled: !open, onclick: () => vote(o) }, mine?.choice === o ? icon("check") : null, o))),
           p.allowComment && open ? h("div", { class: "poll-comment" }, com, mine ? h("button", { class: "text-btn", onclick: () => { com.saved(); vote(rank ? mine.order ?? [mine.choice] : mine.choice); } }, "コメントを送る") : null) : null,
@@ -5942,7 +5993,12 @@ function memberMoney({ compact = false, pinned = "none" } = {}) {
           p.showComments ? pollComments(p, S.pollTally.get(p.id) ?? []) : null);
         // 未回答で受付中のものはそのまま。回答済み・締め切ったものは1行にたたむ（押すと開く。開いた状態は描き直しても保つ）
         if (!mine && open) return card;
-        return pollFold(`mpoll:${p.id}`, [h("b", { class: "pf-q" }, p.question), h("span", { class: `pf-a${mine ? "" : " none"}` }, mine ? answerText : "未回答"),
+        const ns = pollNotes(p);
+        const answeredAt = mine ? ts(mine.at) : 0;
+        const fresh = ns.some((n) => (noteTime(n)?.getTime() ?? 0) > answeredAt);
+        return pollFold(`mpoll:${p.id}`, [h("b", { class: "pf-q" }, p.question),
+          ns.length ? h("span", { class: `pf-note${fresh ? " fresh" : ""}` }, fresh ? "新しい補足" : "補足あり") : null,
+          h("span", { class: `pf-a${mine ? "" : " none"}` }, mine ? answerText : "未回答"),
           h("span", { class: `tint${open ? "" : " closed"}` }, open ? "回答済み" : "締切済み")], card);
       };
       // 締め切ったものは「締め切ったアンケート（n件）」にまとめる（最初は閉じておく）
@@ -8295,7 +8351,9 @@ async function printPollResult(p, mode = "both") {
   const wide = rank && d > 6;
   const scale = !rank ? 1 : d <= 6 ? 1 : d <= 10 ? 0.9 : d <= 14 ? 0.78 : d <= 20 ? 0.66 : 0.56;
   const root = h("div", { id: "print-root", class: `print-report print-poll${wide ? " rp-wide" : ""}`, style: `--rp-scale:${scale}` },
-    h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, "アンケート結果"), h("h1", { class: "rp-poll-title" }, p.question), h("p", { class: "rp-sub" }, meta), ...blocks));
+    h("section", { class: "rp-sec" }, h("div", { class: "rp-kicker" }, "アンケート結果"), h("h1", { class: "rp-poll-title" }, p.question), h("p", { class: "rp-sub" }, meta),
+      pollNotes(p).length ? h("div", { class: "rp-block" }, h("h3", null, "補足"), pollNotes(p).map((n) => h("p", { class: "rp-note" }, h("small", null, `${fmtNoteTime(n)}　`), n.text))) : null,
+      ...blocks));
   await printReport(root, `${p.question.slice(0, 30)}_結果`);
 }
 // 印刷画面を開く。iPhone / iPad の Safari は「押した直後」でないと開かない（準備で待つと無視される）ので、
