@@ -2041,3 +2041,13 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 /* 「実施中」の長い名前が右の札に重ならないように（2行まで折り返す） */
 .ongoing-row .cell-main > * { max-width: 100%; }
 .ongoing-row .cell-main b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.owner-lock.mine .owner-lock-note { color: var(--blue); }
+/* 名前のアンケートに人が足されたとき */
+.poll-add { display: grid; gap: 6px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--blue) 10%, var(--cell)); border-left: 3px solid var(--blue); }
+.poll-add b { font-size: 14.5px; }
+.poll-add-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* 編集画面が横にはみ出さないように */
+.pe-panel { overflow-x: hidden; }
+.pe-panel .group, .pe-panel .group-body, .pe-panel .cell, .pe-panel .member-checks { min-width: 0; max-width: 100%; }
+.pe-panel textarea { box-sizing: border-box; max-width: 100%; }
+.pe-panel .pick-tools { flex-wrap: wrap; }
