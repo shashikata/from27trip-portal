@@ -2024,3 +2024,20 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .pe-opt input { flex: 1; min-width: 0; border: none; border-radius: 8px; padding: 7px 10px; background: var(--fill); font: inherit; color: var(--label); }
 .pe-opt small { flex: none; }
 .pe-opts > .text-btn { justify-self: start; }
+
+/* 管理者1だけが変えられる設定：ほかの管理者にはグレーで見せる */
+.owner-lock { margin-bottom: 28px; }
+.owner-lock .group, .owner-lock .stack { margin-bottom: 0; }
+.owner-lock-note { display: flex; align-items: center; gap: 6px; margin: 0 4px 6px; font-size: 13px; font-weight: 600; color: var(--label-2); }
+.owner-lock-note .icon { width: 15px; height: 15px; }
+.owner-lock-body { opacity: .45; filter: grayscale(1); pointer-events: none; user-select: none; }
+.group-body > .owner-lock { margin: 0; border-top: .5px solid var(--separator); padding-top: 8px; }
+.group-body > .owner-lock .owner-lock-note { margin: 0 16px 4px; }
+
+/* 「実施中」から飛んだ先を少し光らせる */
+.focus-flash { animation: focus-flash 1.6s ease-out; scroll-margin-top: 12px; }
+@keyframes focus-flash { 0%, 35% { box-shadow: 0 0 0 3px var(--blue); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .focus-flash { animation: none; box-shadow: 0 0 0 3px var(--blue); } }
+/* 「実施中」の長い名前が右の札に重ならないように（2行まで折り返す） */
+.ongoing-row .cell-main > * { max-width: 100%; }
+.ongoing-row .cell-main b { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }

@@ -9,7 +9,7 @@ import {
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
   writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction, Bytes, arrayRemove,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH } from "./config.js";
+import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH, OWNER_ADMIN } from "./config.js";
 
 // ---------------------------------------------------------------- Firebase
 
@@ -164,6 +164,16 @@ function pageMembers(pid) {
 
 const idToEmail = (id) => (id.includes("@") ? id : `${id}@${EMAIL_DOMAIN}`).toLowerCase();
 const emailToId = (email) => (email || "").replace(`@${EMAIL_DOMAIN}`, "");
+// 影響が大きい設定を変えられる管理者か（config.js の OWNER_ADMIN）
+const isOwnerAdmin = () => S.isAdmin && emailToId(S.user?.email) === (OWNER_ADMIN || "admin1");
+// それ以外の管理者には、中身は見せたままグレーにして触れなくする
+function ownerOnly(el) {
+  if (isOwnerAdmin()) return el;
+  const body = h("div", { class: "owner-lock-body" }, el);
+  body.inert = true; // 中のボタン・入力欄を押せなく・選べなくする
+  body.setAttribute("aria-disabled", "true");
+  return h("div", { class: "owner-lock" }, h("div", { class: "owner-lock-note" }, icon("lock"), `このアカウントでは設定できません（${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけが変更できます）`), body);
+}
 const isAdminEmail = (email) => ADMIN_IDS.map(idToEmail).includes((email || "").toLowerCase());
 // 管理者の表示名（admin1 → 管理者1 …）
 const adminName = (email) => { const i = ADMIN_IDS.indexOf(emailToId(email)); return i >= 0 ? `管理者${i + 1}` : "管理者"; };
@@ -2123,6 +2133,7 @@ const profileName = (pid) => S.profiles.get(pid)?.name ?? S.myProfiles.find((p) 
 
 // 中身が空の旅行を作って、そこに切り替える
 async function createProfile() {
+  if (!isOwnerAdmin()) return toast("このアカウントでは設定できません", true);
   const name = (prompt("新しい旅行の名前（例：2027 夏 沖縄旅行）") ?? "").trim();
   if (!name) return;
   const ref = doc(collection(db, "profiles"));
@@ -2137,6 +2148,7 @@ async function createProfile() {
 // 確定前ページを作る：今いる参加者（すべての旅行）を、未割り当て・未確定で入れる。
 // 旅行のデータ（参加者の登録・お知らせ・チーム・ポイント）は消さない。確定すればまた開けるようになる
 async function createLobby() {
+  if (!isOwnerAdmin()) return toast("このアカウントでは設定できません", true);
   if (S.profiles.has(LOBBY)) return switchProfile(LOBBY);
   if (!confirm("確定前ページを作りますか？\n\n今の参加者は全員「未確定」になり、次に開いたときから確定前ページ（お知らせ・出欠・集金・チャット・立て替え）だけが表示されます。\n旅行のデータは消えません。旅行を割り当てて「確定」すると、また旅行のページが開けるようになります。")) return;
   toast("確定前ページを作っています…");
@@ -2155,6 +2167,7 @@ async function createLobby() {
 
 // 旅行の中身をすべて消す（1つ目の旅行＝ルートは消せない）
 async function deleteProfile(pid) {
+  if (!isOwnerAdmin()) return toast("このアカウントでは設定できません", true);
   if (pid === ROOT) return toast("1つ目の旅行は削除できません", true);
   const name = profileName(pid);
   if (!confirm(`「${name}」を削除しますか？\nお知らせ・チーム・ポイント・参加者の登録など、この旅行のデータがすべて消えます。元に戻せません。`)) return;
@@ -2186,8 +2199,9 @@ function profilesGroup() {
           "data-profile": p.id,
           onclick: () => switchProfile(p.id),
         }, h("span", { class: "profile-name" }, p.name), p.id === S.pid ? h("span", { class: "profile-cur" }, icon("check"), "表示中") : null)),
-        S.isAdmin ? h("button", { class: "cell cell-button", onclick: () => guard(null, createProfile) }, icon("plus"), "新しい旅行を作る") : null,
-        S.isAdmin && !S.profiles.has(LOBBY) ? h("button", { class: "cell cell-button", onclick: () => guard(null, createLobby) }, icon("people"), "確定前ページを作る（今の参加者を全員未確定にする）") : null,
+        S.isAdmin ? ownerOnly(h("div", { class: "owner-cells" },
+          h("button", { class: "cell cell-button", onclick: () => guard(null, createProfile) }, icon("plus"), "新しい旅行を作る"),
+          !S.profiles.has(LOBBY) ? h("button", { class: "cell cell-button", onclick: () => guard(null, createLobby) }, icon("people"), "確定前ページを作る（今の参加者を全員未確定にする）") : null)) : null,
       ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。" : null));
     },
   };
@@ -2242,7 +2256,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v76"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v77"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2281,7 +2295,7 @@ function settingsView({ withTitle = true } = {}) {
       ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
         locGroupsBox.el,
         exportBox(),
-        S.pid !== ROOT ? group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除")) : null);
+        S.pid !== ROOT ? ownerOnly(group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除"))) : null);
     },
   };
 }
@@ -2414,10 +2428,10 @@ function adminOngoing() {
         const ts2 = pollTargets(p);
         const got = ts2.filter((m) => answered.get(p.id)?.has(m.id)).length;
         rows.push(row("check", p.question, [`回答 ${got} / ${ts2.length}人`, p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "締切なし"].join(" ・ "), { text: "受付中" },
-          () => openAdminMoney("polls")));
+          () => openAdminMoney("polls", `poll:${p.id}`)));
       }
       const reqs = pendingPollReqs();
-      if (reqs.length) rows.push(row("check", "アンケートの申請", reqs.map((r) => `${memberName(r.uid)}「${r.question}」`).join(" ・ "), { text: `${reqs.length}件`, cls: "warn" }, () => openAdminMoney("polls")));
+      if (reqs.length) rows.push(row("check", "アンケートの申請", reqs.map((r) => `${memberName(r.uid)}「${r.question}」`).join(" ・ "), { text: `${reqs.length}件`, cls: "warn" }, () => openAdminMoney("polls", "pollreqs")));
       // 集金：まだ全員そろっていないもの
       const pend = pendingReports();
       for (const p of sortedPayments()) {
@@ -2427,7 +2441,7 @@ function adminOngoing() {
         const reports = pend.filter((x) => x.p.id === p.id).length;
         const over = p.due && p.due < new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
         rows.push(row("yen", isExt(p.id) ? `${p.title}（${pageName(extPid(p.id))}より）` : p.title, [`入金 ${paidN} / ${n}人`, `${yen(got)} / ${yen(expect)}`, p.due ? `期限 ${p.due.slice(5).replace("-", "/")}` : null, reports ? `確認待ち ${reports}件` : null].filter(Boolean).join(" ・ "),
-          over ? { text: "期限切れ", cls: "warn" } : { text: "集金中" }, () => openAdminMoney("pay")));
+          over ? { text: "期限切れ", cls: "warn" } : { text: "集金中" }, () => openAdminMoney("pay", `pay:${p.id}`)));
       }
       // 立て替え：まだ精算が残っているもの
       const st = settlements();
@@ -2446,10 +2460,21 @@ function adminOngoing() {
 // 出欠・集金の画面を、指定した欄（polls / pay / exp）で開く。もう開いていれば欄だけ切り替える
 let moneyTabHint = null;
 let activeMoney = null;
-function openAdminMoney(which) {
-  if (activeMoney?.el.isConnected) { activeMoney.show(which); activeMoney.el.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
-  moneyTabHint = which;
-  openAdminTab("money");
+// focus を渡すと、開いたあとでその項目（data-focus が同じもの）の位置まで動かして、少し光らせる
+function openAdminMoney(which, focus = null) {
+  if (activeMoney?.el.isConnected) { activeMoney.show(which); if (!focus) activeMoney.el.scrollIntoView({ block: "start", behavior: "smooth" }); }
+  else { moneyTabHint = which; openAdminTab("money"); }
+  if (focus) focusItem(focus);
+}
+// 画面に出るのを少し待ってから、その項目へ動かす（描き終わるまで最大2秒待つ）
+function focusItem(key, tries = 20) {
+  const el = document.querySelector(`[data-focus="${CSS.escape(key)}"]`);
+  if (!el || !el.offsetParent) { if (tries > 0) setTimeout(() => focusItem(key, tries - 1), 100); return; }
+  el.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  el.classList.remove("focus-flash");
+  void el.offsetWidth; // 続けて押したときも光らせ直す
+  el.classList.add("focus-flash");
+  setTimeout(() => el.classList.remove("focus-flash"), 1800);
 }
 function openAdminTab(key) {
   const t = (inLobby() ? LOBBY_ADMIN_TABS : ADMIN_TABS).find((x) => x.key === key);
@@ -5598,7 +5623,7 @@ const reqDrafts = new Map(); // 申請 id -> { q, opts }
 function pollRequestReview() {
   const rs = pendingPollReqs();
   if (!rs.length) return null;
-  return group(`参加者からの申請 ${rs.length}件`, rs.map((r) => {
+  return h("div", { "data-focus": "pollreqs" }, group(`参加者からの申請 ${rs.length}件`, rs.map((r) => {
     let d = reqDrafts.get(r.id);
     if (!d) {
       d = { q: editableInput({ class: "plain", maxlength: "100" }), opts: editableInput({ class: "plain", maxlength: "200" }), name: toggle(r.showName !== false) };
@@ -5632,7 +5657,7 @@ function pollRequestReview() {
         h("div", { class: "poll-req-actions" },
           h("button", { class: "btn-small", onclick: approve }, "承認して公開"),
           h("button", { class: "text-btn destructive", onclick: reject }, "見送る"))));
-  }), "質問や選択肢はここで直してから承認できます。承認すると全員が対象のアンケートとして公開されます（対象者はあとから変えられます）。");
+  }), "質問や選択肢はここで直してから承認できます。承認すると全員が対象のアンケートとして公開されます（対象者はあとから変えられます）。"));
 }
 
 function adminMoney({ withTitle = true } = {}) {
@@ -5739,7 +5764,7 @@ function adminMoney({ withTitle = true } = {}) {
     const setVote = (uid, choice) => fire(choice
       ? setDoc(DX("votes", `${p.id}_${uid}`), { uid, pollId: rawId(p.id), choice, comment: S.votes.get(`${p.id}_${uid}`)?.comment ?? "", at: serverTimestamp(), firstAt: firstAtOf(S.votes.get(`${p.id}_${uid}`)), byAdmin: true })
       : deleteDoc(DX("votes", `${p.id}_${uid}`)));
-    return h("article", { class: "card poll-card" },
+    return h("article", { class: "card poll-card", "data-focus": `poll:${p.id}` },
       h("div", { class: "poll-head" }, h("b", null, p.question, p.targets ? h("small", { class: "target-count" }, `対象 ${p.targets.length}人`) : null, proposedLabel(p)),
         h("span", { class: `tint${pollOpen(p) ? "" : " closed"}` }, pollOpen(p) ? (p.deadline ? `締切 ${fmtDeadline(p.deadline)}` : "受付中") : "締切済み")),
       pollNotesView(p, { admin: true }),
@@ -5806,7 +5831,7 @@ function adminMoney({ withTitle = true } = {}) {
     const onlyUnpaid = SHOWN.get(filterKey) === 1;
     const ms = payTargets(p).filter((m) => !onlyUnpaid || recordOf(p, m.id).status === "unpaid");
     const setRec = (uid, patch) => fire(updateDoc(DX("payments", p.id), Object.fromEntries(Object.entries(patch).map(([k, v]) => [`records.${uid}.${k}`, v]))));
-    return h("article", { class: "card pay-card" },
+    return h("article", { class: "card pay-card", "data-focus": `pay:${p.id}` },
       h("div", { class: "poll-head" }, h("b", null, isExt(p.id) ? fromTag(extPid(p.id)) : null, p.title, h("small", { class: "target-count" }, p.targets ? `対象 ${p.targets.length}人` : "対象 全員")), h("span", { class: "tint" }, `${yen(p.amount)} / 人${p.due ? ` ・ 期限 ${p.due.replaceAll("-", "/")}` : ""}`)),
       p.note ? h("div", { class: "cell-sub pay-note" }, p.note) : null,
       h("div", { class: "pay-progress" },
@@ -7592,14 +7617,14 @@ function adminPushSetup() {
   const store = fileStoreBox();
   const remind = remindBox();
   // 入力欄を作り直すと打っている途中で消えるので、欄は1回だけ作る
-  el.append(group("プッシュ通知の設定（管理者）", [
+  el.append(ownerOnly(group("プッシュ通知の設定（管理者）", [
     field("Worker の URL", url),
     h("button", { class: "cell cell-button", onclick: save }, "URL を保存"),
     h("button", { class: "cell cell-button", onclick: test }, "つながるか確かめる"),
     h("button", { class: "cell cell-button", onclick: genKeys }, "通知用の鍵を作る（最初に1回）"),
     selfBtn,
     out,
-  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。"), status.el, remind.el, store.el);
+  ], "Cloudflare Workers に push-worker/worker.js を置いて、その URL を入れてください（手順は push-worker/README.md）。")), status.el, ownerOnly(remind.el), ownerOnly(store.el));
   return {
     el,
     update() {

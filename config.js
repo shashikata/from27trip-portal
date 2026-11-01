@@ -21,6 +21,10 @@ export const EMAIL_DOMAIN = "island.example.com";
 // 画面上の名前は順に「管理者1」「管理者2」「管理者3」になる
 export const ADMIN_IDS = ["admin1", "admin2", "admin3"];
 
+// 通知・自動リマインド・資料の置き場所・旅行の作成と削除など、触ると影響が大きい設定を変えられる管理者
+// （ほかの管理者には、グレーで「このアカウントでは設定できません」と出る）
+export const OWNER_ADMIN = "admin1";
+
 // アカウントの切り替え：管理者ID → その人の参加者ID（この組み合わせだけ、設定画面から行き来できる）
 export const ACCOUNT_SWITCH = { admin1: "s0406", admin3: { name: "かや", id: "k1201" } }; // ID か、{ name: "名前", id: "見つからないときのID" }（名前からIDを探す）
 
