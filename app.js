@@ -2242,7 +2242,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v75"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v76"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5786,6 +5786,7 @@ function adminMoney({ withTitle = true } = {}) {
         remindToggle(p, "polls", !!p.deadline && pollOpen(p)),
         h("button", { class: "text-btn", onclick: () => (hasSelfVotes(p) ? choosePollPrint(p) : guard(null, () => printPollResult(p))) }, icon("table"), "結果を印刷"),
         h("button", { class: "text-btn", onclick: () => openShareImage("poll", p) }, icon("photo"), "報告用の画像"),
+        p.fromLobby ? null : h("button", { class: "text-btn", onclick: () => openPollEditor(p, votes) }, "編集"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { open: !(p.open !== false) })) }, p.open !== false ? "締め切る" : "受付を再開"),
         h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showResults: !p.showResults })) }, p.showResults ? "集計を参加者に見せない" : "集計を参加者に見せる"),
         p.proposedBy ? h("button", { class: "text-btn", onclick: () => fire(updateDoc(DX("polls", p.id), { showProposer: p.showProposer === false }), p.showProposer === false ? "提案者の名前を公開しました" : "提案者の名前を隠しました") }, p.showProposer === false ? "提案者の名前を出す" : "提案者の名前を隠す") : null,
@@ -8271,6 +8272,82 @@ function exportBuild(parts) {
     parts.map((k) => build[k]()));
 }
 // 管理者：アンケートの結果を印刷（PDF 保存もできる）。順位投票は順位表・何位に何票か・各自の順番、ふつうのアンケートは票数と回答者
+// 管理者：作ったあとでアンケートを直す（質問・選択肢・締切・ひとこと・何位まで）
+// 回答は選択肢の文字で保存しているので、選択肢の名前を変えたら、その選択肢に入っている回答も一緒に書き換える。
+// 選択肢を消したら、そこに入れた回答は「未回答」に戻す（順位投票は、その選択肢だけ順番から外す）
+function openPollEditor(p, votes) {
+  const rank = isRankPoll(p);
+  const named = !!p.optionUids?.length; // 選択肢が参加者の名前のときは、選択肢は直せない（人とつながっているため）
+  const q = h("textarea", { class: "plain", rows: "2", maxlength: "200" });
+  q.value = p.question;
+  const deadline = h("input", { type: "datetime-local", value: p.deadline ?? "" });
+  const allowCom = toggle(!!p.allowComment);
+  const depth = h("input", { type: "number", min: "1", inputmode: "numeric", placeholder: "全部", value: p.depth ?? "" });
+  // 選択肢：元の名前（orig）を覚えておき、変えた・消した・足したを見分ける
+  const rows = p.options.map((o) => ({ orig: o, value: o, removed: false }));
+  const list = h("div", { class: "pe-opts" });
+  const countOf = (o) => votes.filter((v) => (rank ? (v.order ?? []).includes(o) : v.choice === o)).length;
+  const paintOpts = () => setKids(list, rows.map((r, i) => {
+    if (r.removed) return null;
+    const inp = h("input", { type: "text", class: "plain", value: r.value, maxlength: "60", "aria-label": `選択肢${i + 1}` });
+    inp.addEventListener("input", () => { r.value = inp.value; });
+    const n = r.orig ? countOf(r.orig) : 0;
+    return h("div", { class: "pe-opt" }, inp, n ? h("small", { class: "secondary" }, `${n}人`) : null,
+      h("button", { class: "text-btn destructive", type: "button", "aria-label": "この選択肢を消す", onclick: () => {
+        if (n && !confirm(`「${r.orig}」には ${n}人が${rank ? "順位を付けて" : ""}回答しています。消すと、${rank ? "その人たちの順番からこの選択肢が外れます" : "その人たちは未回答に戻ります"}。消しますか？`)) return;
+        if (r.orig) r.removed = true; else rows.splice(i, 1);
+        paintOpts();
+      } }, "消す"));
+  }), h("button", { class: "text-btn", type: "button", onclick: () => { rows.push({ orig: null, value: "", removed: false }); paintOpts(); list.querySelector(".pe-opt:last-of-type input")?.focus(); } }, "＋ 選択肢を足す"));
+  paintOpts();
+  const close = () => box.remove();
+  const save = h("button", { class: "btn-filled", type: "button" }, "保存");
+  save.addEventListener("click", () => guard(save, async () => {
+    const question = q.value.trim();
+    if (!question) return toast("質問を入れてください", true);
+    const patch = { question, deadline: deadline.value || null, allowComment: allowCom.checked };
+    const b = writeBatch(db);
+    let changed = 0;
+    if (!named) {
+      const kept = rows.filter((r) => !r.removed).map((r) => ({ ...r, value: r.value.trim() }));
+      if (kept.some((r) => !r.value)) return toast("空の選択肢があります（いらなければ「消す」を押してください）", true);
+      const names = kept.map((r) => r.value);
+      if (new Set(names).size !== names.length) return toast("同じ名前の選択肢があります", true);
+      if (names.length < 2) return toast("選択肢は2つ以上にしてください", true);
+      const rename = new Map(kept.filter((r) => r.orig && r.orig !== r.value).map((r) => [r.orig, r.value]));
+      const gone = new Set(rows.filter((r) => r.removed).map((r) => r.orig));
+      patch.options = names;
+      for (const v of votes) {
+        if (rank) {
+          const order = (v.order ?? [v.choice]).filter((o) => !gone.has(o)).map((o) => rename.get(o) ?? o);
+          if (JSON.stringify(order) === JSON.stringify(v.order ?? [v.choice])) continue;
+          changed++;
+          if (!order.length) b.delete(DX("votes", v.id));
+          else b.update(DX("votes", v.id), { order, choice: order[0] });
+        } else if (gone.has(v.choice)) { changed++; b.delete(DX("votes", v.id)); }
+        else if (rename.has(v.choice)) { changed++; b.update(DX("votes", v.id), { choice: rename.get(v.choice) }); }
+      }
+    }
+    if (rank) {
+      const dv = Math.floor(Number(depth.value));
+      patch.depth = dv > 0 ? dv : null;
+    }
+    b.update(DX("polls", p.id), patch);
+    await b.commit();
+    toast(changed ? `保存しました（回答 ${changed}件も直しました）` : "保存しました");
+    close();
+  }));
+  const box = h("div", { class: "share-modal", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: "share-panel pe-panel" },
+      h("div", { class: "share-head" }, h("b", null, "アンケートを編集"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+      group(null, [h("div", { class: "cell" }, q), field("締切", deadline), field("ひとことを書ける", allowCom), rank ? field("何位まで付けるか", depth) : null]),
+      named ? h("div", { class: "cell-sub" }, "選択肢が参加者の名前のアンケートは、選択肢を直せません（質問・締切などは直せます）。")
+        : group(`選択肢${votes.length ? `（回答 ${votes.length}人）` : ""}`, [h("div", { class: "cell" }, list)],
+          votes.length ? "名前を変えると、その選択肢に入っている回答も新しい名前に変わります。" : null),
+      save));
+  document.body.append(box);
+  q.focus();
+}
 // 自分にも入れられるアンケート：「全員の評価」「本人の評価を除く」のどちらを印刷するか選ぶ
 function choosePollPrint(p) {
   const close = () => box.remove();
