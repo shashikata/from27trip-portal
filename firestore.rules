@@ -166,12 +166,12 @@ service cloud.firestore {
             && resource.data.get('shown', false) == true && changed().hasOnly(['pos', 'uid', 'at', 'marks']) && serverTime('at')
             && d().get('pos', {}) is map && d().get('pos', {}).size() <= 40 && d().get('marks', {}) is map && d().get('marks', {}).size() <= 200)
         // 試合の記録：公開中の試合で、記録係に指名されている間だけ、担当の分だけ書ける
-        // （タイマー＝時計とピリオド、得点＝goals、シュート＝shots、ファウル・セットプレー＝plays、ボール保持＝poss と hold）。
+        // （タイマー＝時計とピリオド、得点＝goals と PK戦（so・soFirst・soN）、シュート＝shots、ファウル・セットプレー（試合中の PK を含む）＝plays、ボール保持＝poss と hold）。
         // チーム・時間・記録係・公開などの設定は管理者だけ
         || (coll == 'matches' && request.method == 'update' && resource.data.get('shown', false) == true
             && me() in resource.data.get('keepers', []) && serverTime('at')
-            && changed().hasOnly(['running', 'startedAt', 'elapsed', 'cur', 'status', 'goals', 'shots', 'plays', 'poss', 'hold', 'uid', 'at'])
-            && mRole(['running', 'startedAt', 'elapsed', 'cur', 'status'], 'timer') && mRole(['goals'], 'goal')
+            && changed().hasOnly(['running', 'startedAt', 'elapsed', 'cur', 'status', 'goals', 'shots', 'plays', 'poss', 'hold', 'so', 'soFirst', 'soN', 'uid', 'at'])
+            && mRole(['running', 'startedAt', 'elapsed', 'cur', 'status'], 'timer') && mRole(['goals', 'so', 'soFirst', 'soN'], 'goal')
             && mRole(['shots'], 'shot') && mRole(['plays'], 'play') && mRole(['poss', 'hold'], 'poss')
             && (!changed().hasAny(['cur']) || (d().cur is int && d().cur >= 0 && d().cur < resource.data.get('periods', []).size()))
             && (!changed().hasAny(['status']) || d().status in ['ready', 'live', 'done'])
@@ -180,7 +180,10 @@ service cloud.firestore {
             && d().get('shots', {}) is map && d().get('shots', {}).size() <= 600
             && d().get('plays', {}) is map && d().get('plays', {}).size() <= 800
             && d().get('poss', {}) is map && d().get('poss', {}).size() <= 12
-            && d().get('hold', {}) is map && d().get('hold', {}).keys().hasOnly(['home', 'away']))
+            && d().get('hold', {}) is map && d().get('hold', {}).keys().hasOnly(['home', 'away'])
+            && d().get('so', {}) is map && d().get('so', {}).size() <= 80
+            && (!changed().hasAny(['soFirst']) || d().soFirst in [null, 'home', 'away'])
+            && (!changed().hasAny(['soN']) || d().soN == null || (d().soN is int && d().soN >= 1 && d().soN <= 10)))
         // 通知の宛先
         || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200) && d().sub is map && serverTime('at'))
         // パスワードを変えた記録

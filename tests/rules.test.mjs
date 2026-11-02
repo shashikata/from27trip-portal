@@ -325,6 +325,15 @@ await test("試合の記録：ボール保持・ファウルの担当と、外�
   await assertFails(updateDoc(doc(alice(), "matches/m1"), { "hold.x": null, uid: "alice", at: serverTimestamp() }));        // 決まった形だけ
   await assertFails(updateDoc(doc(alice(), "matches/m1"), { running: false, uid: "alice", at: serverTimestamp() }));         // タイマーは担当外
   await assertFails(updateDoc(doc(alice(), "matches/m1"), { "goals.g9": { side: "home", p: 0, t: 1 }, uid: "alice", at: serverTimestamp() })); // 得点は担当外
+  // 試合中の PK（人と○×）はファウル・セットプレーの担当、PK戦は得点の担当
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "plays.k1": { side: "home", k: "pk", pkType: "pk", uid: "alice", r: "o", p: 0, t: 7000 }, uid: "alice", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { soFirst: "home", soN: 5, uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { soFirst: "home", soN: 5, uid: "bob", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { "so.s1": { side: "home", uid: "alice", r: "o", n: 1 }, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { soFirst: "middle", uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { soN: 99, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { "so.s2": { side: "away", r: "x", n: 2 }, uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { so: {}, soFirst: null, soN: null, uid: "bob", at: serverTimestamp() }));
   // 管理者が記録係から外す → すぐ書けない
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), { keepers: ["alice"], roles: { alice: ["poss", "play", "shot"] } }, { merge: true }));
   await assertFails(updateDoc(doc(bob(), "matches/m1"), { running: false, uid: "bob", at: serverTimestamp() }));

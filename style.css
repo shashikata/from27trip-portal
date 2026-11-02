@@ -2299,3 +2299,29 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .keeper-table th { font-size: 11px; font-weight: 600; }
 .keeper-table td, .keeper-table th { padding: 6px 4px; }
 .rp-table.rp-vs th, .rp-table.rp-vs td { text-align: center; width: 33%; }
+
+/* 試合：PK戦 */
+.match-so { font-size: 12px; font-weight: 600; margin-left: 4px; color: var(--label-2); }
+.m-so { background: #2c2c2e; border: 1px solid #48484a; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.m-so-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.m-so-head b { font-size: 16px; }
+.so-win { color: #FFD60A; font-weight: 700; }
+.so-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.so-col { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.so-name { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+.so-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.so-name b { margin-left: auto; font-size: 22px; font-variant-numeric: tabular-nums; }
+.so-kicks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.so-k { display: grid; grid-template-columns: 18px 22px 1fr; align-items: center; gap: 4px; font-size: 13px; }
+.so-k .so-no { color: rgba(235, 235, 245, .5); font-variant-numeric: tabular-nums; }
+.so-k.o b { color: #30D158; }
+.so-k.x b { color: #FF453A; }
+.so-who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.so-next { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: .5px solid rgba(255, 255, 255, .15); }
+.so-turn { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 14px; }
+.so-next input[type=text] { background: #1c1c1e; color: #fff; border: 1px solid #48484a; border-radius: 8px; padding: 8px 10px; font: inherit; }
+.so-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.m-btn.so-o { background: #30D158; color: #000; }
+.m-btn.so-x { background: #FF453A; color: #fff; }
+.m-btn.so-start { background: transparent; border: 2px solid var(--c); color: #fff; font-size: 15px; }
+.match-viewer .cell-sub { color: rgba(235, 235, 245, .65); font-size: 12px; }

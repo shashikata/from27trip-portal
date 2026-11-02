@@ -2305,7 +2305,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v81"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v82"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -3418,13 +3418,20 @@ const M_KINDS = {
   ck: { coll: "plays", role: "play", icon: "◣", label: "コーナーキック" },
   kickin: { coll: "plays", role: "play", icon: "↗", label: "キックイン" },
   fk: { coll: "plays", role: "play", icon: "➚", label: "フリーキック" },
-  pk: { coll: "plays", role: "play", icon: "●", label: "PK・第2PK" },
+  pk: { coll: "plays", role: "play", icon: "●", label: "PK・第2PK", who: "蹴った人" },
   timeout: { coll: "plays", role: "play", icon: "⏸", label: "タイムアウト" },
   sub: { coll: "plays", role: "play", icon: "⇄", label: "交代", who: "出た人" },
 };
 const PLAY_BUTTONS = [["foul", "ファウル"], ["yellow", "カード"], ["ck", "CK"], ["kickin", "キックイン"], ["fk", "FK"], ["pk", "PK"], ["timeout", "タイムアウト"], ["sub", "交代"]];
 const SHOT_RESULTS = [["on", "枠内"], ["off", "枠外"], ["block", "ブロック"], ["post", "ポスト・バー"]];
 const shotResult = (r) => SHOT_RESULTS.find(([v]) => v === r)?.[1] ?? "";
+// どこから（攻めている方向に向かって左・中央・右）と、どの足で
+const ZONES = [["L", "左"], ["C", "中央"], ["R", "右"]];
+const FEET = [["L", "左足"], ["R", "右足"], ["H", "頭"]];
+const PK_RESULTS = [["o", "○ 決まった"], ["x", "× 外れた・止められた"]];
+const zoneText = (z) => { const l = ZONES.find(([v]) => v === z)?.[1]; return l ? `${l}から` : ""; };
+const footText = (f) => FEET.find(([v]) => v === f)?.[1] ?? "";
+const howText = (zone, foot) => { const t = [zoneText(zone), footText(foot)].filter(Boolean).join("・"); return t ? `（${t}）` : ""; };
 const otherSide = (s) => (s === "home" ? "away" : "home");
 
 const sortedMatches = () => [...S.matches.values()].sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
@@ -3437,7 +3444,27 @@ const mClockText = (m) => { const left = mLeft(m); return left >= 0 ? fmtMs(Math
 const mPeriodLabel = (m, i = m.cur ?? 0) => m.periods?.[i]?.label ?? `${i + 1}本目`;
 const evList = (m, coll, k) => Object.entries(m[coll] ?? {}).map(([id, e]) => ({ id, coll, ...e, k: k ?? e.k }));
 const evSort = (a, b) => (a.p ?? 0) - (b.p ?? 0) || (a.t ?? 0) - (b.t ?? 0) || (a.n ?? 0) - (b.n ?? 0);
-const mGoals = (m) => evList(m, "goals", "goal").sort(evSort);
+// 試合中の PK・第2PK が「○」なら、蹴った人のゴールとして点に入れる（ゴールを別に入れなくてよい）
+const pkGoals = (m) => evList(m, "plays").filter((e) => e.k === "pk" && e.r === "o").map((e) => ({ ...e, k: "goal", pk: true, own: false, assist: null }));
+const mGoals = (m) => [...evList(m, "goals", "goal"), ...pkGoals(m)].sort(evSort);
+// PK戦（同点のときに交互に蹴る）：so = { id: { side, uid, name, r: "o" | "x", n, at, by } }, soFirst（先に蹴るチーム）, soN（はじめの本数。そのあとはサドンデス）
+const soKicks = (m) => Object.entries(m.so ?? {}).map(([id, k]) => ({ id, ...k })).sort((a, b) => (a.n ?? 0) - (b.n ?? 0));
+function soResult(m) {
+  const ks = soKicks(m);
+  const H = ks.filter((k) => k.side === "home"), A = ks.filter((k) => k.side === "away");
+  const hg = H.filter((k) => k.r === "o").length, ag = A.filter((k) => k.r === "o").length;
+  const N = m.soN ?? 5;
+  let winner = null;
+  if (H.length <= N && A.length <= N) {
+    // はじめの本数の途中でも、残りを全部決めても追いつけなければ決着
+    const remH = N - H.length, remA = N - A.length;
+    if (hg > ag + remA) winner = "home"; else if (ag > hg + remH) winner = "away";
+  } else if (H.length === A.length && hg !== ag) winner = hg > ag ? "home" : "away"; // サドンデス：同じ本数を蹴って差がついたら決着
+  const first = m.soFirst ?? "home";
+  const next = winner ? null : H.length === A.length ? first : H.length < A.length ? "home" : "away";
+  return { on: !!m.soFirst || ks.length > 0, kicks: ks, H, A, home: hg, away: ag, winner, next, N, sudden: H.length >= N && A.length >= N && !winner };
+}
+const soText = (m) => { const r = soResult(m); return r.on && r.kicks.length ? `（PK ${r.home}-${r.away}）` : ""; };
 const mEvents = (m) => [...evList(m, "goals", "goal"), ...evList(m, "shots", "shot"), ...evList(m, "plays")].filter((e) => M_KINDS[e.k]).sort(evSort);
 const mScore = (m) => { const gs = mGoals(m); return { home: gs.filter((g) => g.side === "home").length, away: gs.filter((g) => g.side === "away").length }; };
 const mSideName = (m, side) => { const s = m[side]; return s?.kind === "team" ? (S.teams.get(s.teamId)?.name ?? s.name ?? "チーム") : (s?.name || (side === "home" ? "ホーム" : "相手")); };
@@ -3608,7 +3635,7 @@ function matchRow(m) {
     h("div", { class: "cell-main" },
       h("div", { class: "match-line" },
         h("span", { class: "team-label" }, dot(mSideColor(m, "home")), mSideName(m, "home")),
-        h("b", { class: "match-score" }, `${sc.home} - ${sc.away}`),
+        h("b", { class: "match-score" }, `${sc.home} - ${sc.away}`, soText(m) ? h("small", { class: "match-so" }, soText(m)) : null),
         h("span", { class: "team-label" }, dot(mSideColor(m, "away")), mSideName(m, "away"))),
       h("div", { class: "cell-sub" }, m.title ? `${m.title}・` : "", mStatusText(m), m.status !== "done" && m.status !== "ready" ? ["　", mClock(m)] : null,
         mine.length ? h("span", { class: "tint you" }, `　記録係（${mine.map(roleLabel).join("・")}）`) : null,
@@ -3625,7 +3652,10 @@ function mTeamStats(m) {
     if (!s) continue;
     if (e.k === "goal") { s.goal++; if (!e.own) { s.shot++; s.on++; } }
     else if (e.k === "shot") { s.shot++; if (e.r === "on") s.on++; }
-    else s[e.k]++;
+    else {
+      s[e.k]++;
+      if (e.k === "pk" && e.r) { s.shot++; if (e.r === "o") { s.goal++; s.on++; } }
+    }
   }
   return r;
 }
@@ -3637,16 +3667,17 @@ function matchStats(ms = sortedMatches()) {
     const sc = mScore(m);
     for (const [side, other] of [["home", "away"], ["away", "home"]]) {
       const id = m[side].teamId;
-      const r = table.get(id) ?? { id, name: mSideName(m, side), color: mSideColor(m, side), n: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 };
+      const r = table.get(id) ?? { id, name: mSideName(m, side), color: mSideColor(m, side), n: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, pkw: 0 };
       r.n++; r.gf += sc[side]; r.ga += sc[other];
-      if (sc[side] > sc[other]) r.w++; else if (sc[side] < sc[other]) r.l++; else r.d++;
+      if (sc[side] > sc[other]) r.w++; else if (sc[side] < sc[other]) r.l++; else { r.d++; if (soResult(m).winner === side) r.pkw++; } // PK戦は引き分けとして数え、PK勝ちを別に数える
       table.set(id, r);
     }
   }
-  const standings = [...table.values()].map((r) => ({ ...r, pts: r.w * 3 + r.d, gd: r.gf - r.ga })).sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  const standings = [...table.values()].map((r) => ({ ...r, pts: r.w * 3 + r.d, gd: r.gf - r.ga })).sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf || b.pkw - a.pkw);
   const pl = new Map();
-  const P = (uid) => { let r = pl.get(uid); if (!r) { r = { uid, g: 0, a: 0, s: 0, on: 0, f: 0, y: 0, rc: 0 }; pl.set(uid, r); } return r; };
+  const P = (uid) => { let r = pl.get(uid); if (!r) { r = { uid, g: 0, a: 0, s: 0, on: 0, f: 0, y: 0, rc: 0, pk: 0, pkn: 0 }; pl.set(uid, r); } return r; };
   for (const m of ms) for (const e of mEvents(m)) {
+    if (e.k === "pk" && e.uid && e.r) { const r = P(e.uid); r.s++; r.pkn++; if (e.r === "o") { r.g++; r.on++; r.pk++; } }
     if (e.k === "goal") { if (e.uid && !e.own) { const r = P(e.uid); r.g++; r.s++; r.on++; } if (e.assist && !e.own) P(e.assist).a++; }
     else if (e.k === "shot" && e.uid) { const r = P(e.uid); r.s++; if (e.r === "on") r.on++; }
     else if (e.k === "foul" && e.uid) P(e.uid).f++;
@@ -3662,11 +3693,11 @@ function matchStatsView() {
   if (!standings.length && !players.length) return null;
   const tbl = (heads, rows) => h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table match-table" }, h("thead", null, h("tr", null, heads.map((x) => h("th", null, x)))), h("tbody", null, rows)));
   return h("section", { class: "group match-stats" },
-    standings.length ? keptFold("m-standings", "仲間内の成績（終わった試合）", tbl(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点"],
-      mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}`, (r, rk) => h("tr", null, h("td", null, rk), h("td", null, h("span", { class: "team-label" }, dot(r.color), r.name)), h("td", null, r.n), h("td", null, r.w), h("td", null, r.d), h("td", null, r.l), h("td", null, r.gf), h("td", null, r.ga), h("td", null, r.gd > 0 ? `+${r.gd}` : r.gd), h("td", null, h("b", null, r.pts))))), true) : null,
-    players.length ? keptFold("m-scorers", "個人成績（得点ランキング）", tbl(["順位", "名前", "得点", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"],
-      mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => h("tr", { class: r.uid === S.user?.uid ? "me" : null }, h("td", null, rk), h("td", null, futsalName(r.uid)), h("td", null, h("b", null, r.g)), h("td", null, r.a), h("td", null, r.s), h("td", null, r.on), h("td", null, r.f), h("td", null, r.y), h("td", null, r.rc)))), false) : null,
-    h("div", { class: "group-footer" }, "勝ち3点・引き分け1点。順位は 勝点→得失点差→得点 の順。シュートはゴールも含みます（オウンゴールは除く）。"));
+    standings.length ? keptFold("m-standings", "仲間内の成績（終わった試合）", tbl(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点", ...(standings.some((r) => r.pkw) ? ["PK勝"] : [])],
+      mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}|${r.pkw}`, (r, rk) => h("tr", null, h("td", null, rk), h("td", null, h("span", { class: "team-label" }, dot(r.color), r.name)), h("td", null, r.n), h("td", null, r.w), h("td", null, r.d), h("td", null, r.l), h("td", null, r.gf), h("td", null, r.ga), h("td", null, r.gd > 0 ? `+${r.gd}` : r.gd), h("td", null, h("b", null, r.pts)), standings.some((x) => x.pkw) ? h("td", null, r.pkw) : null))), true) : null,
+    players.length ? keptFold("m-scorers", "個人成績（得点ランキング）", tbl(["順位", "名前", "得点", "うちPK", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"],
+      mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => h("tr", { class: r.uid === S.user?.uid ? "me" : null }, h("td", null, rk), h("td", null, futsalName(r.uid)), h("td", null, h("b", null, r.g)), h("td", null, r.pkn ? `${r.pk}/${r.pkn}` : "—"), h("td", null, r.a), h("td", null, r.s), h("td", null, r.on), h("td", null, r.f), h("td", null, r.y), h("td", null, r.rc)))), false) : null,
+    h("div", { class: "group-footer" }, "勝ち3点・引き分け1点（PK戦は引き分けとして数え、PK勝ちを別に表示）。順位は 勝点→得失点差→得点→PK勝ち の順。シュートはゴールと試合中の PK を含みます（オウンゴールは除く）。「うちPK」は 決めた数/蹴った数（PK戦は入れない）。"));
 }
 // 参加者・管理者のチームの画面に出す「試合」の欄
 function matchesBlock() {
@@ -3782,10 +3813,12 @@ function openMatchEditor(m = null) {
 }
 
 // 記録の1行の文
-function evText(m, e) {
+function evText(m, e) { return evText0(m, e).replace(/\s+/g, " ").trim(); }
+function evText0(m, e) {
   const K = M_KINDS[e.k];
-  if (e.k === "goal") return e.own ? `オウンゴール${evWho(e) ? `（${evWho(e)}）` : ""}` : `ゴール ${evWho(e)}${e.assist ? `（アシスト ${futsalName(e.assist)}）` : ""}`;
-  if (e.k === "shot") return `シュート${e.r ? `（${shotResult(e.r)}）` : ""} ${evWho(e)}`;
+  if (e.k === "goal") return e.own ? `オウンゴール${evWho(e) ? `（${evWho(e)}）` : ""}` : `ゴール ${evWho(e)}${howText(e.zone, e.foot)}${e.assist ? ` アシスト ${futsalName(e.assist)}${howText(e.azone, e.afoot)}` : ""}`;
+  if (e.k === "shot") return `シュート${e.r ? `（${shotResult(e.r)}）` : ""} ${evWho(e)}${howText(e.zone, e.foot)}`;
+  if (e.k === "pk") return `${e.pkType === "2nd" ? "第2PK" : "PK"}${e.r === "o" ? " ○ 決まった" : e.r === "x" ? " × 失敗" : ""} ${evWho(e)}`.trim();
   if (e.k === "sub") return `交代 ${evWho(e) ? `OUT ${evWho(e)}` : ""}${e.inUid || e.inName ? ` → IN ${evWho(e, "inUid", "inName")}` : ""}`;
   return `${K.label} ${evWho(e)}`.trim();
 }
@@ -3815,6 +3848,8 @@ function openMatch(id) {
   const body = h("div", { class: "match-body" }, topBox, possEl, restBox);
   let pick = null; // 詳しく入れている記録 { coll, id }
   let tab = "log";
+  let soPick = null; // PK戦で次に蹴る人 { side, uid, name }
+  let soN = "5";      // PK戦のはじめの本数（始めるときに選ぶ）
   const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); if (pick) { pick = null; update(); } else close(); } };
   const close = () => { holdEnd(); el.remove(); document.removeEventListener("keydown", onKey, true); if (matchOpenId === id) matchOpenId = null; if (MATCH_UI?.id === id) MATCH_UI = null; };
   const el = h("div", { class: "board-viewer match-viewer", role: "dialog", "aria-modal": "true", "aria-label": "試合" },
@@ -3822,7 +3857,7 @@ function openMatch(id) {
   document.body.append(el);
   document.addEventListener("keydown", onKey, true);
   redrawOnLeave(el);
-  const add = (m, k, side, extra) => { const r = mAddEvent(m, k, side, extra); if (r && !["ck", "kickin", "fk", "pk", "timeout"].includes(k)) { pick = r; update(); } };
+  const add = (m, k, side, extra) => { const r = mAddEvent(m, k, side, extra); if (r && !["ck", "kickin", "fk", "timeout"].includes(k)) { pick = r; update(); } };
   // 記録を詳しく入れる欄（誰が・結果・時間）
   const picker = (m) => {
     const raw = pick && m[pick.coll]?.[pick.id];
@@ -3859,9 +3894,20 @@ function openMatch(id) {
       h("div", { class: "m-picker-head" }, h("b", null, `${K.icon} ${e.k === "yellow" || e.k === "red" ? "カード" : K.label}（${mSideName(m, e.side)}）`), h("button", { class: "text-btn", onclick: () => { pick = null; update(); } }, "完了")),
       e.k === "goal" ? optChips("種類", [["n", "ふつうのゴール"], ["own", "オウンゴール"]], e.own ? "own" : "n", (v) => set({ own: v === "own", uid: null, name: "", assist: null })) : null,
       e.k === "goal" ? chips("uid", "name", e.own ? `入れてしまった人（${mSideName(m, otherSide(e.side))}）` : "決めた人") : null,
+      e.k === "goal" && !e.own ? optChips("どこから（攻める方向に向かって）", ZONES, e.zone, (v) => set({ zone: e.zone === v ? null : v })) : null,
+      e.k === "goal" && !e.own ? optChips("どの足で", FEET, e.foot, (v) => set({ foot: e.foot === v ? null : v })) : null,
       e.k === "goal" && !e.own && !ext ? chips("assist", "assistName", "アシスト", e.side, e.uid) : null,
+      e.k === "goal" && !e.own && e.assist ? optChips("アシストはどこから", ZONES, e.azone, (v) => set({ azone: e.azone === v ? null : v })) : null,
+      e.k === "goal" && !e.own && e.assist ? optChips("アシストの足", FEET, e.afoot, (v) => set({ afoot: e.afoot === v ? null : v })) : null,
+      e.k === "goal" ? h("div", { class: "cell-sub" }, "PK・第2PK の得点は、ここではなく「PK」で ○ にすると自動で入ります。") : null,
       e.k === "shot" ? optChips("結果", SHOT_RESULTS, e.r, (v) => set({ r: e.r === v ? null : v })) : null,
       e.k === "shot" ? chips("uid", "name", "打った人") : null,
+      e.k === "shot" ? optChips("どこから（攻める方向に向かって）", ZONES, e.zone, (v) => set({ zone: e.zone === v ? null : v })) : null,
+      e.k === "shot" ? optChips("どの足で", FEET, e.foot, (v) => set({ foot: e.foot === v ? null : v })) : null,
+      e.k === "pk" ? optChips("種類", [["pk", "PK"], ["2nd", "第2PK"]], e.pkType ?? "pk", (v) => set({ pkType: v })) : null,
+      e.k === "pk" ? chips("uid", "name", "蹴った人") : null,
+      e.k === "pk" ? optChips("結果", PK_RESULTS, e.r, (v) => set({ r: e.r === v ? null : v })) : null,
+      e.k === "pk" ? h("div", { class: "cell-sub" }, "○ にすると、蹴った人のゴールとして点に入ります（ゴールを別に入れる必要はありません）。") : null,
       e.k === "yellow" || e.k === "red" ? optChips("色", [["yellow", "イエロー"], ["red", "レッド"]], e.k, (v) => set({ k: v })) : null,
       e.k === "foul" || e.k === "yellow" || e.k === "red" || e.k === "sub" ? chips("uid", "name", K.who) : null,
       e.k === "sub" ? chips("inUid", "inName", "入った人", e.side, e.uid) : null,
@@ -3955,19 +4001,68 @@ function openMatch(id) {
     const tabs = segmented([{ value: "log", label: `記録（${evs.length}）` }, { value: "stats", label: "チームの数" }], tab);
     tabs.addEventListener("change", () => { tab = tabs.value; update(); });
     const pk = picker(m);
+    // PK戦（同点で試合終了のあと。得点係・管理者が記録）
+    const so = soResult(m);
+    let soPanel = null;
+    if (so.on) {
+      const col = (sd) => h("div", { class: `so-col ${sd}` },
+        h("div", { class: "so-name" }, dot(mSideColor(m, sd)), h("span", null, mSideName(m, sd)), h("b", null, so[sd])),
+        h("ol", { class: "so-kicks" }, (sd === "home" ? so.H : so.A).map((k, i) => h("li", { class: `so-k ${k.r}` },
+          h("span", { class: "so-no" }, i + 1), h("b", null, k.r === "o" ? "○" : "×"), h("span", { class: "so-who" }, evWho(k) || "—")))));
+      const ns = so.next;
+      const canSo = can("goal");
+      if (soPick && soPick.side !== ns) soPick = null;
+      let pickRow = null;
+      if (canSo && ns) {
+        if (m[ns]?.kind === "ext") {
+          const inp = h("input", { type: "text", placeholder: "蹴る人（任意。背番号や名前）", maxlength: "20", value: soPick?.name ?? "" });
+          inp.addEventListener("input", () => { soPick = { side: ns, uid: null, name: inp.value.trim() }; });
+          pickRow = inp;
+        } else {
+          pickRow = h("div", { class: "m-chips" }, mSideMembers(m, ns).map((c) => h("button", { class: `m-chip${soPick?.uid === c.id ? " on" : ""}`, onclick: () => { soPick = soPick?.uid === c.id ? null : { side: ns, uid: c.id, name: "" }; update(); } }, futsalName(c.id))));
+        }
+      }
+      const kick = (r) => {
+        const kid = newEvId();
+        const who = soPick?.side === ns ? soPick : null;
+        mUpdate(m, { [`so.${kid}`]: { side: ns, uid: who?.uid ?? null, name: who?.name ?? "", r, n: Date.now(), at: serverTimestamp(), by: S.user.uid } }, `PK戦：${mSideName(m, ns)} ${r === "o" ? "○" : "×"}`);
+        soPick = null;
+      };
+      const last = so.kicks.at(-1);
+      soPanel = h("div", { class: "m-so" },
+        h("div", { class: "m-so-head" }, h("b", null, "PK戦"),
+          h("span", { class: so.winner ? "so-win" : "secondary" }, so.winner ? `${mSideName(m, so.winner)} の勝ち（${so.home}-${so.away}）` : so.sudden ? "サドンデス（同じ本数で差がついたら決着）" : `${so.N}人ずつ（そのあとはサドンデス）`)),
+        h("div", { class: "so-cols" }, col("home"), col("away")),
+        canSo && ns ? h("div", { class: "so-next" },
+          h("div", { class: "so-turn" }, "次は ", dot(mSideColor(m, ns)), h("b", null, mSideName(m, ns)), " の番（蹴る人は選ばなくてもよい）"),
+          pickRow,
+          h("div", { class: "so-btns" }, h("button", { class: "m-btn so-o", onclick: () => kick("o") }, "○ 決まった"), h("button", { class: "m-btn so-x", onclick: () => kick("x") }, "× 失敗"))) : null,
+        canSo ? h("div", { class: "m-period-btns" },
+          last ? h("button", { class: "text-btn", onclick: () => mUpdate(m, { [`so.${last.id}`]: deleteField() }, "最後の1本を取り消しました") }, "最後の1本を取り消す") : null,
+          h("button", { class: "text-btn destructive", onclick: () => { if (confirm("PK戦の記録を全部消しますか？")) mUpdate(m, { so: {}, soFirst: null, soN: null }, "PK戦を取り消しました"); } }, "PK戦をやめる")) : null);
+    } else if (can("goal") && m.status === "done" && sc.home === sc.away) {
+      const nSel = segmented([{ value: "5", label: "5人ずつ" }, { value: "3", label: "3人ずつ" }], soN);
+      nSel.addEventListener("change", () => { soN = nSel.value; });
+      soPanel = h("div", { class: "m-so start" },
+        h("div", { class: "m-so-head" }, h("b", null, "同点です。PK戦をしますか？")),
+        h("div", { class: "m-tabs" }, nSel),
+        h("div", { class: "so-btns" }, ["home", "away"].map((sd) => h("button", { class: "m-btn so-start", style: `--c:${mSideColor(m, sd)}`, onclick: () => mUpdate(m, { soFirst: sd, soN: Number(soN) }, "PK戦を始めました") }, `${mSideName(m, sd)} から蹴る`))),
+        h("p", { class: "secondary" }, "はじめの人数を蹴って決まらなければ、1人ずつのサドンデスになります。"));
+    }
     setKids(topBox,
       h("div", { class: "m-board" },
         side("home"),
         h("div", { class: "m-center" },
           h("div", { class: "m-period" }, m.status === "done" ? "試合終了" : `${mPeriodLabel(m)}（${m.periods?.[cur]?.min ?? "?"}分）`),
           mClock(m, "big"),
-          h("div", { class: "m-state secondary" }, m.status === "done" ? "" : m.running ? "進行中" : mElapsed(m) > 0 ? "停止中" : "開始前")),
+          h("div", { class: "m-state secondary" }, m.status === "done" ? (so.on && so.kicks.length ? `PK ${so.home}-${so.away}` : "") : m.running ? "進行中" : mElapsed(m) > 0 ? "停止中" : "開始前")),
         side("away")));
     setKids(restBox,
       pk,
       rec,
       timer,
       m.status === "done" && can("timer") ? h("div", { class: "m-controls" }, h("button", { class: "text-btn", onclick: () => mUpdate(m, { status: "live" }, "試合終了を取り消しました") }, "試合終了を取り消す")) : null,
+      soPanel,
       h("div", { class: "m-section" }, h("div", { class: "m-tabs" }, tabs), tab === "log" ? log : stats),
       roles.length && !S.isAdmin ? h("p", { class: "secondary" }, `あなたはこの試合の記録係です（担当：${roles.map(roleLabel).join("・")}）。管理者が外すと記録できなくなります。`) : null,
       !roles.length ? h("p", { class: "secondary" }, "記録係が時計を動かしたり記録したりすると、この画面にそのまま反映されます。") : null,
@@ -9622,9 +9717,9 @@ function exportBuild(parts) {
       const { standings, players } = matchStats(all);
       const sign = (n) => (n > 0 ? `+${n}` : String(n));
       return sec("試合の記録",
-        standings.length ? [h("h3", null, "仲間内の成績（終わった試合）"), T(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点"], mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}`, (r, rk) => [rk, r.name, r.n, r.w, r.d, r.l, r.gf, r.ga, sign(r.gd), r.pts])),
-          h("p", { class: "rp-sub" }, "勝ち3点・引き分け1点。順位は 勝点→得失点差→得点 の順。")] : null,
-        players.length ? [h("h3", null, "個人成績"), T(["順位", "名前", "得点", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"], mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => [rk, futsalName(r.uid), r.g, r.a, r.s, r.on, r.f, r.y, r.rc]))] : null,
+        standings.length ? [h("h3", null, "仲間内の成績（終わった試合）"), T(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点", "PK勝"], mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}|${r.pkw}`, (r, rk) => [rk, r.name, r.n, r.w, r.d, r.l, r.gf, r.ga, sign(r.gd), r.pts, r.pkw])),
+          h("p", { class: "rp-sub" }, "勝ち3点・引き分け1点（PK戦は引き分けとして数え、PK勝ちを別に表示）。順位は 勝点→得失点差→得点→PK勝ち の順。")] : null,
+        players.length ? [h("h3", null, "個人成績"), T(["順位", "名前", "得点", "うちPK", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"], mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => [rk, futsalName(r.uid), r.g, r.pkn ? `${r.pk}/${r.pkn}` : "—", r.a, r.s, r.on, r.f, r.y, r.rc]))] : null,
         all.length ? all.map((m) => {
           const sc = mScore(m), st = mTeamStats(m), pc = mPossPct(m);
           const hn = mSideName(m, "home"), an = mSideName(m, "away");
@@ -9632,8 +9727,9 @@ function exportBuild(parts) {
             .map(([l, k]) => [st.home[k], l, st.away[k]]);
           if (pc) rows.splice(3, 0, [`${pc.home}%`, "ボール保持率", `${pc.away}%`]);
           return h("div", { class: "rp-block" },
-            h("h3", null, `${m.title ? `${m.title}：` : ""}${hn} ${sc.home} - ${sc.away} ${an}`, h("small", null, `（${m.status === "done" ? "試合終了" : "途中"}・${(m.periods ?? []).map((p) => `${p.label}${p.min}分`).join("／")}）`)),
+            h("h3", null, `${m.title ? `${m.title}：` : ""}${hn} ${sc.home} - ${sc.away} ${an}${soText(m)}`, h("small", null, `（${m.status === "done" ? "試合終了" : "途中"}・${(m.periods ?? []).map((p) => `${p.label}${p.min}分`).join("／")}）`)),
             T([hn, "", an], rows, "rp-vs"),
+            (() => { const so = soResult(m); if (!so.kicks.length) return null; const n = Math.max(so.H.length, so.A.length); const cellOf = (k) => (k ? `${k.r === "o" ? "○" : "×"} ${evWho(k)}`.trim() : ""); return [h("p", { class: "rp-sub" }, `PK戦：${hn} ${so.home} - ${so.away} ${an}${so.winner ? `（${mSideName(m, so.winner)} の勝ち）` : ""}`), T(["本目", hn, an], Array.from({ length: n }, (_, i) => [i + 1, cellOf(so.H[i]), cellOf(so.A[i])]), "rp-vs")]; })(),
             mEvents(m).length ? T(["時間（経過）", "チーム", "出来事", "入力した時刻・人"], mEvents(m).map((e) => [`${mPeriodLabel(m, e.p)} ${fmtMs(e.t ?? 0)}`, mSideName(m, e.side), evText(m, e), `${fmtClockAt(e.at)}${e.by ? `・${byName(e.by)}` : ""}`])) : none("記録はありません"));
         }) : none("試合はまだありません"));
     },
