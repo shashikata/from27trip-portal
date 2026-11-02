@@ -28,6 +28,9 @@ export const OWNER_ADMIN = "admin1";
 // アカウントの切り替え：管理者ID → その人の参加者ID（この組み合わせだけ、設定画面から行き来できる）
 export const ACCOUNT_SWITCH = { admin1: "s0406", admin3: { name: "かや", id: "k1201" } }; // ID か、{ name: "名前", id: "見つからないときのID" }（名前からIDを探す）
 
+// 管理者どうしの切り替え：左の管理者から、右の管理者に切り替えられる（逆はできない）
+export const ADMIN_SWITCH = { admin1: ["admin2", "admin3"] };
+
 // ===== ここから下は触らなくてよい =====
 
 export const USE_EMULATOR = ["localhost", "127.0.0.1"].includes(location.hostname);

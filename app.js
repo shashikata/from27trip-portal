@@ -9,23 +9,38 @@ import {
   collection, doc, query, where, onSnapshot, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, deleteField,
   writeBatch, serverTimestamp, arrayUnion, increment, orderBy, limit, runTransaction, Bytes, arrayRemove,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH, OWNER_ADMIN } from "./config.js";
+import { firebaseConfig, APP_TITLE, EMAIL_DOMAIN, ADMIN_IDS, USE_EMULATOR, ACCOUNT_SWITCH, OWNER_ADMIN, ADMIN_SWITCH } from "./config.js";
 
 // ---------------------------------------------------------------- Firebase
 
 // アカウントの切り替え（config.js の ACCOUNT_SWITCH の組み合わせだけ）。
 // 管理者と参加者で別々の Firebase のインスタンスを使い、それぞれのログイン状態を端末に残しておく。
 // 切り替えは「どちらを使うか」を端末に保存して読み込み直すだけなので、パスワードをアプリが保存することはない
-const SWITCH_KEY = "island.activeAccount"; // "alt" なら参加者側（別インスタンス）
+const SWITCH_KEY = "island.activeAccount"; // "alt" なら参加者側、"admin:<ID>" なら別の管理者（どちらも別インスタンス）
 const SWITCH_FROM_KEY = "island.switchFrom"; // 切り替え元の管理者ID
 const SWITCH_TARGET_KEY = "island.switchTarget"; // 切り替え先の参加者ID（名前から探したときのため）
-const altSession = (() => { try { return localStorage.getItem(SWITCH_KEY) === "alt"; } catch { return false; } })();
 const switchFrom = (() => { try { return localStorage.getItem(SWITCH_FROM_KEY); } catch { return null; } })();
-const switchTarget = altSession && switchFrom ? (() => {
+// 管理者どうしの切り替え（config.js の ADMIN_SWITCH に書いた向きだけ。管理者1 → 2・3 はできるが、2・3 → 1 はできない）
+const adminSwitchTo = (() => {
+  try {
+    const v = localStorage.getItem(SWITCH_KEY) ?? "";
+    const id = v.startsWith("admin:") ? v.slice(6) : null;
+    return id && (ADMIN_SWITCH?.[switchFrom] ?? []).includes(id) ? id : null;
+  } catch { return null; }
+})();
+const altSession = (() => { try { return localStorage.getItem(SWITCH_KEY) === "alt"; } catch { return false; } })() || !!adminSwitchTo;
+const switchTarget = adminSwitchTo ?? (altSession && switchFrom ? (() => {
   const spec = (ACCOUNT_SWITCH ?? {})[switchFrom];
   if (typeof spec === "string") return spec;
   try { return localStorage.getItem(SWITCH_TARGET_KEY); } catch { return null; }
-})() : null;
+})() : null);
+function switchToAdmin(fromId, adminId) {
+  try {
+    localStorage.setItem(SWITCH_KEY, `admin:${adminId}`);
+    localStorage.setItem(SWITCH_FROM_KEY, fromId);
+  } catch { return toast("この端末では切り替えられません（保存できません）", true); }
+  location.reload();
+}
 function switchAccount(toAlt, fromId, targetId) {
   try {
     localStorage.setItem(SWITCH_KEY, toAlt ? "alt" : "main");
@@ -48,7 +63,9 @@ let authBooting = true;
   };
 }
 
-const fbApp = altSession ? initializeApp(firebaseConfig, "switch-alt") : initializeApp(firebaseConfig);
+// 切り替え先ごとに別のインスタンスを使う（それぞれのログインが端末に残るので、2回目からはパスワード不要）
+const fbApp = adminSwitchTo ? initializeApp(firebaseConfig, `switch-admin-${adminSwitchTo}`)
+  : altSession ? initializeApp(firebaseConfig, "switch-alt") : initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
 // 一度受信したデータを端末に保存し、電波がなくても表示できるようにする
 const db = initializeFirestore(fbApp, {
@@ -1954,7 +1971,7 @@ function loginView() {
     h("img", { class: "app-icon", src: "icon-192.png", alt: "" }),
     h("h1", null, "旅行ポータル"),
     ptPending ? h("p", { class: "pt-login-note" }, "ポイントQRを読み取りました。ログインするとポイントを受け取れます。") : null,
-    h("p", { class: "secondary" }, switchTarget ? `参加者アカウント（${switchTarget}）でログインしてください。次からはログインしたまま切り替えられます。` : "配られたIDとパスワードでログインしてください。"),
+    h("p", { class: "secondary" }, switchTarget ? `${adminSwitchTo ? adminName(idToEmail(adminSwitchTo)) : "参加者アカウント"}（${switchTarget}）でログインしてください。次からはログインしたまま切り替えられます。` : "配られたIDとパスワードでログインしてください。"),
     h("form", {
       onsubmit: (e) => {
         e.preventDefault();
@@ -2216,19 +2233,24 @@ function settingsView({ withTitle = true } = {}) {
   const myId = emailToId(S.user.email);
   const spec = S.isAdmin && !altSession ? (ACCOUNT_SWITCH ?? {})[myId] : null;
   const switchBox = h("div");
+  // 管理者どうしの切り替え（config.js の ADMIN_SWITCH の向きだけ。切り替えた先からさらに切り替えることはできない）
+  const adminTargets = S.isAdmin && !altSession ? (ADMIN_SWITCH?.[myId] ?? []) : [];
+  const adminBtns = () => adminTargets.map((id) => h("button", { class: "cell cell-button", onclick: () => switchToAdmin(myId, id) }, icon("lock"), `${adminName(idToEmail(id))}（${id}）に切り替える`));
+  const switchNote = "初回だけパスワードを入れてログインします。今のログインはそのまま残るので、戻るときは入力不要です。";
   // 切り替え先：ID で書いてあればそのまま、名前で書いてあれば参加者の一覧（なければアカウントの一覧）から ID を探す
   const paintSwitch = (target, label) => setKids(switchBox, target
-    ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, target) }, icon("people"), `参加者アカウント（${label ? `${label}・` : ""}${target}）に切り替える`),
-      "初回だけパスワードを入れてログインします。管理者のログインはそのまま残るので、戻るときは入力不要です。")
-    : altSession ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(false) }, icon("people"), `管理者アカウント（${adminName(idToEmail(switchFrom ?? "admin1"))}）に戻る`))
-    : spec ? group("アカウントの切り替え", cell(h("span", { class: "secondary" }, `「${spec.name}」さんのアカウントが見つかりません（名前が変わっていないか確認してください）`)))
+    ? group("アカウントの切り替え", [h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, target) }, icon("people"), `参加者アカウント（${label ? `${label}・` : ""}${target}）に切り替える`), ...adminBtns()], switchNote)
+    : altSession ? group("アカウントの切り替え", h("button", { class: "cell cell-button", onclick: () => switchAccount(false) }, icon("people"), `${adminSwitchTo ? "" : "管理者アカウント（"}${adminName(idToEmail(switchFrom ?? "admin1"))}${adminSwitchTo ? "" : "）"}に戻る`),
+      adminSwitchTo ? `${adminName(idToEmail(switchFrom ?? "admin1"))}から切り替えて、${adminName(S.user.email)}で使っています。` : null)
+    : spec ? group("アカウントの切り替え", [cell(h("span", { class: "secondary" }, `「${spec.name}」さんのアカウントが見つかりません（名前が変わっていないか確認してください）`)), ...adminBtns()], adminTargets.length ? switchNote : null)
+    : adminTargets.length ? group("アカウントの切り替え", adminBtns(), switchNote)
     : null);
   if (typeof spec === "string") paintSwitch(spec);
   else if (spec?.name) {
     const pools = [S.members, S.lobbyMembers, ...S.extMembers.values()].filter(Boolean);
     const hits = [...new Set(pools.flatMap((m) => [...m.values()].filter((x) => x.name === spec.name && x.loginId).map((x) => x.loginId)))];
     if (hits.length === 1) paintSwitch(hits[0], spec.name);
-    else if (hits.length > 1) setKids(switchBox, group("アカウントの切り替え", hits.map((id) => h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, id) }, icon("people"), `参加者アカウント（${spec.name}・${id}）に切り替える`)), `「${spec.name}」さんが${hits.length}人いるので、IDで選んでください。`));
+    else if (hits.length > 1) setKids(switchBox, group("アカウントの切り替え", [...hits.map((id) => h("button", { class: "cell cell-button", onclick: () => switchAccount(true, myId, id) }, icon("people"), `参加者アカウント（${spec.name}・${id}）に切り替える`)), ...adminBtns()], `「${spec.name}」さんが${hits.length}人いるので、IDで選んでください。`));
     else getDocs(query(collection(db, "accounts"), where("name", "==", spec.name))).then((qs) => paintSwitch(qs.docs[0]?.id ?? spec.id ?? null, spec.name)).catch(() => paintSwitch(spec.id ?? null, spec.name));
   } else paintSwitch(null);
   const pushBox = pushSettingsBox();
@@ -2256,7 +2278,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v78"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v79"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
