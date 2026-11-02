@@ -223,6 +223,7 @@ const S = {
   attrDefs: new Map(),       // 管理者：参加者の属性の項目 attrDefs/{id} { name, options: [..], order }
   memberAttrs: new Map(),    // 管理者：参加者ごとの属性 memberAttrs/{uid} { values: { 項目id: 値 } }
   futsal: null,              // フットサルチーム用の旅行：config/futsal（選手名簿・役割）
+  matches: new Map(),        // フットサルの試合 matches/{id}（タイマー・得点・シュートなど。参加者には公開したものだけ）
   ptQrs: new Map(),          // ポイントQR ptQrs/{id}（管理者）
   ptClaims: new Map(),       // ポイントQRの受け取り記録 ptClaims/{id}（管理者）
   locGroups: new Map(),      // 位置の共有グループ locGroups/{id} { name, members: [uid] }（管理者が作る）
@@ -353,6 +354,7 @@ function startAdmin() {
     listen("allocs", C("allocs"), (s) => { if (s) S.allocs = toMap(s); });
     listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
     listen("futsal", D("config", "futsal"), (s) => { S.futsal = s?.exists() ? s.data() : null; });
+    listen("matches", C("matches"), (s) => { if (s) { S.matches = new Map(s.docs.map((d) => [d.id, { id: d.id, ...d.data({ serverTimestamps: "estimate" }) }])); MATCH_UI?.update(); } });
   }
   listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
@@ -500,6 +502,7 @@ function startMemberData(uid) {
     listen("allocs", published("allocs"), (s) => { if (s) S.allocs = toMap(s); });
     listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
     listen("futsal", D("config", "futsal"), (s) => { S.futsal = s?.exists() ? s.data() : null; });
+    listen("matches", query(C("matches"), where("shown", "==", true)), (s) => { if (s) { S.matches = new Map(s.docs.map((d) => [d.id, { id: d.id, ...d.data({ serverTimestamps: "estimate" }) }])); MATCH_UI?.update(); } });
   }
   const memRef = C("memberships");
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
@@ -667,7 +670,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, futsal: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, futsal: null, matches: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -2126,11 +2129,11 @@ function memberSummary() {
         { t: S.teams.get(teamOfIn(uid, s.id)), secret: false },
         { t: S.teams.get(trueTeamOf(uid, s.id)), secret: true },
       ]).filter((x) => x.t);
-      el.replaceChildren(...[
+      el.replaceChildren(...(noPoints() ? [] : [
         inLobby() ? null : tile("あなた", ptTotal("user", uid)),
         ...teams.map(({ t, secret }) => tile(t.name, ptTotal("team", t.id), t.color,
           secret ? "本当のチーム（あなただけ）" : S.sets.get(t.setId)?.name)),
-      ].filter(Boolean));
+      ]).filter(Boolean));
       // やること（未回答のアンケート・未入金）
       const todo = [myUnanswered(uid) ? `未回答のアンケート ${myUnanswered(uid)}件` : null, myUnpaid(uid) ? `未入金 ${yen(myUnpaid(uid))}` : null].filter(Boolean);
       // QR でログインした直後の案内（ホーム画面に追加したアプリは、iPhone ではログイン状態が別になる）
@@ -2147,7 +2150,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2243,7 +2246,7 @@ function profilesGroup() {
           h("button", { class: "cell cell-button", onclick: () => guard(null, () => createProfile("futsal")) }, icon("plus"), "⚽ フットサルチームの旅行を作る"),
           !inLobby() ? field("今の旅行をフットサルチーム用にする", kindToggle()) : null,
           !S.profiles.has(LOBBY) ? h("button", { class: "cell cell-button", onclick: () => guard(null, createLobby) }, icon("people"), "確定前ページを作る（今の参加者を全員未確定にする）") : null)) : null,
-      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。フットサルチーム用にすると、チームの画面で選手名簿（背番号・ポジション・利き足）・役割・フォーメーションを登録できます。" : null));
+      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。フットサルチーム用にすると、チームの画面で選手名簿（背番号・ポジション・利き足）・役割・フォーメーション・試合の記録（タイマー・得点・シュート・ファウル・ボール保持）を使えます。ポイントの機能（ポイントの画面・右上の pt・ポイントQR）は出なくなります（データは消えません）。" : null));
     },
   };
 }
@@ -2302,7 +2305,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v80"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v81"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2764,6 +2767,9 @@ function attrEditor() {
 //                   参加者も読める（config は全員が読める）。書けるのは管理者だけ
 //   teams/{id}.lineup = { f: "121" | "22" | "31", s: [uid | null ×5] }  先発5人（GK が先頭）。残りのメンバーは控え
 const isFutsal = () => S.config?.kind === "futsal" && !inLobby();
+// フットサルチーム用の旅行では、無人島の旅行のようなポイント機能（ポイントの画面・右上の pt・ポイントQR）を出さない
+const noPoints = () => isFutsal();
+const withoutPoints = (tabs) => (noPoints() ? tabs.filter((t) => t.key !== "points") : tabs);
 const FUTSAL_POS = [
   { value: "GK", label: "GK（ゴレイロ）", short: "GK" },
   { value: "FIXO", label: "フィクソ", short: "FIX" },
@@ -2913,6 +2919,7 @@ function lineupEditor(teamId) {
 // 管理者：選手名簿（背番号・ポジション・利き足）と役割
 function futsalRosterEditor() {
   const rosterBox = h("div");
+  const matchesBox = h("div", { class: "matches-box" });
   const rolesBox = h("div");
   const roleName = h("input", { type: "text", class: "plain", placeholder: "例：会計 / 車出し / ビブス係", maxlength: "12" });
   const addRole = h("form", { onsubmit: (e) => {
@@ -2926,6 +2933,7 @@ function futsalRosterEditor() {
   const el = h("div", { class: "futsal-editor" },
     h("div", { class: "group-header standalone" }, "⚽ 選手名簿と役割"),
     group(null, boardButton(), "選手・相手・ボールを動かして作戦を説明できます。開いている参加者の画面にもリアルタイムで反映されます。"),
+    matchesBox,
     keptFold("futsal-roster", "選手名簿（背番号・ポジション・利き足）", rosterBox, true),
     keptFold("futsal-roles", "役割（誰が何の係か）", h("div", null, rolesBox, addRole), true));
   redrawOnLeave(el);
@@ -2934,6 +2942,10 @@ function futsalRosterEditor() {
     el,
     update() {
       if (typingIn(el)) return;
+      if (matchesBox._m !== S.matches || matchesBox._t !== S.teams || matchesBox._mem !== S.members) {
+        matchesBox._m = S.matches; matchesBox._t = S.teams; matchesBox._mem = S.members;
+        setKids(matchesBox, matchesBlock());
+      }
       const key = [S.futsal, S.members];
       if (last && last[0] === key[0] && last[1] === key[1]) return;
       last = key;
@@ -3021,6 +3033,7 @@ function futsalMemberBlocks(uid) {
   ].filter(Boolean);
   return [
     group(null, boardButton(), "管理者が選手やボールを動かすと、開いている人の画面にそのまま反映されます。"),
+    ...matchesBlock(),
     mine.length ? group("⚽ あなた", mine) : null,
     roles.length ? group("役割分担", roles.map(({ r, who }) => cell(r.name, h("span", { class: "role-names" }, who.map((u) => h("span", { class: u === uid ? "tint you" : null }, memberName(u))).reduce((a, x, i) => (i ? [...a, "・", x] : [x]), []))))) : null,
     hasRoster ? h("section", { class: "group" }, keptFold("futsal-roster-m", `選手名簿（${ms.length}人）`, h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table futsal-table view" },
@@ -3039,12 +3052,13 @@ async function setFutsalKind(on) {
   b.set(doc(db, "profiles", pid), { kind: on ? "futsal" : deleteField() }, { merge: true });
   if (on && !cur?.exists()) b.set(D("config", "futsal"), defaultFutsalDoc());
   await b.commit();
-  toast(on ? "フットサルチーム用にしました（チームの画面に選手名簿・役割・フォーメーションが出ます）" : "普通の旅行に戻しました（入れた背番号・役割・フォーメーションは消えずに残ります）");
+  toast(on ? "フットサルチーム用にしました（チームの画面に選手名簿・役割・フォーメーション・試合の記録が出ます。ポイントの機能は隠れます）" : "普通の旅行に戻しました（入れた背番号・役割・フォーメーション・試合の記録は消えずに残ります。ポイントの機能がまた出ます）");
 }
 
 // ---------------------------------------------------------------- 作戦ボード（フットサル）：選手・相手・ボールを指で動かし、開いている全員にリアルタイムで見せる
 //   boards/main { title, color, players: [uid], opp(相手を出す), open(参加者も動かせる), shown(参加者に公開),
-//                 pos: { p_<uid> | o1〜o5 | ball: { x, y } }（コートの左上を 0・右下を 100 とした %）, uid(最後に動かした人), at }
+//                 pos: { p_<uid> | o1〜o5 | ball: { x, y } }（コートの左上を 0・右下を 100 とした %）, uid(最後に動かした人), at,
+//                 marks: { id: { t: "arrow" | "pass" | "line" | "pen", c: 色, p: [x1, y1, x2, y2, …](%), uid, n(描いた時刻) } } }
 //   開いている間だけ購読する（閉じている人には通信が発生しない）。動かしている間は 0.2 秒ごとに位置を送る
 const BOARD_ID = "main";
 const BOARD_SEND_MS = 200;
@@ -3070,6 +3084,46 @@ function boardFromTeam(t) {
 }
 const saveBoard = (data) => setDoc(D("boards", BOARD_ID), data, { merge: true });
 
+// 矢印・線（SVG。コートと同じ 2:3 の座標 200×300 に直して描く）
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  return e;
+}
+const BOARD_TOOLS = [
+  { value: "move", label: "動かす" },
+  { value: "arrow", label: "→ 走る" },
+  { value: "pass", label: "⇢ パス" },
+  { value: "line", label: "― 線" },
+  { value: "pen", label: "✎ ペン" },
+  { value: "erase", label: "消す" },
+];
+const BOARD_COLORS = [["#FFD60A", "黄"], ["#FFFFFF", "白"], ["#FF453A", "赤"], ["#0A84FF", "青"]];
+const BOARD_MAX_MARKS = 150;
+// 1本の矢印・線を描く（hit：消すときに押しやすい太い透明の線も付ける）
+function markNode(m, id) {
+  const pts = [];
+  for (let i = 0; i + 1 < (m.p?.length ?? 0); i += 2) pts.push([m.p[i] * 2, m.p[i + 1] * 3]);
+  if (pts.length < 2) return null;
+  const g = svgEl("g", { class: "board-mark", "data-mark": id });
+  const d = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  const col = m.c || "#FFD60A";
+  g.append(svgEl("path", { d, class: "mark-hit" }));
+  g.append(svgEl("path", { d, class: "mark-line", stroke: col, "stroke-dasharray": m.t === "pass" ? "6 5" : null }));
+  if (m.t === "arrow" || m.t === "pass") {
+    const [x2, y2] = pts[pts.length - 1];
+    // 矢じりの向きは、終わりから少し戻った点との向き（ペンのように細かく曲がっても安定するように）
+    let k = pts.length - 2;
+    while (k > 0 && Math.hypot(x2 - pts[k][0], y2 - pts[k][1]) < 8) k--;
+    const [x1, y1] = pts[k];
+    const a = Math.atan2(y2 - y1, x2 - x1), L = 9, W = 0.45;
+    const pt = (r, t) => `${(x2 + r * Math.cos(a + t)).toFixed(1)},${(y2 + r * Math.sin(a + t)).toFixed(1)}`;
+    g.append(svgEl("polygon", { points: `${x2.toFixed(1)},${y2.toFixed(1)} ${pt(-L, -W)} ${pt(-L, W)}`, fill: col, class: "mark-head" }));
+  }
+  return g;
+}
+
 function openBoard() {
   const admin = S.isAdmin;
   const uid = S.user.uid;
@@ -3081,6 +3135,23 @@ function openBoard() {
     h("div", { class: "pitch-goal top" }), h("div", { class: "pitch-area top" }), h("div", { class: "pitch-mid" }), h("div", { class: "pitch-circle" }),
     h("div", { class: "pitch-area bottom" }), h("div", { class: "pitch-goal bottom" }));
   const pieces = new Map(); // key → 要素
+  // 矢印・線
+  const marksSvg = svgEl("svg", { class: "board-marks", viewBox: "0 0 200 300", preserveAspectRatio: "none" });
+  const marksLayer = svgEl("g");
+  const draftLayer = svgEl("g");
+  marksSvg.append(marksLayer, draftLayer);
+  pitch.append(marksSvg);
+  let mode = "move", color = BOARD_COLORS[0][0];
+  const toolSeg = segmented(BOARD_TOOLS, mode);
+  toolSeg.classList.add("board-toolseg");
+  const colorBtns = BOARD_COLORS.map(([c, name]) => h("button", { type: "button", class: "board-color", style: `--c:${c}`, "aria-label": `色：${name}`, "aria-pressed": String(c === color),
+    onclick: () => { color = c; colorBtns.forEach((b) => b.setAttribute("aria-pressed", String(b.style.getPropertyValue("--c") === c))); } }));
+  const undoBtn = h("button", { type: "button", class: "text-btn", onclick: () => undoMine() }, "1つ戻す");
+  const clearBtn = h("button", { type: "button", class: "text-btn destructive", onclick: () => clearMarks() }, "線を全部消す");
+  const drawBar = h("div", { class: "board-drawbar" }, toolSeg, h("div", { class: "board-drawrow" }, h("span", { class: "board-colors" }, colorBtns), undoBtn, clearBtn));
+  const applyMode = () => { pitch.dataset.mode = mode; };
+  toolSeg.addEventListener("change", () => { mode = toolSeg.value; applyMode(); });
+  applyMode();
   const titleEl = h("b", { class: "board-title" }, "作戦ボード");
   const status = h("div", { class: "board-status" });
   const tools = h("div", { class: "board-tools" });
@@ -3090,7 +3161,7 @@ function openBoard() {
   const close = () => { unsub?.(); clearTimeout(sendTimer); flush(); el.remove(); document.removeEventListener("keydown", onKey, true); };
   const el = h("div", { class: "board-viewer", role: "dialog", "aria-modal": "true", "aria-label": "作戦ボード" },
     h("div", { class: "fv-head" }, titleEl, h("span", { class: "board-live" }, h("i"), "リアルタイム"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
-    h("div", { class: "board-body" }, h("div", { class: "board-stage" }, pitch, msg), h("div", { class: "board-side" }, status, tools)));
+    h("div", { class: "board-body" }, h("div", { class: "board-stage" }, drawBar, h("div", { class: "board-pitch-wrap" }, pitch, msg)), h("div", { class: "board-side" }, status, tools)));
   document.body.append(el);
   document.addEventListener("keydown", onKey, true);
 
@@ -3117,7 +3188,7 @@ function openBoard() {
     const node = h("div", { class: `board-piece${isBall ? " ball" : isOpp ? " opp" : ""}`, "data-key": k },
       h("span", { class: "pitch-dot" }), isBall || isOpp ? null : h("span", { class: "pitch-name" }));
     node.addEventListener("pointerdown", (e) => {
-      if (!canMove()) return;
+      if (!canMove() || mode !== "move") return;
       e.preventDefault();
       dragging = k;
       node.classList.add("dragging");
@@ -3141,6 +3212,82 @@ function openBoard() {
     node.addEventListener("pointercancel", end);
     return node;
   }
+  // ---- 矢印・線を描く（指を離したときに保存して、全員の画面に出す）
+  const toPct = (e) => {
+    const r = pitch.getBoundingClientRect();
+    return [Math.round(Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100)) * 10) / 10, Math.round(Math.min(100, Math.max(0, ((e.clientY - r.top) / r.height) * 100)) * 10) / 10];
+  };
+  let draft = null;
+  const markErr = (e) => { console.error(e); toast(e.code === "permission-denied" ? "描けませんでした（管理者が「参加者も動かせる」をオンにすると描けます）" : errMsg(e), true); };
+  const drawDraft = () => { draftLayer.replaceChildren(); const n = draft && markNode(draft, "draft"); if (n) draftLayer.append(n); };
+  marksSvg.addEventListener("pointerdown", (e) => {
+    if (!canMove() || mode === "move" || mode === "erase") return;
+    e.preventDefault();
+    marksSvg.setPointerCapture(e.pointerId);
+    const [x, y] = toPct(e);
+    draft = { t: mode, c: color, p: [x, y, x, y] };
+    drawDraft();
+  });
+  marksSvg.addEventListener("pointermove", (e) => {
+    if (!draft) return;
+    const [x, y] = toPct(e);
+    if (draft.t === "pen") {
+      const n = draft.p.length;
+      // 最後に確定した点から 1.2% 以上離れたら点を足す（多くても 80 点）。それまでは最後の点を動かす
+      if (Math.hypot(x - draft.p[n - 4], (y - draft.p[n - 3]) * 1.5) >= 1.2 && n < 160) draft.p.push(x, y);
+      else { draft.p[n - 2] = x; draft.p[n - 1] = y; }
+    } else { draft.p[2] = x; draft.p[3] = y; }
+    drawDraft();
+  });
+  const endDraw = () => {
+    if (!draft) return;
+    const m = draft; draft = null;
+    if (m.t === "pen" && m.p.length > 4 && m.p[m.p.length - 2] === m.p[m.p.length - 4] && m.p[m.p.length - 1] === m.p[m.p.length - 3]) m.p.splice(-2);
+    const len = Math.hypot(m.p[m.p.length - 2] - m.p[0], (m.p[m.p.length - 1] - m.p[1]) * 1.5);
+    if (len < 3 && m.p.length <= 4) { drawDraft(); return; } // 短すぎる（タップしただけ）は描かない
+    if (Object.keys(B?.marks ?? {}).length >= BOARD_MAX_MARKS) { drawDraft(); return toast(`線は${BOARD_MAX_MARKS}本までです。「線を全部消す」か「消す」で減らしてください`, true); }
+    const id = Math.random().toString(36).slice(2, 10);
+    const mark = { ...m, uid, n: Date.now() };
+    localMarks.set(id, mark); // 届くまでのあいだも消えないように
+    paintMarks(); drawDraft();
+    updateDoc(D("boards", BOARD_ID), { [`marks.${id}`]: mark, uid, at: serverTimestamp() }).catch((e) => { localMarks.delete(id); paintMarks(); markErr(e); });
+  };
+  marksSvg.addEventListener("pointerup", endDraw);
+  marksSvg.addEventListener("pointercancel", endDraw);
+  // 消す：線を押す
+  marksLayer.addEventListener("click", (e) => {
+    if (mode !== "erase" || !canMove()) return;
+    const id = e.target.closest?.("[data-mark]")?.dataset.mark;
+    if (!id) return;
+    localMarks.delete(id);
+    hiddenMarks.add(id); paintMarks();
+    updateDoc(D("boards", BOARD_ID), { [`marks.${id}`]: deleteField(), uid, at: serverTimestamp() }).catch((err) => { hiddenMarks.delete(id); paintMarks(); markErr(err); });
+  });
+  function undoMine() {
+    const mine = Object.entries({ ...(B?.marks ?? {}), ...Object.fromEntries(localMarks) }).filter(([id, m]) => m.uid === uid && !hiddenMarks.has(id)).sort((a, b) => (b[1].n ?? 0) - (a[1].n ?? 0));
+    if (!mine.length) return toast("あなたが描いた線はありません", true);
+    const [id] = mine[0];
+    localMarks.delete(id); hiddenMarks.add(id); paintMarks();
+    updateDoc(D("boards", BOARD_ID), { [`marks.${id}`]: deleteField(), uid, at: serverTimestamp() }).catch((err) => { hiddenMarks.delete(id); paintMarks(); markErr(err); });
+  }
+  function clearMarks() {
+    if (!Object.keys(B?.marks ?? {}).length && !localMarks.size) return;
+    if (!confirm("矢印・線を全部消しますか？（ほかの人が描いたものも消えます）")) return;
+    localMarks.clear();
+    Object.keys(B?.marks ?? {}).forEach((id) => hiddenMarks.add(id)); paintMarks();
+    updateDoc(D("boards", BOARD_ID), { marks: {}, uid, at: serverTimestamp() }).catch(markErr);
+  }
+  const localMarks = new Map();   // 自分が描いて、まだ届いていない線
+  const hiddenMarks = new Set();  // 自分が消して、まだ消えたと届いていない線
+  function paintMarks() {
+    const server = B?.marks ?? {};
+    for (const id of [...localMarks.keys()]) if (server[id]) localMarks.delete(id);
+    for (const id of [...hiddenMarks]) if (!server[id]) hiddenMarks.delete(id);
+    const all = { ...server, ...Object.fromEntries(localMarks) };
+    const list = Object.entries(all).filter(([id]) => !hiddenMarks.has(id)).sort((a, b) => (a[1].n ?? 0) - (b[1].n ?? 0));
+    marksLayer.replaceChildren(...list.map(([id, m]) => markNode(m, id)).filter(Boolean));
+  }
+
   function place(k) {
     const node = pieces.get(k);
     const p = posOf(k);
@@ -3168,10 +3315,13 @@ function openBoard() {
       if (dragging !== k && local[k] && B?.pos?.[k] && Math.abs(B.pos[k].x - local[k].x) < 0.05 && Math.abs(B.pos[k].y - local[k].y) < 0.05) delete local[k];
       place(k);
     }
+    paintMarks();
+    drawBar.hidden = !canMove();
+    if (!canMove() && mode !== "move") { mode = "move"; toolSeg.value = "move"; applyMode(); }
     titleEl.textContent = B?.title ? `作戦ボード：${B.title}` : "作戦ボード";
     const who = B?.uid ? (isAdminUid(B.uid) ? "管理者" : memberName(B.uid)) : null;
     setKids(status,
-      h("div", null, canMove() ? "選手・相手・ボールをドラッグ（指でなぞる）して動かせます。動かすと、開いている全員の画面に同時に反映されます。" : "管理者が動かすと、この画面にそのまま反映されます。"),
+      h("div", null, canMove() ? "「動かす」で選手・相手・ボールをドラッグ（指でなぞる）、「走る・パス・線・ペン」でコートに描けます。開いている全員の画面に同時に反映されます（線は指を離したとき）。" : "管理者が動かしたり矢印を描いたりすると、この画面にそのまま反映されます。"),
       who ? h("div", { class: "secondary" }, `最後に動かした人：${who}`) : null);
     paintTools();
   }
@@ -3229,6 +3379,606 @@ function openBoard() {
   return el;
 }
 const boardButton = (label = "作戦ボードを開く（リアルタイム）") => h("button", { class: "cell cell-button board-open", onclick: () => openBoard() }, "⚽ ", label);
+
+// ---------------------------------------------------------------- 試合（フットサル）：タイマー・得点・シュート・ファウル・ボール保持・記録係・仲間内の成績
+//   matches/{id} { title, home | away: { kind: "team", teamId, name, color } | { kind: "ext", name, color },
+//                  periods: [{ label, min }]（ピリオドの名前と分。前半・後半など自由）, cur(今のピリオド), running, startedAt(動かし始めたサーバー時刻),
+//                  elapsed(止めるまでに進んだミリ秒), status: "ready" | "live" | "done",
+//                  goals: { id: { side(点が入った側), uid(決めた人) | null, name(外部の人), assist | null, own(オウンゴール), p(ピリオド), t(そのピリオドの何ミリ秒目), at(入力したサーバー時刻), by(入力した人), n } },
+//                  shots: { id: { side, uid, name, r: "on" | "off" | "block" | "post" | null, p, t, at, by, n } },
+//                  plays: { id: { side, k: "foul" | "yellow" | "red" | "ck" | "kickin" | "fk" | "pk" | "timeout" | "sub", uid, name, inUid(交代で入った人), p, t, at, by, n } },
+//                  poss: { p<ピリオド>: { home, away } }（ボールを持っていたミリ秒。押している人が離したときと15秒ごとに足す）,
+//                  hold: { home | away: { uid, at } | null }（いま長押ししている人。ほかの端末の表示用）,
+//                  keepers: [uid], roles: { uid: ["timer" | "goal" | "shot" | "play" | "poss"] }（記録係と担当。登録されている間だけ担当の分を記録できる。ルールでも同じ制限）,
+//                  shown(参加者に公開), order, uid, at }
+//   タイマーは毎秒書き込まない。動かした時刻と進んだ時間だけを保存し、各端末で計算して表示する
+const MATCH_PRESETS = [
+  { label: "前半・後半 各20分", periods: [{ label: "前半", min: 20 }, { label: "後半", min: 20 }] },
+  { label: "前半・後半 各15分", periods: [{ label: "前半", min: 15 }, { label: "後半", min: 15 }] },
+  { label: "前半・後半 各10分", periods: [{ label: "前半", min: 10 }, { label: "後半", min: 10 }] },
+  { label: "1本 10分", periods: [{ label: "1本目", min: 10 }] },
+  { label: "延長あり（20分×2＋延長5分×2）", periods: [{ label: "前半", min: 20 }, { label: "後半", min: 20 }, { label: "延長前半", min: 5 }, { label: "延長後半", min: 5 }] },
+];
+const MATCH_ROLES = [
+  { id: "timer", label: "タイマー", short: "タイマー", hint: "スタート・停止・時間の調整・ピリオド・試合終了" },
+  { id: "goal", label: "得点", short: "得点", hint: "ゴール・決めた人・アシスト・オウンゴール" },
+  { id: "shot", label: "シュート", short: "シュート", hint: "シュートと結果（枠内・枠外・ブロック・ポスト）" },
+  { id: "play", label: "ファウル・セットプレー", short: "ファウル等", hint: "ファウル・カード・CK・キックイン・FK・PK・タイムアウト・交代" },
+  { id: "poss", label: "ボール保持", short: "保持", hint: "押している間、そのチームのボール保持として数える" },
+];
+const ALL_MATCH_ROLES = MATCH_ROLES.map((r) => r.id);
+const roleLabel = (id) => MATCH_ROLES.find((r) => r.id === id)?.label ?? id;
+// 記録できる出来事（coll：保存する場所、role：記録できる担当）
+const M_KINDS = {
+  goal: { coll: "goals", role: "goal", icon: "⚽", label: "ゴール" },
+  shot: { coll: "shots", role: "shot", icon: "◎", label: "シュート" },
+  foul: { coll: "plays", role: "play", icon: "✕", label: "ファウル", who: "した人" },
+  yellow: { coll: "plays", role: "play", icon: "▮", label: "イエローカード", who: "受けた人" },
+  red: { coll: "plays", role: "play", icon: "▮", label: "レッドカード", who: "受けた人" },
+  ck: { coll: "plays", role: "play", icon: "◣", label: "コーナーキック" },
+  kickin: { coll: "plays", role: "play", icon: "↗", label: "キックイン" },
+  fk: { coll: "plays", role: "play", icon: "➚", label: "フリーキック" },
+  pk: { coll: "plays", role: "play", icon: "●", label: "PK・第2PK" },
+  timeout: { coll: "plays", role: "play", icon: "⏸", label: "タイムアウト" },
+  sub: { coll: "plays", role: "play", icon: "⇄", label: "交代", who: "出た人" },
+};
+const PLAY_BUTTONS = [["foul", "ファウル"], ["yellow", "カード"], ["ck", "CK"], ["kickin", "キックイン"], ["fk", "FK"], ["pk", "PK"], ["timeout", "タイムアウト"], ["sub", "交代"]];
+const SHOT_RESULTS = [["on", "枠内"], ["off", "枠外"], ["block", "ブロック"], ["post", "ポスト・バー"]];
+const shotResult = (r) => SHOT_RESULTS.find(([v]) => v === r)?.[1] ?? "";
+const otherSide = (s) => (s === "home" ? "away" : "home");
+
+const sortedMatches = () => [...S.matches.values()].sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
+const mPeriodMs = (m, i = m.cur ?? 0) => Math.round((Number(m.periods?.[i]?.min) || 0) * 60000);
+const mStartMs = (m) => (m.startedAt?.toMillis ? m.startedAt.toMillis() : null);
+const mElapsed = (m, now = Date.now()) => Math.max(0, (Number(m.elapsed) || 0) + (m.running && mStartMs(m) != null ? Math.max(0, now - mStartMs(m)) : 0));
+const mLeft = (m) => mPeriodMs(m) - mElapsed(m);
+const fmtMs = (ms) => { const s = Math.floor(Math.abs(ms) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const mClockText = (m) => { const left = mLeft(m); return left >= 0 ? fmtMs(Math.ceil(left / 1000) * 1000) : `+${fmtMs(-left)}`; };
+const mPeriodLabel = (m, i = m.cur ?? 0) => m.periods?.[i]?.label ?? `${i + 1}本目`;
+const evList = (m, coll, k) => Object.entries(m[coll] ?? {}).map(([id, e]) => ({ id, coll, ...e, k: k ?? e.k }));
+const evSort = (a, b) => (a.p ?? 0) - (b.p ?? 0) || (a.t ?? 0) - (b.t ?? 0) || (a.n ?? 0) - (b.n ?? 0);
+const mGoals = (m) => evList(m, "goals", "goal").sort(evSort);
+const mEvents = (m) => [...evList(m, "goals", "goal"), ...evList(m, "shots", "shot"), ...evList(m, "plays")].filter((e) => M_KINDS[e.k]).sort(evSort);
+const mScore = (m) => { const gs = mGoals(m); return { home: gs.filter((g) => g.side === "home").length, away: gs.filter((g) => g.side === "away").length }; };
+const mSideName = (m, side) => { const s = m[side]; return s?.kind === "team" ? (S.teams.get(s.teamId)?.name ?? s.name ?? "チーム") : (s?.name || (side === "home" ? "ホーム" : "相手")); };
+const mSideColor = (m, side) => { const s = m[side]; return (s?.kind === "team" ? S.teams.get(s.teamId)?.color : null) ?? s?.color ?? (side === "home" ? "#0A84FF" : "#FF453A"); };
+const isKeeper = (m) => (m.keepers ?? []).includes(S.user?.uid);
+const myMatchRoles = (m) => (S.isAdmin ? ALL_MATCH_ROLES : isKeeper(m) ? (m.roles?.[S.user.uid] ?? []).filter((r) => ALL_MATCH_ROLES.includes(r)) : []);
+const mCan = (m, role) => !!m && myMatchRoles(m).includes(role);
+const canKeep = (m) => !!m && myMatchRoles(m).length > 0;
+// 選ぶ候補：仲間内のチームならそのメンバー（いなければ全員）。外部のチームは名前を入れる
+const mSideMembers = (m, side) => { const s = m[side]; const tm = s?.kind === "team" ? membersOfTeam(s.teamId) : []; return byNumber(tm.length ? tm : s?.kind === "team" ? sortedMembers() : []); };
+const evWho = (e, k = "uid", nm = "name") => (e[k] ? futsalName(e[k]) : e[nm] || "");
+const fmtClockAt = (ts) => { const d = ts?.toDate?.(); return d ? d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "送信中…"; };
+const byName = (uid) => (!uid ? "" : uid === S.user?.uid ? "自分" : S.members.has(uid) ? memberName(uid) : "管理者");
+// 累積ファウルを数えるピリオド（延長は、その前の通常のピリオドから続けて数える）
+function foulScope(m, i) {
+  const ps = m.periods ?? [];
+  const ext = (j) => /延長/.test(ps[j]?.label ?? "");
+  if (!ext(i)) return [i];
+  let j = i;
+  while (j > 0 && ext(j)) j--;
+  return Array.from({ length: i - j + 1 }, (_, x) => j + x);
+}
+const teamFouls = (m, side, i = m.cur ?? 0) => { const sc = foulScope(m, i); return evList(m, "plays").filter((e) => e.k === "foul" && e.side === side && sc.includes(e.p ?? 0)).length; };
+// ボール保持（ミリ秒）
+const mPossBase = (m, side) => Object.values(m.poss ?? {}).reduce((a, p) => a + (Number(p?.[side]) || 0), 0);
+function mPossLive(m, side) {
+  let v = mPossBase(m, side);
+  if (HOLD && HOLD.mid === m.id && HOLD.side === side) return v + HOLD.acc;
+  const hd = m.hold?.[side];
+  const at = hd?.at?.toMillis?.();
+  // ほかの人が押している分（15秒ごとに足されるので、30秒より古いものは押しっぱなしの止まった端末とみなして数えない）
+  if (at && hd.uid !== S.user?.uid && m.running && Date.now() - at < 30000) v += Math.max(0, Date.now() - Math.max(at, mStartMs(m) ?? 0));
+  return v;
+}
+function mPossPct(m) {
+  const a = mPossLive(m, "home"), b = mPossLive(m, "away");
+  if (a + b < 1000) return null;
+  const x = Math.round((a / (a + b)) * 100);
+  return { home: x, away: 100 - x };
+}
+
+const mUpdate = (m, patch, msg) => fire(updateDoc(D("matches", m.id), { ...patch, uid: S.user.uid, at: serverTimestamp() }), msg);
+const mStart = (m) => { unlockBeep(); mUpdate(m, { running: true, startedAt: serverTimestamp(), status: "live" }); };
+const mPause = (m) => mUpdate(m, { running: false, startedAt: null, elapsed: mElapsed(m) });
+// 時間の調整（＋で残りを増やす）。動いているときは、今の時刻から数え直す
+const mAdjust = (m, deltaMs) => mUpdate(m, { elapsed: Math.max(0, mElapsed(m) - deltaMs), ...(m.running ? { startedAt: serverTimestamp() } : {}) });
+const mGoto = (m, i) => mUpdate(m, { cur: i, elapsed: 0, running: false, startedAt: null, status: "live" }, `${mPeriodLabel(m, i)}にしました`);
+const mFinish = (m) => mUpdate(m, { status: "done", running: false, startedAt: null, elapsed: mElapsed(m) }, "試合終了にしました");
+const newEvId = () => Math.random().toString(36).slice(2, 10);
+// 出来事を記録する（押した瞬間の試合時間で記録し、誰がなどはあとから選ぶ）
+function mAddEvent(m, k, side, extra = {}) {
+  const K = M_KINDS[k];
+  if (!K || !mCan(m, K.role)) return null;
+  const id = newEvId();
+  const e = { side, uid: null, name: "", p: m.cur ?? 0, t: Math.round(mElapsed(m)), at: serverTimestamp(), by: S.user.uid, n: Date.now(), ...(K.coll === "plays" ? { k } : {}),
+    ...(k === "goal" ? { assist: null, own: false } : {}), ...(k === "shot" ? { r: null } : {}), ...(k === "sub" ? { inUid: null } : {}), ...extra };
+  mUpdate(m, { [`${K.coll}.${id}`]: e }, k === "goal" ? `${mSideName(m, side)} に1点入れました` : `${mSideName(m, side)}：${K.label}を記録しました`);
+  return { coll: K.coll, id };
+}
+const mSetEv = (m, coll, id, patch) => mUpdate(m, Object.fromEntries(Object.entries(patch).map(([k, v]) => [`${coll}.${id}.${k}`, v])));
+const mDelEv = (m, coll, id) => mUpdate(m, { [`${coll}.${id}`]: deleteField() }, "記録を取り消しました");
+
+// ボール保持の長押し（押している間だけ、そのチームの保持として数える。時計が止まっている間は数えない）
+let HOLD = null; // { mid, side, acc, cur, last, flushAt }
+function holdFlush(m, keep, cur = HOLD.cur) {
+  const ms = Math.round(HOLD.acc);
+  HOLD.acc = 0; HOLD.flushAt = performance.now();
+  const patch = { [`hold.${HOLD.side}`]: keep ? { uid: S.user.uid, at: serverTimestamp() } : null };
+  if (ms > 0) patch[`poss.p${cur}.${HOLD.side}`] = increment(ms);
+  mUpdate(m, patch);
+}
+function holdTick() {
+  if (!HOLD) return;
+  const now = performance.now(), dt = now - HOLD.last;
+  HOLD.last = now;
+  const m = S.matches.get(HOLD.mid);
+  if (!m || !mCan(m, "poss")) { holdStop(true); return; }
+  if ((m.cur ?? 0) !== HOLD.cur) { holdFlush(m, true); HOLD.cur = m.cur ?? 0; }
+  if (m.running && m.status !== "done") HOLD.acc += dt;
+  if (now - HOLD.flushAt > 15000) holdFlush(m, true);
+}
+const holdEnd = () => holdStop(false);
+// 指を離したとき：押している指（ポインター）のときだけ止める（もう片方のボタンに指を移したあとで、前の指を離しても止めない）
+const holdUp = (e) => { if (HOLD && e?.pointerId !== undefined && HOLD.pointer !== undefined && e.pointerId !== HOLD.pointer) return; holdEnd(); };
+function holdStop(silent) {
+  if (!HOLD) return;
+  if (!silent) holdTick();
+  const m = S.matches.get(HOLD?.mid);
+  if (HOLD && m && !silent) holdFlush(m, false);
+  HOLD = null;
+  for (const ev of ["pointerup", "pointercancel"]) window.removeEventListener(ev, holdUp);
+  window.removeEventListener("blur", holdEnd);
+  document.removeEventListener("visibilitychange", holdHidden);
+  document.querySelectorAll(".m-hold.on").forEach((b) => b.classList.remove("on"));
+}
+const holdHidden = () => { if (document.hidden) holdEnd(); };
+function holdStart(m, side, btn, e) {
+  if (!mCan(m, "poss")) return;
+  e.preventDefault();
+  if (HOLD) holdEnd();
+  HOLD = { mid: m.id, side, acc: 0, cur: m.cur ?? 0, last: performance.now(), flushAt: performance.now(), pointer: e.pointerId };
+  mUpdate(m, { [`hold.${side}`]: { uid: S.user.uid, at: serverTimestamp() } });
+  btn.classList.add("on");
+  try { navigator.vibrate?.(30); } catch { /* なし */ }
+  // 画面が描き直されてボタンが入れ替わっても、指を離したことが分かるように window で受ける
+  for (const ev of ["pointerup", "pointercancel"]) window.addEventListener(ev, holdUp);
+  window.addEventListener("blur", holdEnd);
+  document.addEventListener("visibilitychange", holdHidden);
+}
+
+// 時間切れの合図（タイマー係・管理者が試合の画面を開いているときだけ）
+let beepCtx = null;
+function unlockBeep() { try { beepCtx ??= new (window.AudioContext || window.webkitAudioContext)(); beepCtx.resume?.(); } catch { /* 鳴らせない端末 */ } }
+function beep() {
+  try {
+    if (!beepCtx) return;
+    [0, 0.35, 0.7].forEach((t) => {
+      const o = beepCtx.createOscillator(), g = beepCtx.createGain();
+      o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(beepCtx.destination);
+      o.start(beepCtx.currentTime + t); o.stop(beepCtx.currentTime + t + 0.25);
+    });
+  } catch { /* なし */ }
+  try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch { /* なし */ }
+}
+// 表示中の時計とボール保持を 0.25 秒ごとに書き換える（画面全体は描き直さない）
+let matchTicker = null, matchOpenId = null;
+const timeUpDone = new Set();
+function paintPoss(el, m) {
+  const pc = mPossPct(m);
+  const hb = el.querySelector(".m-poss-bar .home");
+  if (hb) hb.style.width = `${pc ? pc.home : 50}%`;
+  for (const s of ["home", "away"]) {
+    const t = el.querySelector(`[data-poss-pct=${s}]`);
+    if (t) t.textContent = pc ? `${pc[s]}%` : "—";
+    const live = !!(HOLD && HOLD.mid === m.id && HOLD.side === s) || !!(m.hold?.[s] && Date.now() - (m.hold[s].at?.toMillis?.() ?? 0) < 30000);
+    el.querySelector(`[data-poss-live=${s}]`)?.classList.toggle("on", live);
+  }
+}
+function startMatchTicker() {
+  if (matchTicker) return;
+  matchTicker = setInterval(() => {
+    holdTick();
+    document.querySelectorAll("[data-mclock]").forEach((el) => {
+      const m = S.matches.get(el.dataset.mclock);
+      if (!m) return;
+      const t = mClockText(m);
+      if (el.textContent !== t) el.textContent = t;
+      el.classList.toggle("over", mLeft(m) < 0);
+      el.classList.toggle("running", !!m.running);
+    });
+    document.querySelectorAll("[data-mposs]").forEach((el) => { const m = S.matches.get(el.dataset.mposs); if (m) paintPoss(el, m); });
+    const m = matchOpenId && S.matches.get(matchOpenId);
+    if (m && m.running && mCan(m, "timer") && mLeft(m) <= 0) {
+      const key = `${m.id}:${m.cur}:${mStartMs(m)}`;
+      if (!timeUpDone.has(key)) { timeUpDone.add(key); beep(); toast(`${mPeriodLabel(m)}の時間になりました（止めるまで＋で数えます）`); }
+    }
+  }, 250);
+}
+const mClock = (m, cls = "") => h("span", { class: `m-clock ${cls}${m.running ? " running" : ""}${mLeft(m) < 0 ? " over" : ""}`, "data-mclock": m.id }, mClockText(m));
+const mStatusText = (m) => (m.status === "done" ? "試合終了" : m.running ? `${mPeriodLabel(m)} 進行中` : m.status === "live" ? `${mPeriodLabel(m)} 停止中` : "開始前");
+
+// 一覧の1行（参加者・管理者共通）
+function matchRow(m) {
+  startMatchTicker();
+  const sc = mScore(m);
+  const mine = !S.isAdmin && isKeeper(m) ? myMatchRoles(m) : [];
+  return h("button", { class: `cell cell-button match-row${m.status === "done" ? " done" : ""}`, "data-match": m.id, onclick: () => openMatch(m.id) },
+    h("div", { class: "cell-main" },
+      h("div", { class: "match-line" },
+        h("span", { class: "team-label" }, dot(mSideColor(m, "home")), mSideName(m, "home")),
+        h("b", { class: "match-score" }, `${sc.home} - ${sc.away}`),
+        h("span", { class: "team-label" }, dot(mSideColor(m, "away")), mSideName(m, "away"))),
+      h("div", { class: "cell-sub" }, m.title ? `${m.title}・` : "", mStatusText(m), m.status !== "done" && m.status !== "ready" ? ["　", mClock(m)] : null,
+        mine.length ? h("span", { class: "tint you" }, `　記録係（${mine.map(roleLabel).join("・")}）`) : null,
+        S.isAdmin && !m.shown ? h("span", { class: "secondary" }, "（非公開）") : null)),
+    icon("chevron"));
+}
+
+// 1試合のチームごとの数
+function mTeamStats(m) {
+  const z = () => ({ goal: 0, shot: 0, on: 0, foul: 0, yellow: 0, red: 0, ck: 0, kickin: 0, fk: 0, pk: 0, timeout: 0, sub: 0 });
+  const r = { home: z(), away: z() };
+  for (const e of mEvents(m)) {
+    const s = r[e.side];
+    if (!s) continue;
+    if (e.k === "goal") { s.goal++; if (!e.own) { s.shot++; s.on++; } }
+    else if (e.k === "shot") { s.shot++; if (e.r === "on") s.on++; }
+    else s[e.k]++;
+  }
+  return r;
+}
+// 仲間内の成績（チーム表のチームどうしの、終わった試合）と個人成績（すべての試合）
+function matchStats(ms = sortedMatches()) {
+  const table = new Map();
+  for (const m of ms) {
+    if (m.status !== "done" || m.home?.kind !== "team" || m.away?.kind !== "team") continue;
+    const sc = mScore(m);
+    for (const [side, other] of [["home", "away"], ["away", "home"]]) {
+      const id = m[side].teamId;
+      const r = table.get(id) ?? { id, name: mSideName(m, side), color: mSideColor(m, side), n: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 };
+      r.n++; r.gf += sc[side]; r.ga += sc[other];
+      if (sc[side] > sc[other]) r.w++; else if (sc[side] < sc[other]) r.l++; else r.d++;
+      table.set(id, r);
+    }
+  }
+  const standings = [...table.values()].map((r) => ({ ...r, pts: r.w * 3 + r.d, gd: r.gf - r.ga })).sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  const pl = new Map();
+  const P = (uid) => { let r = pl.get(uid); if (!r) { r = { uid, g: 0, a: 0, s: 0, on: 0, f: 0, y: 0, rc: 0 }; pl.set(uid, r); } return r; };
+  for (const m of ms) for (const e of mEvents(m)) {
+    if (e.k === "goal") { if (e.uid && !e.own) { const r = P(e.uid); r.g++; r.s++; r.on++; } if (e.assist && !e.own) P(e.assist).a++; }
+    else if (e.k === "shot" && e.uid) { const r = P(e.uid); r.s++; if (e.r === "on") r.on++; }
+    else if (e.k === "foul" && e.uid) P(e.uid).f++;
+    else if (e.k === "yellow" && e.uid) P(e.uid).y++;
+    else if (e.k === "red" && e.uid) P(e.uid).rc++;
+  }
+  const players = [...pl.values()].filter((r) => S.members.has(r.uid)).sort((a, b) => b.g - a.g || b.a - a.a || b.s - a.s);
+  return { standings, players };
+}
+const mRankRows = (rows, keyOf, row) => { let rk = 0, pv = null; return rows.map((r, i) => { const k = keyOf(r); if (k !== pv) { rk = i + 1; pv = k; } return row(r, rk); }); };
+function matchStatsView() {
+  const { standings, players } = matchStats();
+  if (!standings.length && !players.length) return null;
+  const tbl = (heads, rows) => h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table match-table" }, h("thead", null, h("tr", null, heads.map((x) => h("th", null, x)))), h("tbody", null, rows)));
+  return h("section", { class: "group match-stats" },
+    standings.length ? keptFold("m-standings", "仲間内の成績（終わった試合）", tbl(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点"],
+      mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}`, (r, rk) => h("tr", null, h("td", null, rk), h("td", null, h("span", { class: "team-label" }, dot(r.color), r.name)), h("td", null, r.n), h("td", null, r.w), h("td", null, r.d), h("td", null, r.l), h("td", null, r.gf), h("td", null, r.ga), h("td", null, r.gd > 0 ? `+${r.gd}` : r.gd), h("td", null, h("b", null, r.pts))))), true) : null,
+    players.length ? keptFold("m-scorers", "個人成績（得点ランキング）", tbl(["順位", "名前", "得点", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"],
+      mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => h("tr", { class: r.uid === S.user?.uid ? "me" : null }, h("td", null, rk), h("td", null, futsalName(r.uid)), h("td", null, h("b", null, r.g)), h("td", null, r.a), h("td", null, r.s), h("td", null, r.on), h("td", null, r.f), h("td", null, r.y), h("td", null, r.rc)))), false) : null,
+    h("div", { class: "group-footer" }, "勝ち3点・引き分け1点。順位は 勝点→得失点差→得点 の順。シュートはゴールも含みます（オウンゴールは除く）。"));
+}
+// 参加者・管理者のチームの画面に出す「試合」の欄
+function matchesBlock() {
+  const ms = sortedMatches();
+  const live = ms.filter((m) => m.status !== "done");
+  const done = ms.filter((m) => m.status === "done");
+  return [
+    group("⚽ 試合の記録（タイマー・得点・シュート・ファウル・ボール保持）", [
+      S.isAdmin ? h("button", { class: "cell cell-button", onclick: () => openMatchEditor() }, icon("plus"), "試合を作る") : null,
+      ...live.map(matchRow),
+      done.length ? keptFold("m-done", `終わった試合（${done.length}）`, h("div", null, done.map(matchRow)), live.length === 0) : null,
+      !ms.length ? cell(h("span", { class: "secondary" }, S.isAdmin ? "まだ試合はありません。" : "公開された試合はまだありません。")) : null,
+    ], S.isAdmin ? "記録は管理者のほか、試合ごとに指名した記録係ができます。担当（タイマー・得点・シュート・ファウル・ボール保持）を分けて、複数人で記録できます。" : ms.some(isKeeper) ? "記録係の試合は、開くと担当の分を記録できます。" : null),
+    matchStatsView(),
+  ].filter(Boolean);
+}
+
+// 記録係と担当を選ぶ表（1人に何個でも。どれか1つでも付いている人が記録係）
+function keeperRolesEditor(initial = {}) {
+  const roles = new Map(Object.entries(initial ?? {}).map(([u, rs]) => [u, new Set(rs)]));
+  const box = h("div", { class: "keeper-roles" });
+  const count = h("span", { class: "secondary" });
+  const paint = () => {
+    const ms = byNumber(sortedMembers());
+    const n = ms.filter((x) => roles.get(x.id)?.size).length;
+    count.textContent = n ? `記録係 ${n}人` : "記録係なし（管理者だけが記録）";
+    const missing = MATCH_ROLES.filter((r) => !ms.some((x) => roles.get(x.id)?.has(r.id)));
+    setKids(box,
+      h("div", { class: "pick-tools" }, count),
+      h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table keeper-table" },
+        h("thead", null, h("tr", null, h("th", null, "名前"), MATCH_ROLES.map((r) => h("th", { title: r.hint }, r.short)), h("th", null, "全部"))),
+        h("tbody", null, ms.map((x) => {
+          const set = roles.get(x.id) ?? new Set();
+          const cb = (rid) => { const c = h("input", { type: "checkbox", checked: set.has(rid), "aria-label": `${x.name}：${roleLabel(rid)}` }); c.addEventListener("change", () => { if (c.checked) set.add(rid); else set.delete(rid); roles.set(x.id, set); paint(); }); return h("td", { class: "c" }, c); };
+          const all = h("button", { type: "button", class: "text-btn" }, set.size === ALL_MATCH_ROLES.length ? "外す" : "全部");
+          all.addEventListener("click", () => { roles.set(x.id, set.size === ALL_MATCH_ROLES.length ? new Set() : new Set(ALL_MATCH_ROLES)); paint(); });
+          return h("tr", { class: set.size ? "me" : null }, h("td", null, futsalName(x.id)), MATCH_ROLES.map((r) => cb(r.id)), h("td", { class: "c" }, all));
+        })))),
+      missing.length && n ? h("div", { class: "cell-sub" }, `担当がいない記録：${missing.map((r) => r.label).join("・")}（管理者が記録します）`) : null);
+  };
+  paint();
+  return {
+    el: box, refresh: paint,
+    value: () => { const out = {}; for (const [u, s] of roles) if (s.size && S.members.has(u)) out[u] = ALL_MATCH_ROLES.filter((r) => s.has(r)); return out; },
+  };
+}
+
+// 試合を作る・直す（管理者）
+function openMatchEditor(m = null) {
+  if (!S.isAdmin) return;
+  const teams = sortedSets().flatMap((st) => teamsInSet(st.id).map((t) => ({ t, st })));
+  const sideSel = (side) => {
+    const sel = h("select", { "aria-label": side === "home" ? "チーム1" : "チーム2" },
+      teams.map(({ t, st }) => h("option", { value: `t:${t.id}` }, `${st.name}／${t.name}`)), h("option", { value: "ext" }, "外部のチーム（名前を入力）"));
+    const s = m?.[side];
+    const def = teams[side === "home" ? 0 : 1];
+    sel.value = s?.kind === "team" && S.teams.has(s.teamId) ? `t:${s.teamId}` : s?.kind === "ext" || !def ? "ext" : `t:${def.t.id}`;
+    const nm = h("input", { type: "text", placeholder: "例：FC ○○", maxlength: "30", value: s?.kind === "ext" ? s.name ?? "" : "" });
+    const nmCell = field("チーム名", nm);
+    const sync = () => { nmCell.hidden = sel.value !== "ext"; };
+    sel.addEventListener("change", sync); sync();
+    return { cells: [field(side === "home" ? "チーム1" : "チーム2", sel), nmCell],
+      value: () => (sel.value === "ext" ? { kind: "ext", name: nm.value.trim() || (side === "home" ? "ホーム" : "相手"), color: side === "home" ? "#0A84FF" : "#FF453A" }
+        : (() => { const t = S.teams.get(sel.value.slice(2)); return { kind: "team", teamId: t.id, name: t.name, color: t.color ?? null }; })()) };
+  };
+  const home = sideSel("home"), away = sideSel("away");
+  const title = h("input", { type: "text", class: "plain", placeholder: "試合の名前（例：練習試合・第1試合。空欄でもよい）", maxlength: "40", value: m?.title ?? "" });
+  let rows = (m?.periods ?? MATCH_PRESETS[0].periods).map((p) => ({ ...p }));
+  const rowsBox = h("div");
+  const paintRows = () => setKids(rowsBox, rows.map((r, i) => {
+    const lb = h("input", { type: "text", value: r.label, maxlength: "12", class: "plain", "aria-label": "ピリオドの名前" });
+    lb.addEventListener("input", () => { r.label = lb.value; });
+    const mn = h("input", { type: "number", min: "0.5", max: "120", step: "0.5", inputmode: "decimal", value: r.min, class: "num-input", "aria-label": "分" });
+    mn.addEventListener("input", () => { r.min = Number(mn.value); });
+    return h("div", { class: "cell period-row" }, lb, mn, h("span", { class: "secondary" }, "分"),
+      rows.length > 1 ? h("button", { type: "button", class: "text-btn destructive", onclick: () => { rows.splice(i, 1); paintRows(); } }, "削除") : null);
+  }));
+  paintRows();
+  const preset = h("select", { "aria-label": "よく使う時間" }, h("option", { value: "" }, "選ぶと下に入ります"), MATCH_PRESETS.map((p, i) => h("option", { value: String(i) }, p.label)));
+  preset.addEventListener("change", () => { if (preset.value === "") return; rows = MATCH_PRESETS[Number(preset.value)].periods.map((p) => ({ ...p })); paintRows(); preset.value = ""; });
+  // 担当の情報がない古い記録係は「全部」とみなす
+  const keepers = keeperRolesEditor(m ? Object.fromEntries((m.keepers ?? []).map((u) => [u, m.roles?.[u] ?? ALL_MATCH_ROLES])) : {});
+  const shown = toggle(m ? !!m.shown : true);
+  const close = () => box.remove();
+  const save = h("button", { class: "cell cell-button", onclick: () => guard(save, async () => {
+    const ps = rows.map((r, i) => ({ label: (r.label ?? "").trim() || `${i + 1}本目`, min: Math.round(Number(r.min) * 10) / 10 }));
+    if (!ps.length || ps.length > 10 || ps.some((p) => !(p.min >= 0.5 && p.min <= 120))) return toast("ピリオドは 1〜10 個、時間は 0.5〜120 分で入れてください", true);
+    const h1 = home.value(), a1 = away.value();
+    if (h1.kind === "team" && a1.kind === "team" && h1.teamId === a1.teamId) return toast("同じチームどうしになっています", true);
+    const roles = keepers.value();
+    const data = { title: title.value.trim(), home: h1, away: a1, periods: ps, keepers: Object.keys(roles), roles, shown: shown.checked };
+    if (m) {
+      if ((m.cur ?? 0) >= ps.length) data.cur = ps.length - 1;
+      await updateDoc(D("matches", m.id), { ...data, uid: S.user.uid, at: serverTimestamp() });
+      toast("保存しました");
+    } else {
+      await addDoc(C("matches"), { ...data, cur: 0, running: false, startedAt: null, elapsed: 0, status: "ready", goals: {}, shots: {}, plays: {}, poss: {}, hold: {}, order: Date.now(), createdAt: serverTimestamp(), uid: S.user.uid, at: serverTimestamp() });
+      toast("試合を作りました");
+    }
+    close();
+  }) }, m ? "保存" : "試合を作る");
+  const box = h("div", { class: "share-modal over-viewer", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: "share-panel pe-panel match-editor" },
+      h("div", { class: "share-head" }, h("b", null, m ? "試合を直す" : "試合を作る"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+      group(null, [h("div", { class: "cell" }, title), ...home.cells, ...away.cells], teams.length ? "チーム表のチームどうしなら「仲間内の成績」に入ります。外部のチームとの試合は個人成績だけに入ります。" : "チーム表のチームがまだないので、外部のチーム名で作れます。"),
+      group("時間（ピリオド）", [field("よく使う時間", preset), rowsBox, h("button", { type: "button", class: "cell cell-button", onclick: () => { if (rows.length >= 10) return; rows.push({ label: `${rows.length + 1}本目`, min: rows.at(-1)?.min ?? 10 }); paintRows(); } }, icon("plus"), "ピリオドを足す")],
+        "名前も時間も自由に変えられます（例：前半 12分・後半 12分）。名前に「延長」が入るピリオドは、累積ファウルを前のピリオドから続けて数えます。"),
+      group("記録係と担当（誰が何を記録するか）", [h("div", { class: "cell target-wrap" }, keepers.el)],
+        h("span", null, "管理者はいつでも全部を記録できます。記録係は、登録されている間だけ、チェックした担当の分を記録できます（外すとすぐに記録できなくなります）。同じ担当を複数人にしてもかまいません。", h("br"), MATCH_ROLES.map((r) => `${r.label}：${r.hint}`).join("／"))),
+      group(null, field("参加者に公開する", shown), "オフの間は、参加者にも記録係にも見えません（記録係が記録するには公開が必要です）。"),
+      save));
+  document.body.append(box);
+}
+
+// 記録の1行の文
+function evText(m, e) {
+  const K = M_KINDS[e.k];
+  if (e.k === "goal") return e.own ? `オウンゴール${evWho(e) ? `（${evWho(e)}）` : ""}` : `ゴール ${evWho(e)}${e.assist ? `（アシスト ${futsalName(e.assist)}）` : ""}`;
+  if (e.k === "shot") return `シュート${e.r ? `（${shotResult(e.r)}）` : ""} ${evWho(e)}`;
+  if (e.k === "sub") return `交代 ${evWho(e) ? `OUT ${evWho(e)}` : ""}${e.inUid || e.inName ? ` → IN ${evWho(e, "inUid", "inName")}` : ""}`;
+  return `${K.label} ${evWho(e)}`.trim();
+}
+
+// 試合の画面（大きな時計と点数。記録係・管理者は担当の分を操作できる）
+let MATCH_UI = null;
+function openMatch(id) {
+  startMatchTicker();
+  MATCH_UI?.close();
+  matchOpenId = id;
+  const head = h("b", { class: "board-title" });
+  const topBox = h("div"), restBox = h("div");
+  const possPct = { home: h("b"), away: h("b") };
+  const possBar = h("div", { class: "m-poss-bar" }, h("i", { class: "home" }));
+  const mkHold = (s) => {
+    const b = h("button", { type: "button", class: "m-hold" }, h("b"), h("small"));
+    b.addEventListener("pointerdown", (e) => { const m = S.matches.get(id); if (m) holdStart(m, s, b, e); });
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+    return b;
+  };
+  const holdBtns = { home: mkHold("home"), away: mkHold("away") };
+  const holdRow = h("div", { class: "m-hold-row" }, holdBtns.home, holdBtns.away);
+  const possEl = h("div", { class: "m-poss" },
+    h("div", { class: "m-poss-head" }, h("span", { "data-poss-live": "home", class: "m-poss-live" }), possPct.home, h("span", { class: "secondary" }, "ボール保持率"), possPct.away, h("span", { "data-poss-live": "away", class: "m-poss-live" })),
+    possBar, holdRow);
+  possPct.home.dataset.possPct = "home"; possPct.away.dataset.possPct = "away";
+  const body = h("div", { class: "match-body" }, topBox, possEl, restBox);
+  let pick = null; // 詳しく入れている記録 { coll, id }
+  let tab = "log";
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); if (pick) { pick = null; update(); } else close(); } };
+  const close = () => { holdEnd(); el.remove(); document.removeEventListener("keydown", onKey, true); if (matchOpenId === id) matchOpenId = null; if (MATCH_UI?.id === id) MATCH_UI = null; };
+  const el = h("div", { class: "board-viewer match-viewer", role: "dialog", "aria-modal": "true", "aria-label": "試合" },
+    h("div", { class: "fv-head" }, head, h("span", { class: "board-live" }, h("i"), "リアルタイム"), h("button", { class: "text-btn", onclick: close }, "閉じる")), body);
+  document.body.append(el);
+  document.addEventListener("keydown", onKey, true);
+  redrawOnLeave(el);
+  const add = (m, k, side, extra) => { const r = mAddEvent(m, k, side, extra); if (r && !["ck", "kickin", "fk", "pk", "timeout"].includes(k)) { pick = r; update(); } };
+  // 記録を詳しく入れる欄（誰が・結果・時間）
+  const picker = (m) => {
+    const raw = pick && m[pick.coll]?.[pick.id];
+    // 押した直後はまだ届いていないので待つ。いったん届いたあとで消えたら（ほかの人が取り消したら）閉じる
+    if (!raw) { if (pick?.seen) pick = null; return null; }
+    pick.seen = true;
+    const e = { id: pick.id, coll: pick.coll, ...raw, k: pick.coll === "goals" ? "goal" : pick.coll === "shots" ? "shot" : raw.k };
+    const K = M_KINDS[e.k];
+    if (!K || !mCan(m, K.role)) { pick = null; return null; }
+    const set = (patch) => mSetEv(m, e.coll, e.id, patch);
+    const whoSide = e.k === "goal" && e.own ? otherSide(e.side) : e.side;
+    const ext = m[whoSide]?.kind === "ext";
+    const chips = (key, nameKey, label, sideOf = whoSide, skip = null) => {
+      const isExt = m[sideOf]?.kind === "ext";
+      if (isExt) {
+        const inp = h("input", { type: "text", placeholder: `${label}（任意。背番号や名前）`, maxlength: "20", value: e[nameKey] ?? "" });
+        inp.addEventListener("change", () => set({ [nameKey]: inp.value.trim() }));
+        return h("label", { class: "m-pick-row" }, h("span", null, label), inp);
+      }
+      return h("div", { class: "m-pick-row" }, h("span", null, label), h("div", { class: "m-chips" }, mSideMembers(m, sideOf).filter((c) => c.id !== skip).map((c) =>
+        h("button", { class: `m-chip${e[key] === c.id ? " on" : ""}`, onclick: () => set({ [key]: e[key] === c.id ? null : c.id }) }, futsalName(c.id)))));
+    };
+    const optChips = (label, opts, cur, onPick) => h("div", { class: "m-pick-row" }, h("span", null, label), h("div", { class: "m-chips" }, opts.map(([v, l]) => h("button", { class: `m-chip${cur === v ? " on" : ""}`, onclick: () => onPick(v) }, l))));
+    // 時間を直す
+    const per = h("select", { class: "inline-select", "aria-label": "ピリオド" }, (m.periods ?? []).map((p, i) => h("option", { value: String(i), selected: (e.p ?? 0) === i }, p.label)));
+    const tIn = h("input", { type: "text", inputmode: "numeric", class: "num-input m-time-in", value: fmtMs(e.t ?? 0), "aria-label": "経過時間（分:秒）", maxlength: "6" });
+    const saveTime = () => {
+      const mt = /^(\d{1,3})(?::(\d{1,2}))?$/.exec(tIn.value.trim());
+      if (!mt || Number(mt[2] ?? 0) >= 60) { toast("時間は「分:秒」で入れてください（例 12:34）", true); tIn.value = fmtMs(e.t ?? 0); return; }
+      set({ p: Number(per.value), t: (Number(mt[1]) * 60 + Number(mt[2] ?? 0)) * 1000 });
+    };
+    per.addEventListener("change", saveTime); tIn.addEventListener("change", saveTime);
+    return h("div", { class: "m-picker" },
+      h("div", { class: "m-picker-head" }, h("b", null, `${K.icon} ${e.k === "yellow" || e.k === "red" ? "カード" : K.label}（${mSideName(m, e.side)}）`), h("button", { class: "text-btn", onclick: () => { pick = null; update(); } }, "完了")),
+      e.k === "goal" ? optChips("種類", [["n", "ふつうのゴール"], ["own", "オウンゴール"]], e.own ? "own" : "n", (v) => set({ own: v === "own", uid: null, name: "", assist: null })) : null,
+      e.k === "goal" ? chips("uid", "name", e.own ? `入れてしまった人（${mSideName(m, otherSide(e.side))}）` : "決めた人") : null,
+      e.k === "goal" && !e.own && !ext ? chips("assist", "assistName", "アシスト", e.side, e.uid) : null,
+      e.k === "shot" ? optChips("結果", SHOT_RESULTS, e.r, (v) => set({ r: e.r === v ? null : v })) : null,
+      e.k === "shot" ? chips("uid", "name", "打った人") : null,
+      e.k === "yellow" || e.k === "red" ? optChips("色", [["yellow", "イエロー"], ["red", "レッド"]], e.k, (v) => set({ k: v })) : null,
+      e.k === "foul" || e.k === "yellow" || e.k === "red" || e.k === "sub" ? chips("uid", "name", K.who) : null,
+      e.k === "sub" ? chips("inUid", "inName", "入った人", e.side, e.uid) : null,
+      h("div", { class: "m-pick-row" }, h("span", null, "時間（経過）"), h("div", { class: "m-time" }, per, tIn, h("span", { class: "secondary" }, `入力 ${fmtClockAt(e.at)}`))),
+      h("div", { class: "m-picker-foot" }, h("button", { class: "text-btn destructive", onclick: () => { if (confirm("この記録を取り消しますか？")) { pick = null; mDelEv(m, e.coll, e.id); } } }, "この記録を取り消す")));
+  };
+  const update = () => {
+    const m = S.matches.get(id);
+    if (!m) { holdEnd(); topBox.replaceChildren(); possEl.hidden = true; setKids(restBox, h("div", { class: "board-msg static" }, "この試合は見られません（削除されたか、非公開になりました）。")); return; }
+    if (typingIn(el)) return;
+    const roles = myMatchRoles(m);
+    const can = (r) => roles.includes(r);
+    const live = m.status !== "done";
+    head.textContent = m.title || `${mSideName(m, "home")} vs ${mSideName(m, "away")}`;
+    const sc = mScore(m);
+    const cur = m.cur ?? 0;
+    const side = (s) => h("div", { class: `m-side ${s}` },
+      h("div", { class: "m-name" }, h("span", { class: "dot", style: `--c:${mSideColor(m, s)}` }), mSideName(m, s)),
+      h("div", { class: "m-score", "data-score": s }, sc[s]),
+      h("div", { class: `m-fouls${teamFouls(m, s) >= 5 ? " warn" : ""}`, title: "このピリオドの累積ファウル" }, `ファウル ${teamFouls(m, s)}`, teamFouls(m, s) >= 5 ? h("small", null, "次から第2PK") : null));
+    const nPer = m.periods?.length ?? 1;
+    const timer = can("timer") && live ? h("div", { class: "m-controls" },
+      m.running ? h("button", { class: "m-btn pause", onclick: () => mPause(m) }, "一時停止") : h("button", { class: "m-btn start", onclick: () => mStart(m) }, mElapsed(m) > 0 ? "再開" : `${mPeriodLabel(m)} スタート`),
+      h("div", { class: "m-adjust" }, [[-60000, "−1分"], [-10000, "−10秒"], [10000, "＋10秒"], [60000, "＋1分"]].map(([d, l]) => h("button", { class: "pill", onclick: () => mAdjust(m, d) }, l))),
+      h("div", { class: "m-period-btns" },
+        cur > 0 ? h("button", { class: "text-btn", onclick: () => { if (confirm(`${mPeriodLabel(m, cur - 1)}に戻しますか？（時計は止まって 0 からになります）`)) mGoto(m, cur - 1); } }, `‹ ${mPeriodLabel(m, cur - 1)}に戻す`) : null,
+        cur < nPer - 1 ? h("button", { class: "text-btn", onclick: () => { if (confirm(`${mPeriodLabel(m, cur + 1)}に進みますか？（時計は止まって ${m.periods[cur + 1].min}分 に戻ります）`)) mGoto(m, cur + 1); } }, `${mPeriodLabel(m, cur + 1)}へ ›`) : null,
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm("試合終了にしますか？（あとで取り消せます）")) mFinish(m); } }, "試合終了"))) : null;
+    // ボール保持（全員に見える。担当は長押しで記録）。長押し中に描き直してもボタンが入れ替わらないよう、この欄は作り直さない
+    const pc = mPossPct(m);
+    possEl.dataset.mposs = m.id;
+    possEl.hidden = false;
+    possBar.style.cssText = `--h:${mSideColor(m, "home")};--a:${mSideColor(m, "away")}`;
+    possBar.firstChild.style.width = `${pc ? pc.home : 50}%`;
+    for (const s of ["home", "away"]) {
+      possPct[s].textContent = pc ? `${pc[s]}%` : "—";
+      const b = holdBtns[s];
+      b.style.setProperty("--c", mSideColor(m, s));
+      b.classList.toggle("on", !!(HOLD && HOLD.mid === m.id && HOLD.side === s));
+      b.setAttribute("aria-label", `${mSideName(m, s)}のボール保持（押している間）`);
+      b.firstChild.textContent = mSideName(m, s);
+      b.lastChild.textContent = m.running ? "押している間 保持" : "時計が止まっている間は数えません";
+    }
+    holdRow.hidden = !(can("poss") && live);
+    if (holdRow.hidden && HOLD?.mid === m.id) holdEnd();
+    // 記録ボタン（担当の分だけ）
+    const recBtns = (s) => {
+      const bs = [
+        can("goal") ? h("button", { class: "m-rec goal", style: `--c:${mSideColor(m, s)}`, onclick: () => add(m, "goal", s) }, "⚽ ゴール") : null,
+        can("shot") ? h("button", { class: "m-rec", onclick: () => add(m, "shot", s) }, "シュート") : null,
+        ...(can("play") ? PLAY_BUTTONS.map(([k, l]) => h("button", { class: `m-rec${k === "yellow" ? " card" : ""}`, onclick: () => add(m, k, s) }, l)) : []),
+      ].filter(Boolean);
+      return bs.length ? h("div", { class: `m-rec-col ${s}` }, h("div", { class: "m-rec-name" }, dot(mSideColor(m, s)), mSideName(m, s)), h("div", { class: "m-rec-grid" }, bs)) : null;
+    };
+    const rec = live && (can("goal") || can("shot") || can("play")) ? h("div", { class: "m-rec-wrap" }, recBtns("home"), recBtns("away")) : null;
+    // 記録の一覧
+    const evs = mEvents(m);
+    const foulNo = new Map();
+    for (const s of ["home", "away"]) {
+      const cnt = new Map();
+      evs.filter((e) => e.k === "foul" && e.side === s).forEach((e) => { const key = foulScope(m, e.p ?? 0)[0]; const n = (cnt.get(key) ?? 0) + 1; cnt.set(key, n); foulNo.set(e.id, n); });
+    }
+    const log = evs.length ? h("ol", { class: "m-log" }, [...evs].reverse().map((e) => {
+      const K = M_KINDS[e.k];
+      const mine = can(K.role);
+      return h("li", { class: `m-ev ${e.side} k-${e.k}` },
+        h("span", { class: "m-ev-time" }, `${mPeriodLabel(m, e.p)} ${fmtMs(e.t ?? 0)}`),
+        h("span", { class: "dot", style: `--c:${mSideColor(m, e.side)}` }),
+        h("span", { class: "m-ev-what" }, h("i", { class: `m-ev-icon k-${e.k}` }, K.icon), evText(m, e), e.k === "foul" ? h("small", null, `（累積 ${foulNo.get(e.id)}）`) : null),
+        h("span", { class: "m-ev-at" }, `入力 ${fmtClockAt(e.at)}${e.by ? `・${byName(e.by)}` : ""}`),
+        mine ? h("button", { class: "text-btn m-ev-edit", onclick: () => { pick = { coll: e.coll, id: e.id }; update(); body.scrollTo?.({ top: 0, behavior: "smooth" }); } }, "直す") : null);
+    })) : h("p", { class: "secondary m-nogoal" }, "まだ記録はありません。");
+    // チームごとの数
+    const st = mTeamStats(m);
+    const statRow = (label, a, b) => { const tot = a + b; return h("div", { class: "m-stat" }, h("b", null, a), h("div", { class: "m-stat-mid" }, h("span", null, label), h("div", { class: "m-stat-bar", style: `--h:${mSideColor(m, "home")};--a:${mSideColor(m, "away")}` }, h("i", { class: "home", style: `width:${tot ? (a / tot) * 100 : 50}%` }))), h("b", null, b)); };
+    const stats = h("div", { class: "m-stats" },
+      statRow("ゴール", st.home.goal, st.away.goal),
+      statRow("シュート", st.home.shot, st.away.shot),
+      statRow("枠内シュート", st.home.on, st.away.on),
+      pc ? statRow("ボール保持（%）", pc.home, pc.away) : null,
+      statRow("ファウル（試合全体）", st.home.foul, st.away.foul),
+      statRow("イエローカード", st.home.yellow, st.away.yellow),
+      statRow("レッドカード", st.home.red, st.away.red),
+      statRow("コーナーキック", st.home.ck, st.away.ck),
+      statRow("キックイン", st.home.kickin, st.away.kickin),
+      statRow("フリーキック", st.home.fk, st.away.fk),
+      statRow("PK・第2PK", st.home.pk, st.away.pk),
+      statRow("タイムアウト", st.home.timeout, st.away.timeout),
+      statRow("交代", st.home.sub, st.away.sub),
+      h("p", { class: "secondary" }, "シュートの数にはゴールを含みます（オウンゴールは除く）。ボール保持は、担当が長押ししていた時間の割合です。"));
+    const tabs = segmented([{ value: "log", label: `記録（${evs.length}）` }, { value: "stats", label: "チームの数" }], tab);
+    tabs.addEventListener("change", () => { tab = tabs.value; update(); });
+    const pk = picker(m);
+    setKids(topBox,
+      h("div", { class: "m-board" },
+        side("home"),
+        h("div", { class: "m-center" },
+          h("div", { class: "m-period" }, m.status === "done" ? "試合終了" : `${mPeriodLabel(m)}（${m.periods?.[cur]?.min ?? "?"}分）`),
+          mClock(m, "big"),
+          h("div", { class: "m-state secondary" }, m.status === "done" ? "" : m.running ? "進行中" : mElapsed(m) > 0 ? "停止中" : "開始前")),
+        side("away")));
+    setKids(restBox,
+      pk,
+      rec,
+      timer,
+      m.status === "done" && can("timer") ? h("div", { class: "m-controls" }, h("button", { class: "text-btn", onclick: () => mUpdate(m, { status: "live" }, "試合終了を取り消しました") }, "試合終了を取り消す")) : null,
+      h("div", { class: "m-section" }, h("div", { class: "m-tabs" }, tabs), tab === "log" ? log : stats),
+      roles.length && !S.isAdmin ? h("p", { class: "secondary" }, `あなたはこの試合の記録係です（担当：${roles.map(roleLabel).join("・")}）。管理者が外すと記録できなくなります。`) : null,
+      !roles.length ? h("p", { class: "secondary" }, "記録係が時計を動かしたり記録したりすると、この画面にそのまま反映されます。") : null,
+      S.isAdmin ? h("div", { class: "m-admin" },
+        h("button", { class: "text-btn", onclick: () => openMatchEditor(m) }, "試合の設定（チーム・時間・記録係と担当・公開）"),
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm("この試合を削除しますか？（記録もすべて消えます）")) { fire(deleteDoc(D("matches", m.id)), "削除しました"); close(); } } }, "試合を削除")) : null);
+  };
+  MATCH_UI = { id, update, close };
+  update();
+  return el;
+}
 
 function adminTeams() {
   const attrs = attrEditor();
@@ -8753,7 +9503,8 @@ async function printPtQrs(qs, mm) {
 const EXPORT_PARTS = [
   { key: "members", label: "参加者一覧" },
   { key: "teams", label: "チーム" },
-  { key: "points", label: "ポイント" },
+  { key: "points", label: "ポイント", noFutsal: true },
+  { key: "matches", label: "試合の記録", futsal: true },
   { key: "quizzes", label: "クイズ（問題と正解）" },
   { key: "notes", label: "表・メモ" },
   { key: "polls", label: "出欠・アンケート" },
@@ -8865,6 +9616,26 @@ function exportBuild(parts) {
       return sec("立て替えの精算",
         h("h3", null, "精算（誰が誰に払うか）"), st.length ? T(["払う人", "受け取る人", "金額"], st.map((x) => [memberName(x.from), memberName(x.to), yen(x.amount)])) : none("精算するものはありません"),
         h("h3", null, "記録"), items.length ? T(["内容", "立て替えた人", "金額", "割る人"], items.map((e) => e.kind === "settle" ? [`支払い済み（${memberName(e.from)} → ${memberName(e.to)}）`, "", yen(e.amount), ""] : [e.title, memberName(e.payer), yen(e.amount), e.split?.length ? splitOf(e).map(memberName).join("・") : "全員"])) : none());
+    },
+    matches: () => {
+      const all = sortedMatches().reverse();
+      const { standings, players } = matchStats(all);
+      const sign = (n) => (n > 0 ? `+${n}` : String(n));
+      return sec("試合の記録",
+        standings.length ? [h("h3", null, "仲間内の成績（終わった試合）"), T(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点"], mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}`, (r, rk) => [rk, r.name, r.n, r.w, r.d, r.l, r.gf, r.ga, sign(r.gd), r.pts])),
+          h("p", { class: "rp-sub" }, "勝ち3点・引き分け1点。順位は 勝点→得失点差→得点 の順。")] : null,
+        players.length ? [h("h3", null, "個人成績"), T(["順位", "名前", "得点", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"], mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => [rk, futsalName(r.uid), r.g, r.a, r.s, r.on, r.f, r.y, r.rc]))] : null,
+        all.length ? all.map((m) => {
+          const sc = mScore(m), st = mTeamStats(m), pc = mPossPct(m);
+          const hn = mSideName(m, "home"), an = mSideName(m, "away");
+          const rows = [["ゴール", "goal"], ["シュート", "shot"], ["枠内シュート", "on"], ["ファウル", "foul"], ["イエローカード", "yellow"], ["レッドカード", "red"], ["コーナーキック", "ck"], ["キックイン", "kickin"], ["フリーキック", "fk"], ["PK・第2PK", "pk"], ["タイムアウト", "timeout"], ["交代", "sub"]]
+            .map(([l, k]) => [st.home[k], l, st.away[k]]);
+          if (pc) rows.splice(3, 0, [`${pc.home}%`, "ボール保持率", `${pc.away}%`]);
+          return h("div", { class: "rp-block" },
+            h("h3", null, `${m.title ? `${m.title}：` : ""}${hn} ${sc.home} - ${sc.away} ${an}`, h("small", null, `（${m.status === "done" ? "試合終了" : "途中"}・${(m.periods ?? []).map((p) => `${p.label}${p.min}分`).join("／")}）`)),
+            T([hn, "", an], rows, "rp-vs"),
+            mEvents(m).length ? T(["時間（経過）", "チーム", "出来事", "入力した時刻・人"], mEvents(m).map((e) => [`${mPeriodLabel(m, e.p)} ${fmtMs(e.t ?? 0)}`, mSideName(m, e.side), evText(m, e), `${fmtClockAt(e.at)}${e.by ? `・${byName(e.by)}` : ""}`])) : none("記録はありません"));
+        }) : none("試合はまだありません"));
     },
     checklists: () => {
       const ls = sortedChecklists();
@@ -9128,11 +9899,13 @@ async function exportPdf(parts) {
   window.addEventListener("afterprint", done);
   await startPrint();
 }
+// フットサルの旅行ではポイントの代わりに試合の記録を出す
+const exportParts = () => EXPORT_PARTS.filter((p) => (isFutsal() ? !p.noFutsal : !p.futsal));
 function exportBox() {
   const checks = new Map(EXPORT_PARTS.map((p) => [p.key, toggle(true)]));
   return group("データを PDF で出力", [
-    ...EXPORT_PARTS.map((p) => field(p.label, checks.get(p.key))),
-    h("button", { class: "cell cell-button", onclick: () => guard(null, () => exportPdf(EXPORT_PARTS.map((p) => p.key).filter((k) => checks.get(k).checked))) }, icon("note"), "PDF で出力（印刷画面 →「PDF に保存」）"),
+    ...exportParts().map((p) => field(p.label, checks.get(p.key))),
+    h("button", { class: "cell cell-button", onclick: () => guard(null, () => exportPdf(exportParts().map((p) => p.key).filter((k) => checks.get(k).checked))) }, icon("note"), "PDF で出力（印刷画面 →「PDF に保存」）"),
   ], "この旅行のデータを、項目ごとにページを分けて出力します。印刷画面で「送信先：PDF に保存」（iPhone は共有ボタン →「プリント」→ 2本指で拡大 → 共有 →「ファイルに保存」）を選んでください。");
 }
 
@@ -9265,6 +10038,7 @@ function scheduleRender(kind = "all") {
 // 参加者用：所属チームと所持ポイントを右上に常に表示する
 function meChip() {
   const el = h("div", { class: "me-chip", "aria-label": "あなたの所属チームとポイント" });
+  // フットサルの旅行ではポイントを出さない
   el.paint = () => {
     const uid = S.user.uid;
     const teams = sortedSets().map((s) => S.teams.get(teamOfIn(uid, s.id))).filter(Boolean);
@@ -9272,7 +10046,7 @@ function meChip() {
     el.replaceChildren(
       ...(S.config.locShare ? [h("span", { class: `me-loc${LOC.error ? " err" : ""}`, title: LOC.error ? "位置を取得できていません" : "位置を共有中" }, icon("locate"))] : []),
       ...teams.map((t) => h("span", { class: "me-team", title: teamName(t.id) }, dot(t.color), t.name)),
-      h("span", { class: "me-points" }, points, h("small", null, "pt")),
+      noPoints() ? null : h("span", { class: "me-points" }, points, h("small", null, "pt")),
     );
   };
   return el;
@@ -9437,7 +10211,7 @@ function buildDesktopShell(tabs) {
   // 管理者：一番右の欄（表・メモ／参加者）を、上部のボタンで選んだ画面に切り替える
   // 参加者：右の2列（ポイント＋表・メモ）を1つの広い欄にして、そこに出す（確定前ページは一番右の欄）
   const sideIdx = panels.length - 1;
-  const memberWide = !S.isAdmin && panels.length >= 3;
+  const memberWide = !S.isAdmin && panels.length >= 3 && panels.some((t) => t.key === "points");
   let sideTab = null, sideView = null;
   const paintSide = () => {
     const sec = sections[sideIdx];
@@ -9505,11 +10279,11 @@ function buildMemberPageShell() {
   ] : [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
     { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
-    { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
+    noPoints() ? null : { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
     { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
     { key: "money", label: "出欠", view: memberMoney({ compact: true, pinned: "split" }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
     { key: "checklist", label: "チェック", view: checklistMember({ compact: true }) },
-  ];
+  ].filter(Boolean);
   const summary = memberSummary();
   const chip = lobby ? null : meChip();
   const navTitle = h("div", { class: "nav-title" });
@@ -9601,15 +10375,22 @@ function render(kinds) {
         h("button", { class: "btn-filled ghost-btn", onclick: () => signOut(auth) }, "ログアウト（別のIDで入る）")));
     }
   }
+  // 旅行の種類（フットサル／ふつう）が変わったら、ポイントの画面を出す・消すために組み立て直す。
+  // 開いていた画面（設定など）は組み立て直したあとでもう一度開く
+  let reopen = null;
+  if (shell && shell.noPoints !== noPoints()) { reopen = (S.sheet ?? deskSideCurrent)?.key ?? null; shell = null; }
   if (!shell) {
     closeSheet();
     deskSideOpen = null;
     deskSideCurrent?.view.destroy?.();
     deskSideCurrent = null;
     const lobby = inLobby();
-    if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? (lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS));
-    else shell = S.isAdmin ? buildMobileShell(lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : buildMemberPageShell();
+    if (desktopQuery.matches) shell = buildDesktopShell(withoutPoints(S.isAdmin ? (lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS)));
+    else shell = S.isAdmin ? buildMobileShell(withoutPoints(lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS)) : buildMemberPageShell();
+    shell.noPoints = noPoints();
     $app.replaceChildren(shell.root);
+    const again = reopen && reopen !== "points" ? (S.isAdmin ? (lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS)).find((t) => t.key === reopen) : null;
+    if (again) openSheet(again);
   }
   document.title = S.config.title || APP_TITLE;
   shell.update();

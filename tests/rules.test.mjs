@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import assert from "node:assert/strict";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, where, serverTimestamp, runTransaction, increment } from "firebase/firestore";
+import { doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, collection, getDocs, query, where, serverTimestamp, runTransaction, increment } from "firebase/firestore";
 
 const env = await initializeTestEnvironment({
   projectId: "demo-island",
@@ -58,7 +58,17 @@ await test("参加者：アカウント一覧は読めない", () => assertFails
 
 // ----- 書き込み（参加者は uid が自分のものだけ）
 await test("参加者：自分の『見ました』を書ける", () => assertSucceeds(setDoc(doc(alice(), "acks/a1_alice"), { annId: "a1", uid: "alice", at: serverTimestamp() })));
-await test("参加者：自分の位置を書ける（P2）", () => assertSucceeds(setDoc(doc(carol(), "profiles/P2/locations/carol"), { uid: "carol", lat: 1, lng: 2 })));
+await test("参加者：自分の位置を書ける（P2）", () => assertSucceeds(setDoc(doc(carol(), "profiles/P2/locations/carol"), { uid: "carol", lat: 1, lng: 2, at: serverTimestamp() })));
+await test("参加者：時刻をすり替えて書けない（サーバーの時刻だけ）", async () => {
+  await assertFails(setDoc(doc(alice(), "acks/a9_alice"), { annId: "a9", uid: "alice", at: new Date("2020-01-01") }));
+  await assertFails(setDoc(doc(carol(), "profiles/P2/locations/carol"), { uid: "carol", lat: 1, lng: 2, at: new Date(Date.now() + 864e5) }));
+  await assertFails(addDoc(collection(bob(), "messages"), { uid: "bob", chat: "all", text: "先頭に出したい", at: new Date("2099-01-01") }));
+  await assertSucceeds(addDoc(collection(bob(), "messages"), { uid: "bob", chat: "all", text: "ふつう", at: serverTimestamp() }));
+});
+await test("参加者：ありえない位置・大きすぎる値は書けない", async () => {
+  await assertFails(setDoc(doc(carol(), "profiles/P2/locations/carol"), { uid: "carol", lat: 999, lng: 2, at: serverTimestamp() }));
+  await assertFails(setDoc(doc(carol(), "profiles/P2/locations/carol"), { uid: "carol", lat: "北", lng: 2, at: serverTimestamp() }));
+});
 await test("参加者：他人になりすまして書けない", () => assertFails(setDoc(doc(alice(), "acks/a1_bob2"), { annId: "a1", uid: "bob" })));
 await test("参加者：他人の記録は消せない", () => assertFails(deleteDoc(doc(alice(), "acks/a1_bob"))));
 await test("参加者：自分の記録は消せる", () => assertSucceeds(deleteDoc(doc(alice(), "acks/a1_alice"))));
@@ -186,10 +196,18 @@ await test("参加者：チームの QR は自分のチームにだけ入る", a
 });
 await test("参加者：合計（stats）は QR を受け取るときしか書けない", () => assertFails(setDoc(doc(bob(), "stats/points"), { u: { bob: { public: 9999 } }, uid: "bob", qrId: "qr1" }, { merge: true })));
 await test("参加者：クイズの解答に正誤（judge）は書けない", async () => {
-  await assertSucceeds(setDoc(doc(bob(), "quizAnswers/q1_0_bob"), { uid: "bob", quizId: "q1", index: 0, choice: 1, reactionMs: 800, at: now }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "live/quiz"), { quizId: "q1", index: 0, phase: "question" }));
+  await assertSucceeds(setDoc(doc(bob(), "quizAnswers/q1_0_bob"), { uid: "bob", quizId: "q1", index: 0, choice: 1, reactionMs: 800, at: serverTimestamp() }));
   await assertFails(updateDoc(doc(bob(), "quizAnswers/q1_0_bob"), { judge: true }));
   await assertSucceeds(updateDoc(doc(bob(), "quizAnswers/q1_0_bob"), { text: "答え", textMs: 1200 }));
   await assertFails(setDoc(doc(bob(), "quizAnswers/q1_1_bob"), { uid: "bob", quizId: "q1", index: 1, choice: 1, judge: true }));
+});
+await test("参加者：正解の発表後・ほかの問題には、クイズの答えを書き換えられない", async () => {
+  await assertFails(setDoc(doc(bob(), "quizAnswers/q1_3_bob"), { uid: "bob", quizId: "q1", index: 3, choice: 2, reactionMs: 100, at: serverTimestamp() })); // 今出ていない問題
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "live/quiz"), { quizId: "q1", index: 0, phase: "reveal", answerShown: true, answer: 2 }));
+  await assertFails(setDoc(doc(bob(), "quizAnswers/q1_0_bob"), { uid: "bob", quizId: "q1", index: 0, choice: 2, reactionMs: 800, at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "quizAnswers/q1_0_bob"), { choice: 2 }));
+  await assertSucceeds(updateDoc(doc(bob(), "quizAnswers/q1_0_bob"), { timeout: true })); // 自分の時間切れは付けられる
 });
 await test("参加者：妨害・賭けは「申し込み中」でしか作れない", async () => {
   await assertSucceeds(setDoc(doc(bob(), "quizSabo/s1"), { uid: "bob", quizId: "q1", run: 1, forIndex: 0, target: "alice", type: "seal", at: now, status: "pending" }));
@@ -252,17 +270,73 @@ await test("作戦ボード：公開前は読めない・公開すると読め�
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "boards/main"), { shown: true }, { merge: true }));
   await assertSucceeds(getDoc(doc(bob(), "boards/main")));
 });
-await test("作戦ボード：「参加者も動かせる」がオフなら動かせない・オンなら位置だけ動かせる", async () => {
-  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob" }));
+await test("作戦ボード：「参加者も動かせる」がオフなら動かせない・オンなら位置と線だけ変えられる", async () => {
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "marks.m0": { t: "line", p: [1, 1, 2, 2] }, uid: "bob" })); // オフなら描けない
   await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "boards/main"), { open: true }, { merge: true }));
-  await assertSucceeds(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob" }));
-  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 20, y: 20 }, uid: "alice" })); // なりすまし
+  await assertSucceeds(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 20, y: 20 }, uid: "alice", at: serverTimestamp() })); // なりすまし
   await assertFails(updateDoc(doc(bob(), "boards/main"), { players: ["bob"], uid: "bob" }));            // 選手の入れ替えは管理者だけ
   await assertFails(updateDoc(doc(bob(), "boards/main"), { shown: false, uid: "bob" }));                // 設定は管理者だけ
+  await assertSucceeds(updateDoc(doc(bob(), "boards/main"), { "marks.m1": { t: "arrow", c: "#fff", p: [10, 10, 30, 40], uid: "bob", n: 1 }, uid: "bob", at: serverTimestamp() })); // 矢印を描ける
+  await assertSucceeds(updateDoc(doc(bob(), "boards/main"), { marks: {}, uid: "bob", at: serverTimestamp() }));                  // 全部消せる
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 30, y: 30 }, uid: "bob", at: new Date("2020-01-01") })); // 時刻のすり替え
   await assertFails(deleteDoc(doc(bob(), "boards/main")));
   await assertFails(updateDoc(doc(carol(), "boards/main"), { "pos.ball": { x: 1, y: 1 }, uid: "carol" })); // 入っていない旅行
 });
 
+await test("試合の記録：公開前は読めない・公開すると読める", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), {
+    title: "練習", periods: [{ label: "前半", min: 20 }, { label: "後半", min: 20 }], cur: 0, running: false, startedAt: null, elapsed: 0, status: "ready",
+    goals: {}, shots: {}, plays: {}, poss: {}, hold: {}, keepers: ["bob"], roles: { bob: ["timer", "goal"] }, shown: false, uid: "adminUid" }));
+  await assertFails(getDoc(doc(bob(), "matches/m1")));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { running: true, startedAt: serverTimestamp(), status: "live", uid: "bob", at: serverTimestamp() })); // 非公開の間は記録係でも書けない
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), { shown: true }, { merge: true }));
+  await assertSucceeds(getDoc(doc(alice(), "matches/m1")));
+  await assertSucceeds(getDocs(query(collection(alice(), "matches"), where("shown", "==", true))));
+  await assertFails(getDocs(collection(alice(), "matches")));          // 非公開の試合も含む一覧は読めない
+});
+await test("試合の記録：記録係は担当の分だけ書ける・設定は変えられない", async () => {
+  const g = { side: "home", uid: "alice", name: "", assist: null, own: false, p: 0, t: 1000, at: serverTimestamp(), by: "bob", n: 1 };
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { running: true, startedAt: serverTimestamp(), status: "live", uid: "bob", at: serverTimestamp() })); // タイマー
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { "goals.g1": g, uid: "bob", at: serverTimestamp() }));            // 得点
+  await assertSucceeds(updateDoc(doc(bob(), "matches/m1"), { "goals.g1.assist": "bob", uid: "bob", at: serverTimestamp() })); // 決めた人などを直す
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { "shots.s1": { side: "home", r: "on", p: 0, t: 1 }, uid: "bob", at: serverTimestamp() })); // シュートは担当外
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { "plays.f1": { side: "away", k: "foul", p: 0, t: 1 }, uid: "bob", at: serverTimestamp() })); // ファウルは担当外
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { "poss.p0.home": 5000, uid: "bob", at: serverTimestamp() }));      // ボール保持は担当外
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { keepers: ["bob", "alice"], uid: "bob", at: serverTimestamp() })); // 記録係を増やせない
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { "roles.bob": ["timer", "goal", "shot", "play", "poss"], uid: "bob", at: serverTimestamp() })); // 担当を増やせない
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { periods: [{ label: "前半", min: 99 }], uid: "bob", at: serverTimestamp() })); // 時間の設定は管理者だけ
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { shown: false, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { cur: 5, uid: "bob", at: serverTimestamp() }));                    // ないピリオド
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { status: "live", uid: "alice", at: serverTimestamp() }));          // なりすまし
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { status: "done", uid: "bob", at: new Date("2020-01-01") }));       // 時刻のすり替え
+  await assertFails(deleteDoc(doc(bob(), "matches/m1")));
+  // 記録係でない人は何も書けない
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { "goals.g2": { ...g, by: "alice" }, uid: "alice", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { running: false, uid: "alice", at: serverTimestamp() }));
+});
+await test("試合の記録：ボール保持・ファウルの担当と、外されたあと", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), { keepers: ["bob", "alice"], roles: { bob: ["timer", "goal"], alice: ["poss", "play", "shot"] } }, { merge: true }));
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "hold.home": { uid: "alice", at: serverTimestamp() }, uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "poss.p0.home": increment(4200), "hold.home": null, uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "plays.f1": { side: "away", k: "foul", uid: null, name: "", p: 0, t: 5000, at: serverTimestamp(), by: "alice", n: 2 }, uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "shots.s1": { side: "home", r: "off", p: 0, t: 6000 }, uid: "alice", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { "hold.x": null, uid: "alice", at: serverTimestamp() }));        // 決まった形だけ
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { running: false, uid: "alice", at: serverTimestamp() }));         // タイマーは担当外
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { "goals.g9": { side: "home", p: 0, t: 1 }, uid: "alice", at: serverTimestamp() })); // 得点は担当外
+  // 管理者が記録係から外す → すぐ書けない
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), { keepers: ["alice"], roles: { alice: ["poss", "play", "shot"] } }, { merge: true }));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { running: false, uid: "bob", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(bob(), "matches/m1"), { "goals.g3": { side: "away", p: 0, t: 1 }, uid: "bob", at: serverTimestamp() }));
+  // 担当を外すと、記録係のままでもその分は書けない
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "matches/m1"), { roles: { alice: ["shot"] } }, { merge: true }));
+  await assertFails(updateDoc(doc(alice(), "matches/m1"), { "poss.p0.away": increment(1000), uid: "alice", at: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(alice(), "matches/m1"), { "shots.s2": { side: "away", r: "on", p: 0, t: 9000 }, uid: "alice", at: serverTimestamp() }));
+  // 管理者はいつでも全部
+  await assertSucceeds(updateDoc(doc(admin(), "matches/m1"), { periods: [{ label: "1本目", min: 10 }], cur: 0, uid: "adminUid", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(carol(), "matches/m1"), { running: true, uid: "carol", at: serverTimestamp() }));           // 入っていない旅行
+});
 await env.cleanup();
 for (const r of results) console.log(r[0] === "ok" ? "✅" : "❌", r[1], r[2] ?? "");
 const ng = results.filter((r) => r[0] !== "ok").length;

@@ -9,7 +9,8 @@ rules_version = '2';
 //                 - 確定前ページにいる人は、確定した旅行のページだけ読める
 //                 - ほかの人の「見ました」・入金の報告・申請・通知の宛先・パスワード変更の記録は読めない
 //                 - ポイントQR の一覧は読めない（QR を読み取ったときの1件だけ）
-//                 - 作戦ボード（フットサル）は、管理者が公開したときだけ読める。動かせるのは「参加者も動かせる」がオンのときだけ
+//                 - 作戦ボード（フットサル）は、管理者が公開したときだけ読める。動かす・描くのは「参加者も動かせる」がオンのときだけ
+//                 - 試合の記録（フットサル）は、公開した試合だけ読める。記録できるのは管理者と、管理者が指名した記録係（指名されている間・担当の分だけ）
 //               書けるのは、下の「参加者が書けるもの」に決めた形のデータだけ（それ以外はすべて管理者だけ）
 //   未登録の人: 何もできない
 //
@@ -70,6 +71,8 @@ service cloud.firestore {
         || (coll in ['videos', 'archives'] && resource.data.visible == true)
         // 作戦ボード（フットサル）：管理者が「参加者に公開する」をオンにしたときだけ
         || (coll == 'boards' && resource.data.get('shown', false) == true)
+        // 試合の記録（フットサル）：公開した試合だけ
+        || (coll == 'matches' && resource.data.get('shown', false) == true)
         || (coll == 'checks' && (resource.data.uid == me() || resource.data.shared == true))
         || (coll in ['acks', 'payReports', 'pollRequests', 'pushSubs', 'pwChanged'] && resource.data.uid == me())
         // DM・管理者との連絡は当人だけ
@@ -98,52 +101,92 @@ service cloud.firestore {
     function changed() {
       return d().diff(resource.data).affectedKeys();
     }
+    // 時刻はサーバーの時刻だけ（アプリは serverTimestamp() で書く。過去や未来の時刻にすり替えて、順番や「先着」をごまかせない）
+    function serverTime(field) {
+      return d().get(field, null) == request.time;
+    }
+    function num(v, lo, hi) {
+      return (v is int || v is float) && v >= lo && v <= hi;
+    }
+
+    // 試合の記録係：管理者が指名した担当（roles.<uid>）。外されたら、その場で書けなくなる
+    function mRoles() {
+      return resource.data.get('roles', {}).get(me(), []);
+    }
+    function mRole(fields, r) {
+      return !changed().hasAny(fields) || r in mRoles();
+    }
 
     // 作る・書き換える（setDoc は、すでにあれば書き換え扱い）
     function memberWrite(pid, coll, id) {
       return mine() && (
         // 「見ました」
-        (coll == 'acks' && only(['annId', 'uid', 'at']) && id == d().annId + '_' + me())
+        (coll == 'acks' && only(['annId', 'uid', 'at']) && id == d().annId + '_' + me() && serverTime('at'))
         // 地図の位置共有
-        || (coll == 'locations' && only(['uid', 'lat', 'lng', 'acc', 'at']) && id == me() && d().lat is number && d().lng is number)
+        || (coll == 'locations' && only(['uid', 'lat', 'lng', 'acc', 'at']) && id == me() && serverTime('at')
+            && num(d().lat, -90, 90) && num(d().lng, -180, 180) && (!('acc' in d()) || num(d().acc, 0, 1000000)))
         // アンケートの回答（受付中で、対象に入っているものだけ）
         || (coll == 'votes' && only(['uid', 'pollId', 'choice', 'order', 'comment', 'at', 'firstAt'])
-            && id == d().pollId + '_' + me() && strOrNull(d().get('comment', null), 200) && canVote(pid, d().pollId))
+            && id == d().pollId + '_' + me() && strOrNull(d().get('comment', null), 200) && canVote(pid, d().pollId)
+            && serverTime('at') && firstAtOk() && choiceOk(d().get('choice', null)) && (!('order' in d()) || (d().order is list && d().order.size() <= 100)))
         // 入金の報告
         || (coll == 'payReports' && only(['uid', 'paymentId', 'method', 'note', 'image', 'at'])
-            && id == d().paymentId + '_' + me() && exists(at(pid, 'payments', d().paymentId))
+            && id == d().paymentId + '_' + me() && exists(at(pid, 'payments', d().paymentId)) && serverTime('at')
+            && strOrNull(d().get('method', null), 30)
             && strOrNull(d().get('note', null), 300) && strOrNull(d().get('image', null), 400000))
         // アンケートの申請（作るだけ。承認・見送りは管理者）
-        || (coll == 'pollRequests' && request.method == 'create' && d().status == 'pending'
+        || (coll == 'pollRequests' && request.method == 'create' && d().status == 'pending' && serverTime('createdAt')
             && only(['uid', 'question', 'options', 'deadline', 'allowComment', 'showResults', 'showName', 'status', 'createdAt'])
             && str(d().question, 300) && d().options is list && d().options.size() <= 40)
-        // クイズの解答（正誤の判定は管理者だけ）
+        // クイズの解答（正誤の判定は管理者だけ）。答える・送り直すのは、その問題が「解答中」の間だけ
+        // （正解を発表したあとに答えを書き換えられないように）。自分の「時間切れ」だけはいつでも付けられる
         || (coll == 'quizAnswers' && id == d().quizId + '_' + string(d().index) + '_' + me()
-            && (request.method == 'create' ? !d().keys().hasAny(['judge']) : !changed().hasAny(['judge', 'uid', 'quizId', 'index'])))
+            && (request.method == 'create'
+              ? (!d().keys().hasAny(['judge']) && serverTime('at') && quizOpen(pid))
+              : (!changed().hasAny(['judge', 'uid', 'quizId', 'index'])
+                && ((changed().hasOnly(['timeout']) && d().timeout == true) || (quizOpen(pid) && (!changed().hasAny(['at']) || serverTime('at')))))))
         // クイズの妨害・賭け（申し込みだけ。受付・却下は管理者）
-        || (coll == 'quizSabo' && request.method == 'create' && d().status == 'pending'
+        || (coll == 'quizSabo' && request.method == 'create' && d().status == 'pending' && serverTime('at')
             && only(['uid', 'quizId', 'run', 'forIndex', 'target', 'type', 'at', 'status']))
-        || (coll == 'quizBets' && request.method == 'create' && d().status == 'pending'
-            && only(['uid', 'quizId', 'run', 'kind', 'pick', 'amount', 'at', 'status']))
+        || (coll == 'quizBets' && request.method == 'create' && d().status == 'pending' && serverTime('at')
+            && only(['uid', 'quizId', 'run', 'kind', 'pick', 'amount', 'at', 'status'])
+            && d().amount is int && d().amount > 0 && d().amount <= 100000 && d().pick is list && d().pick.size() <= 20)
         // チャット（全体・自分のチーム・自分と管理者・自分が入っている DM）
-        || (coll in ['messages', 'dms'] && request.method == 'create' && canPost(pid, coll))
+        || (coll in ['messages', 'dms'] && request.method == 'create' && canPost(pid, coll) && serverTime('at'))
         || (coll == 'chatImages' && request.method == 'create' && only(['uid', 'chat', 'data']) && str(d().data, 400000))
         // 立て替え（自分が払った分・自分が払った精算だけ）
-        || (coll == 'expenses' && request.method == 'create' && d().amount is int && d().amount > 0 && d().amount <= 10000000
+        || (coll == 'expenses' && request.method == 'create' && d().amount is int && d().amount > 0 && d().amount <= 10000000 && serverTime('createdAt')
             && ((d().kind == 'expense' && d().payer == me() && only(['uid', 'kind', 'payer', 'title', 'amount', 'split', 'createdAt']) && str(d().title, 100))
               || (d().kind == 'settle' && d().from == me() && only(['uid', 'kind', 'from', 'to', 'amount', 'createdAt']))))
         // チェックリスト（共有の項目は、誰が付け外ししてもよい）
-        || (coll == 'checks' && only(['uid', 'listId', 'itemId', 'shared', 'at'])
+        || (coll == 'checks' && only(['uid', 'listId', 'itemId', 'shared', 'at']) && serverTime('at')
             && (id == d().listId + '_' + d().itemId + '_' + me() || (d().shared == true && id == d().listId + '_' + d().itemId + '_shared')))
-        // 作戦ボード：「参加者も動かせる」がオンのときだけ、コマの位置（pos）と最後に動かした人だけ書き換えられる
+        // 作戦ボード：「参加者も動かせる」がオンのときだけ、コマの位置（pos）・矢印と線（marks）・最後に動かした人だけ書き換えられる
         || (coll == 'boards' && request.method == 'update' && resource.data.get('open', false) == true
-            && resource.data.get('shown', false) == true && changed().hasOnly(['pos', 'uid', 'at']) && d().pos is map)
+            && resource.data.get('shown', false) == true && changed().hasOnly(['pos', 'uid', 'at', 'marks']) && serverTime('at')
+            && d().get('pos', {}) is map && d().get('pos', {}).size() <= 40 && d().get('marks', {}) is map && d().get('marks', {}).size() <= 200)
+        // 試合の記録：公開中の試合で、記録係に指名されている間だけ、担当の分だけ書ける
+        // （タイマー＝時計とピリオド、得点＝goals、シュート＝shots、ファウル・セットプレー＝plays、ボール保持＝poss と hold）。
+        // チーム・時間・記録係・公開などの設定は管理者だけ
+        || (coll == 'matches' && request.method == 'update' && resource.data.get('shown', false) == true
+            && me() in resource.data.get('keepers', []) && serverTime('at')
+            && changed().hasOnly(['running', 'startedAt', 'elapsed', 'cur', 'status', 'goals', 'shots', 'plays', 'poss', 'hold', 'uid', 'at'])
+            && mRole(['running', 'startedAt', 'elapsed', 'cur', 'status'], 'timer') && mRole(['goals'], 'goal')
+            && mRole(['shots'], 'shot') && mRole(['plays'], 'play') && mRole(['poss', 'hold'], 'poss')
+            && (!changed().hasAny(['cur']) || (d().cur is int && d().cur >= 0 && d().cur < resource.data.get('periods', []).size()))
+            && (!changed().hasAny(['status']) || d().status in ['ready', 'live', 'done'])
+            && (!changed().hasAny(['elapsed']) || num(d().elapsed, 0, 86400000))
+            && d().get('goals', {}) is map && d().get('goals', {}).size() <= 300
+            && d().get('shots', {}) is map && d().get('shots', {}).size() <= 600
+            && d().get('plays', {}) is map && d().get('plays', {}).size() <= 800
+            && d().get('poss', {}) is map && d().get('poss', {}).size() <= 12
+            && d().get('hold', {}) is map && d().get('hold', {}).keys().hasOnly(['home', 'away']))
         // 通知の宛先
-        || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200))
+        || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200) && d().sub is map && serverTime('at'))
         // パスワードを変えた記録
-        || (coll == 'pwChanged' && only(['uid', 'at']) && id == me())
+        || (coll == 'pwChanged' && only(['uid', 'at']) && id == me() && serverTime('at'))
         // ポイントQR を読み取った（同じ書き込みの中で、受け取りの記録・ポイント・合計を書く）
-        || (coll == 'ptClaims' && request.method == 'create' && only(['uid', 'qrId', 'at', 'slot']) && qrActive(pid, d().qrId)
+        || (coll == 'ptClaims' && request.method == 'create' && only(['uid', 'qrId', 'at', 'slot']) && qrActive(pid, d().qrId) && serverTime('at')
             && (id == d().qrId + '_u_' + me() || (d().get('slot', false) == true && id.matches(d().qrId + '_s[0-9]+'))))
         || (coll == 'pointLogs' && request.method == 'create' && qrLogOk(pid))
         || (coll == 'stats' && id == 'points' && qrClaimedNow(pid, d().get('qrId', ''))
@@ -158,9 +201,22 @@ service cloud.firestore {
     }
     // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats・作戦ボードは除く）
     function ownsBefore(coll) {
-      return request.method == 'create' || coll == 'stats' || coll == 'boards' || wasMine() || (coll == 'checks' && resource.data.shared == true);
+      return request.method == 'create' || coll == 'stats' || coll == 'boards' || coll == 'matches' || wasMine() || (coll == 'checks' && resource.data.shared == true);
     }
 
+    // 最初に答えた時刻：はじめて（＝今）か、前の回答のまま（あとから早い時刻にすり替えられない）
+    function firstAtOk() {
+      return !('firstAt' in d()) || serverTime('firstAt')
+        || (request.method == 'update' && (d().firstAt == resource.data.get('firstAt', null) || d().firstAt == resource.data.get('at', null)));
+    }
+    function choiceOk(c) {
+      return c == null || (c is string && c.size() <= 300) || (c is list && c.size() <= 100);
+    }
+    // いま出している問題が「解答中」か（live/quiz の問題と同じ問題への解答だけ）
+    function quizOpen(pid) {
+      let L = get(at(pid, 'live', 'quiz')).data;
+      return L.get('phase', '') == 'question' && L.get('quizId', '') == d().quizId && L.get('index', -1) == d().index;
+    }
     function canVote(pid, pollId) {
       let p = get(at(pid, 'polls', pollId)).data;
       return p.get('open', true) != false && (p.get('targets', null) == null || me() in p.targets);
@@ -168,7 +224,7 @@ service cloud.firestore {
     // 全体・自分のチームは messages、自分と管理者・自分が入っている DM は dms
     function canPost(pid, coll) {
       let c = d().chat;
-      return only(['uid', 'chat', 'text', 'at', 'parties', 'image']) && str(d().get('text', ''), 2000) && c is string && (
+      return only(['uid', 'chat', 'text', 'at', 'parties', 'image']) && str(d().get('text', ''), 2000) && str(d().get('image', ''), 40) && c is string && (
         (coll == 'messages' && !('parties' in d()) && (c == 'all'
           || (c.matches('team:.+') && exists(at(pid, 'memberships', c.split(':')[1] + '_' + me())))))
         || (coll == 'dms' && ((c == 'admin:' + me() && d().parties == [me()])
