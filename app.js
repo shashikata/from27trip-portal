@@ -222,6 +222,7 @@ const S = {
   locations: new Map(),      // 参加者の現在地 locations/{uid}
   attrDefs: new Map(),       // 管理者：参加者の属性の項目 attrDefs/{id} { name, options: [..], order }
   memberAttrs: new Map(),    // 管理者：参加者ごとの属性 memberAttrs/{uid} { values: { 項目id: 値 } }
+  futsal: null,              // フットサルチーム用の旅行：config/futsal（選手名簿・役割）
   ptQrs: new Map(),          // ポイントQR ptQrs/{id}（管理者）
   ptClaims: new Map(),       // ポイントQRの受け取り記録 ptClaims/{id}（管理者）
   locGroups: new Map(),      // 位置の共有グループ locGroups/{id} { name, members: [uid] }（管理者が作る）
@@ -351,6 +352,7 @@ function startAdmin() {
   if (pid !== LOBBY) {
     listen("allocs", C("allocs"), (s) => { if (s) S.allocs = toMap(s); });
     listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
+    listen("futsal", D("config", "futsal"), (s) => { S.futsal = s?.exists() ? s.data() : null; });
   }
   listen("memberships", C("memberships"), (s) => { S.memberships = toMap(s); });
   listen("ann", C("announcements"), (s) => { S.annSrc.all = toMap(s); });
@@ -497,6 +499,7 @@ function startMemberData(uid) {
   if (!inLobby()) {
     listen("allocs", published("allocs"), (s) => { if (s) S.allocs = toMap(s); });
     listen("allocCfg", D("config", "allocs"), (s) => { S.allocCfg = s?.exists() ? s.data() : null; });
+    listen("futsal", D("config", "futsal"), (s) => { S.futsal = s?.exists() ? s.data() : null; });
   }
   const memRef = C("memberships");
   const memUpdate = () => { S.memberships = new Map([...(S.memSrc.vis ?? []), ...(S.memSrc.mine ?? [])]); refreshFeed(uid); };
@@ -664,7 +667,7 @@ function resetProfileData() {
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
-    lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
+    lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, futsal: null, pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
   QZ.answersKey = null;
   TALLY_ONCE.clear();
@@ -890,7 +893,7 @@ const membersOfTeam = (teamId, { includeHidden = false } = {}) => {
 const teamLeader = (t) => (t?.leader && membersOfTeam(t.id).some((m) => m.id === t.leader) ? t.leader : null);
 // 役職（チーム表ごと。teamSets/{id}.roles = { uid: "会計" }。空なら役職なし）
 const roleOf = (setId, uid) => S.sets.get(setId)?.roles?.[uid] ?? "";
-const withRole = (t, m) => { const r = roleOf(t.setId, m.id); return r ? `${m.name}（${r}）` : m.name; };
+const withRole = (t, m) => { const r = roleOf(t.setId, m.id); const nm = isFutsal() ? futsalName(m.id) : m.name; return r ? `${nm}（${r}）` : nm; };
 // リーダーを先頭にした名前の並び
 const teamNamesText = (t, ms) => {
   const L = teamLeader(t);
@@ -2035,18 +2038,20 @@ function memberTeam({ compact = false } = {}) {
       const uid = S.user.uid;
       // 部屋割り・車割りが発表されていれば、チームの上に出す
       const allocs = memberAllocGroups(uid);
-      title.textContent = ["チーム", ...Object.keys(ALLOC_KINDS).filter(allocShown).map((k) => ALLOC_KINDS[k].label)].join("・");
+      const fut = futsalMemberBlocks(uid);
+      title.textContent = ["チーム", ...(isFutsal() ? ["役割"] : []), ...Object.keys(ALLOC_KINDS).filter(allocShown).map((k) => ALLOC_KINDS[k].label)].join("・");
       if (!sets.length) {
-        body.replaceChildren(...(allocs.length ? allocs : [emptyState("lock", "チーム発表はまだです", "発表されるとここに表示されます。")]));
+        body.replaceChildren(...fut, ...allocs, ...(allocs.length || fut.length ? [] : [emptyState("lock", "チーム発表はまだです", "発表されるとここに表示されます。")]));
         return;
       }
       const mine = sets.map((s) => ({ set: s, team: S.teams.get(teamOfIn(uid, s.id)), real: S.teams.get(trueTeamOf(uid, s.id)) }));
       const isSpy = mine.some((x) => x.real);
       body.replaceChildren(
+        ...fut,
         ...allocs,
         group("あなたのチーム", mine.flatMap(({ set, team, real }) => [
           cell(set.name, team ? h("span", { class: "team-label strong" }, dot(team.color), team.name) : "未所属"),
-          team && teamLeader(team) ? cell(h("span", { class: "team-leader-note" }, "👑 リーダー"), teamLeader(team) === uid ? "あなた" : memberName(teamLeader(team))) : null,
+          team && teamLeader(team) ? cell(h("span", { class: "team-leader-note" }, `👑 ${leaderWord()}`), teamLeader(team) === uid ? "あなた" : memberName(teamLeader(team))) : null,
           team && roleOf(set.id, uid) ? cell("あなたの役職", roleOf(set.id, uid)) : null,
           real ? h("div", { class: "cell spy-secret" },
             h("div", { class: "cell-main" }, h("div", { class: "spy-name" }, icon("spy"), "スパイ")),
@@ -2055,10 +2060,13 @@ function memberTeam({ compact = false } = {}) {
         ...sets.map((s) => group(s.name, teamsInSet(s.id).map((t) => {
           const ms = membersOfTeam(t.id);
           const isMine = ms.some((m) => m.id === uid);
+          // フットサル：先発が決まっていればコートの図（自分のチームは開いておく）
+          const showPitch = isFutsal() && ms.length && lineupOf(t).s.some(Boolean);
           return h("div", { class: `cell team-cell${isMine ? " me" : ""}` },
             h("div", { class: "cell-main" },
               h("div", { class: "team-label strong" }, dot(t.color), t.name, isMine ? h("span", { class: "tint you" }, "あなた") : null),
-              h("div", { class: "cell-sub" }, ms.length ? teamNamesText(t, ms) : "メンバーなし")),
+              h("div", { class: "cell-sub" }, ms.length ? teamNamesText(t, ms) : "メンバーなし"),
+              showPitch ? keptFold(`lineup:${t.id}`, "フォーメーション", pitchView(t), isMine) : null),
           );
         }))),
       );
@@ -2139,7 +2147,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2149,14 +2157,16 @@ const sortedProfiles = () => {
 const profileName = (pid) => S.profiles.get(pid)?.name ?? S.myProfiles.find((p) => p.id === pid)?.name ?? (pid === S.pid ? S.config.title : "旅行");
 
 // 中身が空の旅行を作って、そこに切り替える
-async function createProfile() {
+async function createProfile(kind = null) {
   if (!isOwnerAdmin()) return toast("このアカウントでは設定できません", true);
-  const name = (prompt("新しい旅行の名前（例：2027 夏 沖縄旅行）") ?? "").trim();
+  const futsal = kind === "futsal";
+  const name = (prompt(futsal ? "フットサルチームの旅行の名前（例：2027 春 フットサル合宿）" : "新しい旅行の名前（例：2027 夏 沖縄旅行）") ?? "").trim();
   if (!name) return;
   const ref = doc(collection(db, "profiles"));
   const b = writeBatch(db);
-  b.set(ref, { name, order: Date.now(), createdAt: serverTimestamp() });
-  b.set(doc(db, "profiles", ref.id, "config", "app"), { title: name });
+  b.set(ref, { name, order: Date.now(), createdAt: serverTimestamp(), ...(futsal ? { kind: "futsal" } : {}) });
+  b.set(doc(db, "profiles", ref.id, "config", "app"), { title: name, ...(futsal ? { kind: "futsal" } : {}) });
+  if (futsal) b.set(doc(db, "profiles", ref.id, "config", "futsal"), defaultFutsalDoc());
   await b.commit();
   toast(`「${name}」を作りました`);
   switchProfile(ref.id);
@@ -2202,6 +2212,18 @@ async function deleteProfile(pid) {
   if (S.pid === pid) switchProfile(ROOT);
 }
 
+// 今の旅行の種類（フットサルチーム用か）を切り替えるスイッチ
+function kindToggle() {
+  const sw = toggle(isFutsal());
+  sw.setAttribute("aria-label", "今の旅行をフットサルチーム用にする");
+  sw.addEventListener("change", () => {
+    const on = sw.checked;
+    if (!confirm(on ? "今の旅行をフットサルチーム用にしますか？\nチームの画面に「選手名簿・役割・フォーメーション」が追加されます。今までのデータはそのまま残ります。" : "普通の旅行に戻しますか？\n選手名簿・役割・フォーメーションの表示が消えます（入れた内容は残るので、またオンにすると戻ります）。")) { sw.checked = !on; return; }
+    guard(null, () => setFutsalKind(on));
+  });
+  return sw;
+}
+
 // 旅行の切り替え一覧（設定の中に出す）
 function profilesGroup() {
   const body = h("div");
@@ -2215,11 +2237,13 @@ function profilesGroup() {
           class: `cell cell-button profile-row${p.id === S.pid ? " current" : ""}`,
           "data-profile": p.id,
           onclick: () => switchProfile(p.id),
-        }, h("span", { class: "profile-name" }, p.name), p.id === S.pid ? h("span", { class: "profile-cur" }, icon("check"), "表示中") : null)),
+        }, h("span", { class: "profile-name" }, p.kind === "futsal" ? "⚽ " : "", p.name), p.id === S.pid ? h("span", { class: "profile-cur" }, icon("check"), "表示中") : null)),
         S.isAdmin ? ownerOnly(h("div", { class: "owner-cells" },
           h("button", { class: "cell cell-button", onclick: () => guard(null, createProfile) }, icon("plus"), "新しい旅行を作る"),
+          h("button", { class: "cell cell-button", onclick: () => guard(null, () => createProfile("futsal")) }, icon("plus"), "⚽ フットサルチームの旅行を作る"),
+          !inLobby() ? field("今の旅行をフットサルチーム用にする", kindToggle()) : null,
           !S.profiles.has(LOBBY) ? h("button", { class: "cell cell-button", onclick: () => guard(null, createLobby) }, icon("people"), "確定前ページを作る（今の参加者を全員未確定にする）") : null)) : null,
-      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。" : null));
+      ], S.isAdmin ? "新しい旅行は中身が空の状態で作られます。参加者のIDは旅行をまたいで使い回せます。確定前ページでは、参加者の管理と旅行の割り当て・確定ができます。フットサルチーム用にすると、チームの画面で選手名簿（背番号・ポジション・利き足）・役割・フォーメーションを登録できます。" : null));
     },
   };
 }
@@ -2278,7 +2302,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v79"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v80"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2734,8 +2758,482 @@ function attrEditor() {
   };
 }
 
+// ---------------------------------------------------------------- フットサルチーム用（旅行の種類が「フットサルチーム」のときだけ）
+//   config/app.kind = "futsal"（profiles/{pid}.kind にも同じ値。旅行の一覧に ⚽ を出すため）
+//   config/futsal  { roles: [{ id, name }], roleMembers: { 役割id: [uid] }, players: { uid: { no, pos, foot } } }
+//                   参加者も読める（config は全員が読める）。書けるのは管理者だけ
+//   teams/{id}.lineup = { f: "121" | "22" | "31", s: [uid | null ×5] }  先発5人（GK が先頭）。残りのメンバーは控え
+const isFutsal = () => S.config?.kind === "futsal" && !inLobby();
+const FUTSAL_POS = [
+  { value: "GK", label: "GK（ゴレイロ）", short: "GK" },
+  { value: "FIXO", label: "フィクソ", short: "FIX" },
+  { value: "ALA", label: "アラ", short: "ALA" },
+  { value: "PIVO", label: "ピヴォ", short: "PIV" },
+  { value: "FP", label: "FP（どこでも）", short: "FP" },
+];
+const posShort = (v) => FUTSAL_POS.find((p) => p.value === v)?.short ?? "";
+const posLabel = (v) => FUTSAL_POS.find((p) => p.value === v)?.label ?? "";
+const FUTSAL_FEET = ["右", "左", "両"];
+const FUTSAL_DEFAULT_ROLES = ["キャプテン", "副キャプテン", "会計", "車出し", "用具係", "審判", "撮影係"];
+// コートは縦向き（下が自分たちのゴール）。x・y は % の位置
+const FORMATIONS = {
+  121: { label: "1-2-1（ダイヤ）", slots: [
+    { label: "GK", pos: ["GK"], x: 50, y: 88 }, { label: "フィクソ", pos: ["FIXO"], x: 50, y: 66 },
+    { label: "アラ（左）", pos: ["ALA"], x: 20, y: 40 }, { label: "アラ（右）", pos: ["ALA"], x: 80, y: 40 }, { label: "ピヴォ", pos: ["PIVO"], x: 50, y: 18 }] },
+  22: { label: "2-2（ボックス）", slots: [
+    { label: "GK", pos: ["GK"], x: 50, y: 88 }, { label: "後ろ（左）", pos: ["FIXO", "ALA"], x: 27, y: 63 },
+    { label: "後ろ（右）", pos: ["FIXO", "ALA"], x: 73, y: 63 }, { label: "前（左）", pos: ["ALA", "PIVO"], x: 27, y: 27 }, { label: "前（右）", pos: ["PIVO", "ALA"], x: 73, y: 27 }] },
+  31: { label: "3-1", slots: [
+    { label: "GK", pos: ["GK"], x: 50, y: 88 }, { label: "アラ（左）", pos: ["ALA"], x: 18, y: 52 },
+    { label: "フィクソ", pos: ["FIXO"], x: 50, y: 62 }, { label: "アラ（右）", pos: ["ALA"], x: 82, y: 52 }, { label: "ピヴォ", pos: ["PIVO"], x: 50, y: 20 }] },
+};
+const formationOf = (t) => (FORMATIONS[t?.lineup?.f] ? String(t.lineup.f) : "121");
+const futsalRoles = () => S.futsal?.roles ?? [];
+const playerOf = (uid) => S.futsal?.players?.[uid] ?? {};
+const roleMembersOf = (rid) => (S.futsal?.roleMembers?.[rid] ?? []).filter((u) => S.members.has(u));
+const rolesOfPlayer = (uid) => futsalRoles().filter((r) => roleMembersOf(r.id).includes(uid)).map((r) => r.name);
+const numText = (uid) => { const n = playerOf(uid).no; return n === undefined || n === null || n === "" ? "" : `#${n}`; };
+const futsalName = (uid) => { const n = numText(uid); return n ? `${n} ${memberName(uid)}` : memberName(uid); };
+const leaderWord = () => (isFutsal() ? "キャプテン" : "リーダー");
+const saveFutsal = (patch) => setDoc(D("config", "futsal"), patch, { merge: true });
+const newRoleId = () => Math.random().toString(36).slice(2, 10);
+const defaultFutsalDoc = () => ({ roles: FUTSAL_DEFAULT_ROLES.map((name) => ({ id: newRoleId(), name })), roleMembers: {}, players: {} });
+// 背番号順（番号なしは後ろ・名前順）
+const byNumber = (ms) => [...ms].sort((a, b) => {
+  const x = playerOf(a.id).no, y = playerOf(b.id).no;
+  const nx = x === undefined || x === null || x === "" ? 1e9 : Number(x), ny = y === undefined || y === null || y === "" ? 1e9 : Number(y);
+  return nx - ny || byNatural(a.name ?? "", b.name ?? "");
+});
+
+// 先発（チームから外れた人は空きにする）と控え
+function lineupOf(t) {
+  const F = FORMATIONS[formationOf(t)];
+  const tm = membersOfTeam(t.id);
+  const ids = new Set(tm.map((m) => m.id));
+  const s = F.slots.map((_, i) => { const u = t.lineup?.s?.[i]; return u && ids.has(u) ? u : null; });
+  return { F, s, bench: byNumber(tm.filter((m) => !s.includes(m.id))) };
+}
+
+// ポジションの登録から先発を自動で決める（GK から順に、そのポジションの人 → FP → 未登録 → ほかのポジションの人）
+function autoLineup(t, f) {
+  const F = FORMATIONS[f];
+  const pool = byNumber(membersOfTeam(t.id)).map((m) => m.id);
+  const used = new Set();
+  const score = (sl, u) => {
+    const p = playerOf(u).pos;
+    if (sl.pos[0] === "GK") return p === "GK" ? 0 : !p ? 2 : 5;
+    const i = sl.pos.indexOf(p);
+    if (i >= 0) return i * 0.5;
+    return p === "FP" ? 1 : !p ? 2 : p === "GK" ? 9 : 3;
+  };
+  return F.slots.map((sl) => {
+    let best = null, bs = Infinity;
+    for (const u of pool) if (!used.has(u)) { const v = score(sl, u); if (v < bs) { bs = v; best = u; } }
+    if (best) used.add(best);
+    return best;
+  });
+}
+
+// コートの図（参加者・管理者共通）
+function pitchView(t) {
+  const { F, s, bench } = lineupOf(t);
+  const cap = teamLeader(t);
+  const me = S.user?.uid;
+  return h("div", { class: "lineup" },
+    h("div", { class: "pitch", style: `--c:${t.color || "#8E8E93"}`, "aria-label": `${t.name}のフォーメーション ${F.label}` },
+      h("div", { class: "pitch-goal top" }), h("div", { class: "pitch-area top" }), h("div", { class: "pitch-mid" }), h("div", { class: "pitch-circle" }),
+      h("div", { class: "pitch-area bottom" }), h("div", { class: "pitch-goal bottom" }),
+      F.slots.map((sl, i) => {
+        const u = s[i];
+        const p = playerOf(u);
+        return h("div", { class: `pitch-slot${u ? "" : " empty"}${u && u === me ? " me" : ""}`, style: `left:${sl.x}%;top:${sl.y}%`, "data-slot": i },
+          h("span", { class: "pitch-dot" }, u ? (numText(u).slice(1) || posShort(p.pos) || "・") : ""),
+          h("span", { class: "pitch-name" }, u ? `${u === cap ? "©" : ""}${memberName(u)}` : "未定"),
+          h("span", { class: "pitch-pos" }, sl.label));
+      })),
+    h("div", { class: "lineup-foot" },
+      h("span", { class: "lineup-form" }, F.label),
+      h("div", { class: "bench" }, h("b", null, "控え"), bench.length
+        ? bench.map((m) => h("span", { class: `bench-chip${m.id === me ? " me" : ""}` }, futsalName(m.id), playerOf(m.id).pos ? h("small", null, posShort(playerOf(m.id).pos)) : null))
+        : h("span", { class: "secondary" }, "なし"))));
+}
+
+// 管理者：チームの行に付けるフォーメーションの編集欄。作るのは1回だけで、patch で中身を直す
+function lineupEditor(teamId) {
+  const form = h("select", { class: "inline-select", "aria-label": "フォーメーション" }, Object.entries(FORMATIONS).map(([k, F]) => h("option", { value: k }, F.label)));
+  const slotSels = [0, 1, 2, 3, 4].map((i) => h("select", { class: "inline-select", "aria-label": `先発${i + 1}`, "data-slot": i }));
+  const slotLabels = slotSels.map(() => h("span", { class: "field-label" }));
+  const preview = h("div");
+  const save = (lineup, msg) => fire(updateDoc(D("teams", teamId), { lineup }), msg);
+  const current = () => { const t = S.teams.get(teamId); return t ? lineupOf(t).s : [null, null, null, null, null]; };
+  // 並びを変えたときは、同じポジションの枠へ人を移す（GK→GK、フィクソ→フィクソ…。合う枠がなければ空いている枠へ）
+  form.addEventListener("change", () => {
+    const t = S.teams.get(teamId);
+    const old = FORMATIONS[formationOf(t)].slots, next = FORMATIONS[form.value].slots;
+    const s = current(), used = new Set();
+    const pick = (ok) => { const j = old.findIndex((sl, k) => !used.has(k) && s[k] && ok(sl)); if (j >= 0) used.add(j); return j >= 0 ? s[j] : undefined; };
+    const out = next.map((sl) => pick((o) => o.pos[0] === sl.pos[0]) ?? null);
+    next.forEach((sl, i) => { if (!out[i] && sl.pos[0] !== "GK") out[i] = pick((o) => o.pos[0] !== "GK") ?? null; });
+    save({ f: form.value, s: out }, `フォーメーションを ${FORMATIONS[form.value].label} にしました`);
+  });
+  slotSels.forEach((sel, i) => sel.addEventListener("change", () => {
+    const s = current();
+    const v = sel.value || null;
+    const j = v ? s.indexOf(v) : -1;
+    if (j >= 0 && j !== i) s[j] = s[i]; // ほかの枠にいた人なら入れ替える
+    s[i] = v;
+    save({ f: form.value, s });
+  }));
+  const el = keptFold(`lineup-edit:${teamId}`, "フォーメーション（先発5人・控え）", h("div", { class: "lineup-edit" },
+    preview,
+    h("div", { class: "group-body lineup-fields" },
+      field("並び", form),
+      slotSels.map((sel, i) => h("label", { class: "cell field" }, slotLabels[i], sel)),
+      h("div", { class: "lineup-actions" },
+        h("button", { type: "button", class: "text-btn", onclick: () => { const t = S.teams.get(teamId); if (t) save({ f: form.value, s: autoLineup(t, form.value) }, "ポジションの登録から並べました"); } }, icon("shuffle"), "ポジションから自動で並べる"),
+        h("button", { type: "button", class: "text-btn", onclick: () => { const t = S.teams.get(teamId); if (t) guard(null, async () => { await saveBoard(boardFromTeam(t)); openBoard(); }); } }, "⚽ 作戦ボードに出す"),
+        h("button", { type: "button", class: "text-btn destructive", onclick: () => save({ f: form.value, s: [null, null, null, null, null] }, "先発を空にしました") }, "先発を空にする"))),
+    h("div", { class: "cell-sub" }, "チームのメンバーから選びます。先発に入っていない人は「控え」になります。チーム表を発表すると、参加者にもこの図が表示されます。")), false);
+  return {
+    el,
+    patch(t) {
+      const { F, s } = lineupOf(t);
+      if (document.activeElement !== form) form.value = formationOf(t);
+      const opts = byNumber(membersOfTeam(t.id)).map((m) => ({ value: m.id, label: `${futsalName(m.id)}${playerOf(m.id).pos ? `（${posShort(playerOf(m.id).pos)}）` : ""}` }));
+      slotSels.forEach((sel, i) => {
+        slotLabels[i].textContent = F.slots[i].label;
+        fillSelect(sel, opts, "未定");
+        if (document.activeElement !== sel) sel.value = s[i] ?? "";
+      });
+      setKids(preview, pitchView(t));
+    },
+  };
+}
+
+// 管理者：選手名簿（背番号・ポジション・利き足）と役割
+function futsalRosterEditor() {
+  const rosterBox = h("div");
+  const rolesBox = h("div");
+  const roleName = h("input", { type: "text", class: "plain", placeholder: "例：会計 / 車出し / ビブス係", maxlength: "12" });
+  const addRole = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const n = roleName.value.trim();
+    if (!n) return;
+    if (futsalRoles().some((r) => r.name === n)) return toast(`「${n}」はもうあります`, true);
+    fire(saveFutsal({ roles: [...futsalRoles(), { id: newRoleId(), name: n }] }), `役割「${n}」を追加しました`);
+    roleName.value = "";
+  } }, group(null, [h("div", { class: "cell" }, roleName), h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "役割を追加")]));
+  const el = h("div", { class: "futsal-editor" },
+    h("div", { class: "group-header standalone" }, "⚽ 選手名簿と役割"),
+    group(null, boardButton(), "選手・相手・ボールを動かして作戦を説明できます。開いている参加者の画面にもリアルタイムで反映されます。"),
+    keptFold("futsal-roster", "選手名簿（背番号・ポジション・利き足）", rosterBox, true),
+    keptFold("futsal-roles", "役割（誰が何の係か）", h("div", null, rolesBox, addRole), true));
+  redrawOnLeave(el);
+  let last = null;
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      const key = [S.futsal, S.members];
+      if (last && last[0] === key[0] && last[1] === key[1]) return;
+      last = key;
+      const ms = sortedMembers();
+      // 名簿
+      const dup = new Map();
+      ms.forEach((m) => { const n = numText(m.id); if (n) dup.set(n, [...(dup.get(n) ?? []), m.name]); });
+      const dups = [...dup].filter(([, xs]) => xs.length > 1);
+      const setP = (uid, k, v) => fire(saveFutsal({ players: { [uid]: { [k]: v === "" || v === null ? deleteField() : v } } }));
+      setKids(rosterBox, ms.length ? [
+        dups.length ? h("div", { class: "futsal-warn" }, "⚠️ ", `背番号が重なっています：${dups.map(([n, xs]) => `${n}（${xs.join("・")}）`).join("／")}`) : null,
+        h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table futsal-table" },
+          h("thead", null, h("tr", null, h("th", null, "名前"), h("th", null, "背番号"), h("th", null, "ポジション"), h("th", null, "利き足"), h("th", null, "役割"))),
+          h("tbody", null, ms.map((m) => {
+            const p = playerOf(m.id);
+            const no = h("input", { type: "number", min: "0", max: "99", inputmode: "numeric", class: "num-input", value: p.no ?? "", "aria-label": `${m.name}の背番号` });
+            no.addEventListener("change", () => {
+              const v = no.value.trim();
+              if (v !== "" && !(Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 99)) { toast("背番号は 0〜99 で入れてください", true); no.value = p.no ?? ""; return; }
+              setP(m.id, "no", v === "" ? "" : Number(v));
+            });
+            const pos = h("select", { class: "inline-select", "aria-label": `${m.name}のポジション` }, h("option", { value: "" }, "—"), FUTSAL_POS.map((o) => h("option", { value: o.value, selected: p.pos === o.value }, o.value === "GK" ? "GK" : o.value === "FP" ? "FP" : o.label)));
+            pos.addEventListener("change", () => setP(m.id, "pos", pos.value));
+            const foot = h("select", { class: "inline-select", "aria-label": `${m.name}の利き足` }, h("option", { value: "" }, "—"), FUTSAL_FEET.map((o) => h("option", { value: o, selected: p.foot === o }, o)));
+            foot.addEventListener("change", () => setP(m.id, "foot", foot.value));
+            return h("tr", null, h("td", null, m.name), h("td", null, no), h("td", null, pos), h("td", null, foot), h("td", { class: "futsal-roles-cell" }, rolesOfPlayer(m.id).join("・") || "—"));
+          })))),
+      ] : h("p", { class: "cell-sub" }, "まだ参加者がいません。"));
+      // 役割
+      const roles = futsalRoles();
+      setKids(rolesBox, roles.length ? group(null, roles.map((r, ri) => {
+        const who = roleMembersOf(r.id);
+        const nm = h("input", { type: "text", value: r.name, class: "plain role-name", maxlength: "12", "aria-label": "役割の名前" });
+        nm.addEventListener("change", () => {
+          const v = nm.value.trim();
+          if (!v || v === r.name) { nm.value = r.name; return; }
+          fire(saveFutsal({ roles: futsalRoles().map((x) => (x.id === r.id ? { ...x, name: v } : x)) }), `「${r.name}」を「${v}」にしました`);
+        });
+        const picks = h("div", { class: "pick-list" }, ms.map((m) => {
+          const cb = h("input", { type: "checkbox", checked: who.includes(m.id) });
+          cb.addEventListener("change", () => {
+            const cur = new Set(roleMembersOf(r.id));
+            if (cb.checked) cur.add(m.id); else cur.delete(m.id);
+            fire(saveFutsal({ roleMembers: { [r.id]: [...cur] } }), cb.checked ? `${m.name} を「${r.name}」にしました` : `${m.name} を「${r.name}」から外しました`);
+          });
+          return h("label", { class: "pick" }, cb, m.name);
+        }));
+        const move = (d) => {
+          const xs = [...futsalRoles()];
+          const j = ri + d;
+          if (j < 0 || j >= xs.length) return;
+          [xs[ri], xs[j]] = [xs[j], xs[ri]];
+          fire(saveFutsal({ roles: xs }));
+        };
+        return h("div", { class: "cell role-row" },
+          h("div", { class: "cell-main" },
+            h("div", { class: "role-head" }, nm,
+              h("span", { class: "role-who" }, who.length ? who.map((u) => memberName(u)).join("・") : "未定"),
+              h("span", { class: "role-tools" },
+                h("button", { type: "button", class: "text-btn", "aria-label": "上へ", disabled: ri === 0, onclick: () => move(-1) }, "↑"),
+                h("button", { type: "button", class: "text-btn", "aria-label": "下へ", disabled: ri === roles.length - 1, onclick: () => move(1) }, "↓"),
+                h("button", { type: "button", class: "text-btn destructive", onclick: () => {
+                  if (!confirm(`役割「${r.name}」を削除しますか？（${who.length}人の割り当ても消えます）`)) return;
+                  fire(saveFutsal({ roles: futsalRoles().filter((x) => x.id !== r.id), roleMembers: { [r.id]: deleteField() } }), "削除しました");
+                } }, "削除"))),
+            keptFold(`role-pick:${r.id}`, `担当する人を選ぶ（${who.length}人）`, picks, false)));
+      }), "役割は参加者全員に表示されます（チームの「チーム表」とは別に、旅行全体での係です）。") : h("p", { class: "cell-sub" }, "役割がありません。下で追加してください。"));
+    },
+  };
+}
+
+// 参加者：チームの画面の上に出す（自分の背番号・役割、役割分担、選手名簿）
+function futsalMemberBlocks(uid) {
+  if (!isFutsal()) return [];
+  const me = playerOf(uid);
+  const myRoles = rolesOfPlayer(uid);
+  const roles = futsalRoles().map((r) => ({ r, who: roleMembersOf(r.id) })).filter((x) => x.who.length);
+  const ms = byNumber(sortedMembers());
+  const hasRoster = ms.some((m) => { const p = playerOf(m.id); return numText(m.id) || p.pos || p.foot; });
+  const mine = [
+    numText(uid) ? cell("背番号", h("b", { class: "futsal-no" }, numText(uid))) : null,
+    me.pos ? cell("ポジション", posLabel(me.pos)) : null,
+    me.foot ? cell("利き足", me.foot) : null,
+    myRoles.length ? cell("あなたの役割", h("b", null, myRoles.join("・"))) : null,
+  ].filter(Boolean);
+  return [
+    group(null, boardButton(), "管理者が選手やボールを動かすと、開いている人の画面にそのまま反映されます。"),
+    mine.length ? group("⚽ あなた", mine) : null,
+    roles.length ? group("役割分担", roles.map(({ r, who }) => cell(r.name, h("span", { class: "role-names" }, who.map((u) => h("span", { class: u === uid ? "tint you" : null }, memberName(u))).reduce((a, x, i) => (i ? [...a, "・", x] : [x]), []))))) : null,
+    hasRoster ? h("section", { class: "group" }, keptFold("futsal-roster-m", `選手名簿（${ms.length}人）`, h("div", { class: "attr-table-wrap" }, h("table", { class: "attr-table futsal-table view" },
+      h("thead", null, h("tr", null, h("th", null, "背番号"), h("th", null, "名前"), h("th", null, "ポジション"), h("th", null, "利き足"), h("th", null, "役割"))),
+      h("tbody", null, ms.map((m) => { const p = playerOf(m.id); return h("tr", { class: m.id === uid ? "me" : null }, h("td", { class: "num" }, numText(m.id) || "—"), h("td", null, m.name), h("td", null, posLabel(p.pos) || "—"), h("td", null, p.foot || "—"), h("td", null, rolesOfPlayer(m.id).join("・") || "—")); })))), false)) : null,
+  ].filter(Boolean);
+}
+
+// 旅行の種類を変える（設定の「旅行（プロファイル）」から。管理者1だけ）
+async function setFutsalKind(on) {
+  if (!isOwnerAdmin()) return toast("このアカウントでは設定できません", true);
+  const pid = S.pid;
+  const cur = on ? await getDoc(D("config", "futsal")).catch(() => null) : null;
+  const b = writeBatch(db);
+  b.set(D("config", "app"), { kind: on ? "futsal" : deleteField() }, { merge: true });
+  b.set(doc(db, "profiles", pid), { kind: on ? "futsal" : deleteField() }, { merge: true });
+  if (on && !cur?.exists()) b.set(D("config", "futsal"), defaultFutsalDoc());
+  await b.commit();
+  toast(on ? "フットサルチーム用にしました（チームの画面に選手名簿・役割・フォーメーションが出ます）" : "普通の旅行に戻しました（入れた背番号・役割・フォーメーションは消えずに残ります）");
+}
+
+// ---------------------------------------------------------------- 作戦ボード（フットサル）：選手・相手・ボールを指で動かし、開いている全員にリアルタイムで見せる
+//   boards/main { title, color, players: [uid], opp(相手を出す), open(参加者も動かせる), shown(参加者に公開),
+//                 pos: { p_<uid> | o1〜o5 | ball: { x, y } }（コートの左上を 0・右下を 100 とした %）, uid(最後に動かした人), at }
+//   開いている間だけ購読する（閉じている人には通信が発生しない）。動かしている間は 0.2 秒ごとに位置を送る
+const BOARD_ID = "main";
+const BOARD_SEND_MS = 200;
+const clampPct = (v) => Math.round(Math.min(97, Math.max(3, v)) * 10) / 10;
+// はじめの位置（キックオフのように、味方はフォーメーションのまま下半分・相手は上下左右を反対にして上半分。ボールは真ん中）
+const boardY = (y) => Math.round((60 + (y - 18) * (33 / 70)) * 10) / 10;
+function boardHomePos(players, f) {
+  const slots = FORMATIONS[f]?.slots ?? FORMATIONS[121].slots;
+  const pos = { ball: { x: 50, y: 50 } };
+  players.forEach((u, i) => {
+    const sl = slots[i];
+    pos[`p_${u}`] = sl ? { x: sl.x, y: boardY(sl.y) } : { x: clampPct(10 + (i - slots.length) * 14), y: 97 };
+  });
+  slots.forEach((sl, i) => { pos[`o${i + 1}`] = { x: 100 - sl.x, y: Math.round((100 - boardY(sl.y)) * 10) / 10 }; });
+  return pos;
+}
+// 管理者：チームの先発をボードに出す（先発が空ならメンバーの先頭5人）
+function boardFromTeam(t) {
+  const lu = lineupOf(t);
+  let players = lu.s.filter(Boolean);
+  if (!players.length) players = byNumber(membersOfTeam(t.id)).slice(0, 5).map((m) => m.id);
+  return { title: t.name, color: t.color || "#0A84FF", teamId: t.id, f: formationOf(t), players, pos: boardHomePos(players, formationOf(t)), uid: S.user.uid, at: serverTimestamp() };
+}
+const saveBoard = (data) => setDoc(D("boards", BOARD_ID), data, { merge: true });
+
+function openBoard() {
+  const admin = S.isAdmin;
+  const uid = S.user.uid;
+  let B = null;          // サーバーから届いた最新
+  const local = {};      // 自分が動かしている途中の位置（届いた位置より優先）
+  let dragging = null;   // 動かしているコマ
+  let sendTimer = null, pendingSend = null, lastSent = 0;
+  const pitch = h("div", { class: "pitch board-pitch" },
+    h("div", { class: "pitch-goal top" }), h("div", { class: "pitch-area top" }), h("div", { class: "pitch-mid" }), h("div", { class: "pitch-circle" }),
+    h("div", { class: "pitch-area bottom" }), h("div", { class: "pitch-goal bottom" }));
+  const pieces = new Map(); // key → 要素
+  const titleEl = h("b", { class: "board-title" }, "作戦ボード");
+  const status = h("div", { class: "board-status" });
+  const tools = h("div", { class: "board-tools" });
+  const msg = h("div", { class: "board-msg", hidden: true });
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  let unsub = null;
+  const close = () => { unsub?.(); clearTimeout(sendTimer); flush(); el.remove(); document.removeEventListener("keydown", onKey, true); };
+  const el = h("div", { class: "board-viewer", role: "dialog", "aria-modal": "true", "aria-label": "作戦ボード" },
+    h("div", { class: "fv-head" }, titleEl, h("span", { class: "board-live" }, h("i"), "リアルタイム"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+    h("div", { class: "board-body" }, h("div", { class: "board-stage" }, pitch, msg), h("div", { class: "board-side" }, status, tools)));
+  document.body.append(el);
+  document.addEventListener("keydown", onKey, true);
+
+  const canMove = () => !!B && (admin || (B.open === true && B.shown === true));
+  const keysOf = () => (B ? [...(B.players ?? []).map((u) => `p_${u}`), ...(B.opp ? [1, 2, 3, 4, 5].map((i) => `o${i}`) : []), "ball"] : []);
+  const posOf = (k) => local[k] ?? B?.pos?.[k] ?? boardHomePos(B?.players ?? [], B?.f)[k] ?? { x: 50, y: 50 };
+
+  // 位置を送る（0.2 秒に1回まで。最後の位置は必ず送る）
+  function flush() {
+    if (!pendingSend) return;
+    const p = pendingSend; pendingSend = null; lastSent = Date.now();
+    updateDoc(D("boards", BOARD_ID), { ...Object.fromEntries(Object.entries(p).map(([k, v]) => [`pos.${k}`, v])), uid, at: serverTimestamp() })
+      .catch((e) => { console.error(e); toast(e.code === "permission-denied" ? "動かせませんでした（管理者が「参加者も動かせる」をオンにすると動かせます）" : errMsg(e), true); });
+  }
+  function queueSend(k, v) {
+    pendingSend = { ...(pendingSend ?? {}), [k]: v };
+    const wait = BOARD_SEND_MS - (Date.now() - lastSent);
+    if (wait <= 0) { clearTimeout(sendTimer); sendTimer = null; flush(); }
+    else if (!sendTimer) sendTimer = setTimeout(() => { sendTimer = null; flush(); }, wait);
+  }
+
+  function makePiece(k) {
+    const isBall = k === "ball", isOpp = /^o\d$/.test(k);
+    const node = h("div", { class: `board-piece${isBall ? " ball" : isOpp ? " opp" : ""}`, "data-key": k },
+      h("span", { class: "pitch-dot" }), isBall || isOpp ? null : h("span", { class: "pitch-name" }));
+    node.addEventListener("pointerdown", (e) => {
+      if (!canMove()) return;
+      e.preventDefault();
+      dragging = k;
+      node.classList.add("dragging");
+      node.setPointerCapture(e.pointerId);
+    });
+    node.addEventListener("pointermove", (e) => {
+      if (dragging !== k) return;
+      const r = pitch.getBoundingClientRect();
+      const v = { x: clampPct(((e.clientX - r.left) / r.width) * 100), y: clampPct(((e.clientY - r.top) / r.height) * 100) };
+      local[k] = v;
+      place(k);
+      queueSend(k, v);
+    });
+    const end = () => {
+      if (dragging !== k) return;
+      dragging = null;
+      node.classList.remove("dragging");
+      clearTimeout(sendTimer); sendTimer = null; flush();
+    };
+    node.addEventListener("pointerup", end);
+    node.addEventListener("pointercancel", end);
+    return node;
+  }
+  function place(k) {
+    const node = pieces.get(k);
+    const p = posOf(k);
+    node.style.left = `${p.x}%`;
+    node.style.top = `${p.y}%`;
+  }
+  function paint() {
+    const keys = keysOf();
+    for (const [k, node] of pieces) if (!keys.includes(k)) { node.remove(); pieces.delete(k); }
+    for (const k of keys) {
+      if (!pieces.has(k)) { const node = makePiece(k); pieces.set(k, node); pitch.append(node); }
+      const node = pieces.get(k);
+      node.classList.toggle("movable", canMove());
+      if (k.startsWith("p_")) {
+        const u = k.slice(2);
+        node.style.setProperty("--c", B.color || "#0A84FF");
+        node.classList.toggle("me", u === uid);
+        node.querySelector(".pitch-dot").textContent = numText(u).slice(1) || posShort(playerOf(u).pos) || "・";
+        node.querySelector(".pitch-name").textContent = memberName(u);
+      } else if (k !== "ball") {
+        node.querySelector(".pitch-dot").textContent = k.slice(1);
+        node.title = `相手${k.slice(1)}`;
+      }
+      // 届いた位置が自分の送った位置に追いついたら、自分の分は捨てる
+      if (dragging !== k && local[k] && B?.pos?.[k] && Math.abs(B.pos[k].x - local[k].x) < 0.05 && Math.abs(B.pos[k].y - local[k].y) < 0.05) delete local[k];
+      place(k);
+    }
+    titleEl.textContent = B?.title ? `作戦ボード：${B.title}` : "作戦ボード";
+    const who = B?.uid ? (isAdminUid(B.uid) ? "管理者" : memberName(B.uid)) : null;
+    setKids(status,
+      h("div", null, canMove() ? "選手・相手・ボールをドラッグ（指でなぞる）して動かせます。動かすと、開いている全員の画面に同時に反映されます。" : "管理者が動かすと、この画面にそのまま反映されます。"),
+      who ? h("div", { class: "secondary" }, `最後に動かした人：${who}`) : null);
+    paintTools();
+  }
+  const isAdminUid = (u) => u === uid ? admin : !S.members.has(u);
+
+  // 管理者の操作（チームを出す・相手・参加者も動かせる・公開・位置を戻す）
+  let toolsKey = null;
+  function paintTools() {
+    if (!admin) {
+      setKids(tools, B && B.open !== true ? h("div", { class: "secondary" }, "いまは管理者だけが動かせます。") : null);
+      return;
+    }
+    const teams = sortedSets().flatMap((st) => teamsInSet(st.id).map((t) => ({ t, st })));
+    const key = JSON.stringify([teams.map(({ t, st }) => [t.id, t.name, st.name]), B?.teamId, B?.opp, B?.open, B?.shown]);
+    if (key === toolsKey) return;
+    toolsKey = key;
+    const sel = h("select", { class: "inline-select", "aria-label": "ボードに出すチーム" }, h("option", { value: "" }, "選択"),
+      teams.map(({ t, st }) => h("option", { value: t.id, selected: B?.teamId === t.id }, `${st.name}／${t.name}`)));
+    sel.addEventListener("change", () => { const t = S.teams.get(sel.value); if (t) fire(saveBoard(boardFromTeam(t)), `「${t.name}」の先発を出しました`); });
+    const sw = (on, label, fn) => { const x = toggle(!!on); x.addEventListener("change", () => fn(x.checked)); return field(label, x); };
+    setKids(tools, group("ボードの設定（管理者）", [
+      field("出すチーム", sel),
+      sw(B?.opp, "相手（5人）を出す", (v) => fire(saveBoard({ opp: v }))),
+      sw(B?.shown, "参加者に公開する", (v) => fire(saveBoard({ shown: v }), v ? "参加者もボードを見られるようにしました" : "参加者には見えなくしました")),
+      sw(B?.open, "参加者も動かせる", (v) => fire(saveBoard({ open: v }), v ? "参加者も動かせるようにしました" : "管理者だけが動かせるようにしました")),
+      h("button", { class: "cell cell-button", onclick: () => { if (!B) return; Object.keys(local).forEach((k) => delete local[k]); fire(saveBoard({ pos: boardHomePos(B.players ?? [], B.f), uid, at: serverTimestamp() }), "フォーメーションの位置に戻しました"); } }, icon("refresh"), "フォーメーションの位置に戻す"),
+      h("button", { class: "cell cell-button", onclick: () => { delete local.ball; fire(updateDoc(D("boards", BOARD_ID), { "pos.ball": { x: 50, y: 50 }, uid, at: serverTimestamp() })); } }, "ボールを真ん中に戻す"),
+    ], "チームを選ぶと、そのチームの先発（チームの画面で決めたフォーメーション）が並びます。発表前のチームでも、公開すると参加者に名前が見えるので注意してください。"));
+  }
+
+  const showMsg = (t) => { msg.hidden = !t; msg.textContent = t ?? ""; };
+  unsub = onSnapshot(D("boards", BOARD_ID), (s) => {
+    if (!s.exists()) {
+      B = null;
+      if (admin) {
+        // はじめて開いたとき：先発が決まっている最初のチームで作る
+        const t = sortedSets().flatMap((st) => teamsInSet(st.id)).find((x) => lineupOf(x).s.some(Boolean)) ?? sortedSets().flatMap((st) => teamsInSet(st.id))[0];
+        if (t) fire(saveBoard({ ...boardFromTeam(t), opp: true, open: false, shown: false }));
+        else showMsg("先にチームの画面でチームを作ってください。");
+      } else showMsg("作戦ボードはまだ公開されていません。");
+      paint();
+      return;
+    }
+    B = s.data();
+    if (!admin && B.shown !== true) { B = null; showMsg("作戦ボードはまだ公開されていません。"); paint(); return; }
+    showMsg(null);
+    paint();
+  }, (err) => {
+    console.warn("[board]", err.code);
+    B = null;
+    showMsg(err.code === "permission-denied" ? "作戦ボードはまだ公開されていません。" : "作戦ボードを読み込めませんでした。電波のよいところで開き直してください。");
+    paint();
+  });
+  paint();
+  return el;
+}
+const boardButton = (label = "作戦ボードを開く（リアルタイム）") => h("button", { class: "cell cell-button board-open", onclick: () => openBoard() }, "⚽ ", label);
+
 function adminTeams() {
   const attrs = attrEditor();
+  const futsal = futsalRosterEditor();
+  const futsalWrap = h("div", { class: "futsal-wrap" }, futsal.el);
   const balanceSel = h("select", { class: "inline-select", "aria-label": "偏らないようにする属性" });
   let setId = null;
   let justCreated = null; // 追加直後でまだ一覧に届いていないチーム表
@@ -2785,7 +3283,10 @@ function adminTeams() {
     const teams = teamsInSet(setId);
     const ms = sortedMembers();
     if (!teams.length || !ms.length) return toast("チームと参加者を先に作ってください", true);
-    const by = S.attrDefs.get(balanceSel.value);
+    // 「ポジションで均等」（フットサル）は選手名簿のポジション、それ以外は属性で分ける
+    const byPos = balanceSel.value === "__pos";
+    const by = byPos ? { name: "ポジション" } : S.attrDefs.get(balanceSel.value);
+    const valOf = byPos ? (uid) => playerOf(uid).pos ?? "" : (uid) => attrOf(uid, by.id);
     if (!confirm(`${ms.length}人を${teams.length}チームにランダムで振り分けます${by ? `（「${by.name}」が偏らないように）` : ""}。このチーム表の今の振り分けとスパイ登録は上書きされます。`)) return;
     const shuffle = (xs) => {
       for (let i = xs.length - 1; i > 0; i--) {
@@ -2798,7 +3299,7 @@ function adminTeams() {
     let shuffled;
     if (by) {
       const groups = new Map();
-      for (const m of shuffle([...ms])) { const v = attrOf(m.id, by.id); groups.set(v, [...(groups.get(v) ?? []), m]); }
+      for (const m of shuffle([...ms])) { const v = valOf(m.id); groups.set(v, [...(groups.get(v) ?? []), m]); }
       shuffled = [...groups.values()].sort((a, b) => b.length - a.length).flat();
     } else shuffled = shuffle([...ms]);
     const published = !!S.sets.get(setId)?.published;
@@ -2865,13 +3366,15 @@ function adminTeams() {
     }, "このチーム表を削除")),
   );
 
-  const el = h("div", null, largeTitle("チーム"), setBar, noSets, detail, attrs.el);
+  const el = h("div", null, largeTitle("チーム"), futsalWrap, setBar, noSets, detail, attrs.el);
 
   return {
     el,
     update() {
       attrs.update();
-      fillSelect(balanceSel, sortedAttrDefs().filter((d) => d.options?.length).map((d) => ({ value: d.id, label: `${d.name}で均等` })), "属性なし");
+      futsalWrap.hidden = !isFutsal();
+      if (isFutsal()) futsal.update();
+      fillSelect(balanceSel, [...(isFutsal() ? [{ value: "__pos", label: "ポジションで均等" }] : []), ...sortedAttrDefs().filter((d) => d.options?.length).map((d) => ({ value: d.id, label: `${d.name}で均等` }))], "属性なし");
       const sets = sortedSets();
       if (S.sets.has(justCreated)) justCreated = null;
       if (!S.sets.has(setId) && !(justCreated && setId === justCreated)) {
@@ -2906,10 +3409,13 @@ function adminTeams() {
         const leader = h("select", { class: "inline-select team-leader", "aria-label": "リーダー" });
         const memList = h("ul", { class: "team-members" });
         const attrSum = h("div");
-        leader.addEventListener("change", () => fire(updateDoc(D("teams", t.id), { leader: leader.value || null }), leader.value ? `リーダーを ${memberName(leader.value)} にしました` : "リーダーを外しました"));
+        const leaderLabel = h("span", null, "👑 リーダー");
+        const lineup = lineupEditor(t.id);
+        const lineupWrap = h("div", { class: "lineup-wrap" }, lineup.el);
+        leader.addEventListener("change", () => fire(updateDoc(D("teams", t.id), { leader: leader.value || null }), leader.value ? `${leaderWord()}を ${memberName(leader.value)} にしました` : `${leaderWord()}を外しました`));
         const el = h("div", { class: "cell team-row" },
           d,
-          h("div", { class: "cell-main" }, nm, count, attrSum, memList, h("label", { class: "team-leader-wrap" }, h("span", null, "👑 リーダー"), leader)),
+          h("div", { class: "cell-main" }, nm, count, attrSum, memList, h("label", { class: "team-leader-wrap" }, leaderLabel, leader)),
           h("button", {
             class: "text-btn",
             onclick: () => { fire(updateDoc(D("teams", t.id), { name: nm.value.trim() || t.name }), "保存しました"); nm.saved(); },
@@ -2925,9 +3431,13 @@ function adminTeams() {
               fire(b.commit(), "削除しました");
             },
           }, "削除"),
+          lineupWrap, // フォーメーション（フットサル）は行の全幅を使う
         );
-        return { el, nm, d, count, leader, memList, attrSum };
+        return { el, nm, d, count, leader, memList, attrSum, leaderLabel, lineup, lineupWrap };
       }, (row, t) => {
+        row.leaderLabel.textContent = `👑 ${leaderWord()}`;
+        row.lineupWrap.hidden = !isFutsal();
+        if (isFutsal()) row.lineup.patch(t);
         row.d.style.setProperty("--c", t.color);
         row.nm.sync(t.name);
         const tm = membersOfTeam(t.id);
@@ -2936,7 +3446,7 @@ function adminTeams() {
         // メンバーを1人ずつ改行して並べる（リーダーが先頭）
         const L = teamLeader(t);
         setKids(row.memList, [...tm].sort((a, b) => (b.id === L) - (a.id === L)).map((m) => h("li", { class: m.id === L ? "leader" : null }, m.id === L ? `👑 ${withRole(t, m)}` : withRole(t, m), attrChips(m.id))));
-        fillSelect(row.leader, tm.map((m) => ({ value: m.id, label: m.name })), "リーダーなし");
+        fillSelect(row.leader, tm.map((m) => ({ value: m.id, label: m.name })), `${leaderWord()}なし`);
         if (document.activeElement !== row.leader) row.leader.value = teamLeader(t) ?? "";
       });
 
@@ -8276,10 +8786,21 @@ function exportBuild(parts) {
         h("div", { class: "rp-teams" }, teamsInSet(st.id).map((t) => {
           const mem = membersOfTeam(t.id);
           const spies = membershipsOf((x) => x.teamId === t.id && x.hidden).map((x) => memberName(x.uid));
+          const lu = isFutsal() && mem.length ? lineupOf(t) : null;
           return h("div", { class: "rp-team" }, h("b", null, h("span", { class: "rp-dot", style: `background:${t.color ?? "#888"}` }), t.name, h("small", null, `${mem.length}人`)),
-            h("p", null, teamNamesText(t, mem) || "—"), spies.length ? h("p", { class: "rp-sub" }, `スパイ（本当はこのチーム）：${spies.join("・")}`) : null);
+            h("p", null, teamNamesText(t, mem) || "—"), spies.length ? h("p", { class: "rp-sub" }, `スパイ（本当はこのチーム）：${spies.join("・")}`) : null,
+            lu && lu.s.some(Boolean) ? h("p", { class: "rp-sub" }, `${lu.F.label}　${lu.F.slots.map((sl, i) => `${sl.label}：${lu.s[i] ? futsalName(lu.s[i]) : "未定"}`).join("／")}　控え：${lu.bench.map((m) => futsalName(m.id)).join("・") || "なし"}`) : null);
         })),
-        (() => { const un = ms.filter((m) => !teamOfIn(m.id, st.id)); return un.length ? h("p", { class: "rp-sub" }, `未所属：${un.map((m) => m.name).join("・")}`) : null; })())) : none());
+        (() => { const un = ms.filter((m) => !teamOfIn(m.id, st.id)); return un.length ? h("p", { class: "rp-sub" }, `未所属：${un.map((m) => m.name).join("・")}`) : null; })())) : none(),
+        ...(isFutsal() ? (() => {
+          const roles = futsalRoles().map((r) => [r.name, roleMembersOf(r.id).map((u) => memberName(u)).join("・") || "未定"]);
+          return [
+            h("h3", null, "選手名簿"),
+            ms.length ? T(["背番号", "名前", "ポジション", "利き足", "役割"], byNumber(ms).map((m) => { const p = playerOf(m.id); return [numText(m.id) || "—", m.name, posLabel(p.pos) || "—", p.foot || "—", rolesOfPlayer(m.id).join("・") || "—"]; })) : none(),
+            h("h3", null, "役割分担"),
+            roles.length ? T(["役割", "担当"], roles) : none(),
+          ];
+        })() : []));
     },
     points: () => {
       const users = ms.map((m) => [m.name, ptTotal("user", m.id)]).sort((a, b) => b[1] - a[1]);

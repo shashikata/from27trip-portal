@@ -246,6 +246,22 @@ await test("参加者：ポイントQR は1件ずつなら読めるが、一覧�
   await assertSucceeds(getDoc(doc(bob(), "ptQrs/qr1")));
   await assertFails(getDocs(collection(bob(), "ptQrs")));
 });
+await test("作戦ボード：公開前は読めない・公開すると読める", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "boards/main"), { shown: false, open: false, players: ["alice"], pos: { ball: { x: 50, y: 50 } } }));
+  await assertFails(getDoc(doc(bob(), "boards/main")));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "boards/main"), { shown: true }, { merge: true }));
+  await assertSucceeds(getDoc(doc(bob(), "boards/main")));
+});
+await test("作戦ボード：「参加者も動かせる」がオフなら動かせない・オンなら位置だけ動かせる", async () => {
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob" }));
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "boards/main"), { open: true }, { merge: true }));
+  await assertSucceeds(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 10, y: 10 }, uid: "bob" }));
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { "pos.ball": { x: 20, y: 20 }, uid: "alice" })); // なりすまし
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { players: ["bob"], uid: "bob" }));            // 選手の入れ替えは管理者だけ
+  await assertFails(updateDoc(doc(bob(), "boards/main"), { shown: false, uid: "bob" }));                // 設定は管理者だけ
+  await assertFails(deleteDoc(doc(bob(), "boards/main")));
+  await assertFails(updateDoc(doc(carol(), "boards/main"), { "pos.ball": { x: 1, y: 1 }, uid: "carol" })); // 入っていない旅行
+});
 
 await env.cleanup();
 for (const r of results) console.log(r[0] === "ok" ? "✅" : "❌", r[1], r[2] ?? "");

@@ -2051,3 +2051,109 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .pe-panel .group, .pe-panel .group-body, .pe-panel .cell, .pe-panel .member-checks { min-width: 0; max-width: 100%; }
 .pe-panel textarea { box-sizing: border-box; max-width: 100%; }
 .pe-panel .pick-tools { flex-wrap: wrap; }
+
+/* ---- フットサルチーム用：選手名簿・役割・フォーメーション */
+.futsal-editor { margin-bottom: 8px; }
+.futsal-warn { margin: 0 0 8px; padding: 8px 12px; border-radius: 10px; background: rgba(255, 149, 0, .14); color: var(--label); font-size: 14px; }
+.futsal-table .num-input { width: 4.2em; padding: 4px 6px; border: .5px solid var(--separator); border-radius: 6px; background: var(--fill); text-align: center; }
+.futsal-table td.futsal-roles-cell { white-space: normal; min-width: 6em; color: var(--label-2); font-size: 13px; }
+.futsal-table.view td.num { font-variant-numeric: tabular-nums; font-weight: 700; }
+.futsal-table.view tr.me td { background: rgba(0, 122, 255, .08); }
+.futsal-no { font-variant-numeric: tabular-nums; }
+.role-row .cell-main { min-width: 0; }
+.role-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.role-head .role-name { flex: 0 1 8em; min-width: 5em; font-weight: 600; }
+.role-head .role-who { flex: 1 1 8em; min-width: 0; color: var(--label-2); font-size: 14px; }
+.role-head .role-tools { display: inline-flex; gap: 2px; margin-left: auto; }
+.role-row .fold { margin-top: 4px; }
+.role-row .pick-list { margin: 6px 0 4px; }
+.role-row .pick { background: var(--fill); font-size: 14px; padding: 4px 10px; }
+.role-names { text-align: right; }
+
+.lineup-wrap { width: 100%; margin-top: 6px; }
+.lineup-edit .lineup-fields { margin-top: 8px; }
+.lineup-edit .field .inline-select { max-width: 60%; }
+.lineup-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 16px; }
+.lineup { margin: 8px 0 4px; }
+.pitch {
+  position: relative; width: 100%; max-width: 300px; aspect-ratio: 3 / 4; margin: 0 auto;
+  border-radius: 10px; overflow: hidden;
+  background: repeating-linear-gradient(180deg, #2E8B57 0 12.5%, #339966 12.5% 25%);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, .85);
+}
+.pitch-mid { position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; background: rgba(255, 255, 255, .85); }
+.pitch-circle { position: absolute; left: 50%; top: 50%; width: 22%; aspect-ratio: 1; transform: translate(-50%, -50%); border: 2px solid rgba(255, 255, 255, .85); border-radius: 50%; }
+.pitch-area { position: absolute; left: 22%; width: 56%; height: 15%; border: 2px solid rgba(255, 255, 255, .85); }
+.pitch-area.top { top: -2px; border-radius: 0 0 50% 50% / 0 0 100% 100%; }
+.pitch-area.bottom { bottom: -2px; border-radius: 50% 50% 0 0 / 100% 100% 0 0; }
+.pitch-goal { position: absolute; left: 40%; width: 20%; height: 2.5%; background: rgba(255, 255, 255, .9); }
+.pitch-goal.top { top: 0; }
+.pitch-goal.bottom { bottom: 0; }
+.pitch-slot {
+  position: absolute; transform: translate(-50%, -50%); width: 30%;
+  display: flex; flex-direction: column; align-items: center; gap: 1px; text-align: center; color: #fff; pointer-events: none;
+}
+.pitch-dot {
+  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
+  background: var(--c); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  font: 700 13px/1 var(--font-rounded); font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 1px 1px rgba(0, 0, 0, .4);
+}
+.pitch-slot.empty .pitch-dot { background: rgba(255, 255, 255, .18); border-style: dashed; box-shadow: none; }
+.pitch-slot.me .pitch-dot { outline: 3px solid #FFD60A; outline-offset: 1px; }
+.pitch-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 700; line-height: 1.25; text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+.pitch-pos { font-size: 10px; line-height: 1.1; opacity: .85; text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+.lineup-foot { max-width: 300px; margin: 6px auto 0; font-size: 13px; color: var(--label-2); }
+.lineup-form { display: block; margin-bottom: 4px; }
+.bench { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.bench b { color: var(--label); font-weight: 600; margin-right: 2px; }
+.bench-chip { display: inline-flex; align-items: baseline; gap: 4px; padding: 2px 8px; border-radius: 999px; background: var(--fill); color: var(--label); }
+.bench-chip small { color: var(--label-2); font-size: 11px; }
+.bench-chip.me { background: rgba(0, 122, 255, .16); }
+@media print { .pitch { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+.futsal-table .num-input { width: 3.4em; }
+.futsal-table .inline-select { text-align: left; }
+.futsal-table.view td:last-child { white-space: normal; min-width: 4.5em; }
+
+/* ---- 作戦ボード（リアルタイム） */
+.board-open { font-weight: 600; }
+.board-viewer { position: fixed; inset: 0; z-index: 400; display: flex; flex-direction: column; background: #1c1c1e; color: #fff; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+.board-viewer .fv-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+.board-viewer .text-btn { color: #64D2FF; margin-left: auto; }
+.board-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; }
+.board-live { display: inline-flex; align-items: center; gap: 5px; flex: none; font-size: 12px; color: #30D158; }
+.board-live i { width: 8px; height: 8px; border-radius: 50%; background: #30D158; animation: board-pulse 1.6s ease-in-out infinite; }
+@keyframes board-pulse { 50% { opacity: .3; } }
+.board-body { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 0 16px 16px; overflow: auto; }
+.board-stage { position: relative; flex: none; margin: 0 auto; }
+.board-pitch.pitch { width: min(calc(100vw - 32px), calc((100dvh - 190px) * 2 / 3), 560px); max-width: none; aspect-ratio: 2 / 3; touch-action: none; user-select: none; -webkit-user-select: none; }
+.board-side { flex: 1; min-width: 0; font-size: 14px; color: rgba(235, 235, 245, .8); }
+.board-side .secondary { color: rgba(235, 235, 245, .55); margin-top: 4px; }
+.board-side .group { margin-top: 12px; }
+.board-side .group, .board-side .group-body { color: var(--label); }
+.board-status { line-height: 1.5; }
+.board-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: rgba(0, 0, 0, .55); border-radius: 10px; font-weight: 600; }
+.board-piece { position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 1px; color: #fff; z-index: 2; transition: left .2s linear, top .2s linear; touch-action: none; }
+.board-piece.movable { cursor: grab; }
+.board-piece.dragging { transition: none; cursor: grabbing; z-index: 5; }
+.board-piece.dragging .pitch-dot { transform: scale(1.15); }
+.board-piece .pitch-dot { width: 38px; height: 38px; font-size: 14px; transition: transform .1s; }
+.board-piece .pitch-name { max-width: 84px; }
+.board-piece.opp .pitch-dot { background: #FF453A; }
+.board-piece.opp .pitch-name { opacity: .8; font-weight: 600; }
+.board-piece.me .pitch-dot { outline: 3px solid #FFD60A; outline-offset: 1px; }
+.board-piece.ball { z-index: 4; }
+.board-piece.ball .pitch-dot {
+  width: 24px; height: 24px; border: 2px solid #1c1c1e;
+  background: radial-gradient(circle at 50% 50%, #1c1c1e 0 22%, transparent 23%), radial-gradient(circle at 35% 30%, #fff, #ddd 70%);
+}
+/* つかみやすいように、見た目より広く当たり判定をとる */
+.board-piece::before { content: ""; position: absolute; inset: -10px -6px; }
+@media (max-width: 760px) {
+  .board-body { flex-direction: column; gap: 8px; }
+  .board-side { flex: none; }
+}
+.pitch-mid, .pitch-circle, .pitch-area, .pitch-goal { pointer-events: none; }
+.board-side .group-header, .board-side .group-footer { color: rgba(235, 235, 245, .6); }
+.team-row:has(> .lineup-wrap:not([hidden])) { flex-wrap: wrap; }
+.team-row > .lineup-wrap { flex: 1 0 100%; margin-top: 2px; }
+.lineup-edit .field .inline-select { max-width: 65%; min-width: 0; text-align: right; }

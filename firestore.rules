@@ -9,6 +9,7 @@ rules_version = '2';
 //                 - 確定前ページにいる人は、確定した旅行のページだけ読める
 //                 - ほかの人の「見ました」・入金の報告・申請・通知の宛先・パスワード変更の記録は読めない
 //                 - ポイントQR の一覧は読めない（QR を読み取ったときの1件だけ）
+//                 - 作戦ボード（フットサル）は、管理者が公開したときだけ読める。動かせるのは「参加者も動かせる」がオンのときだけ
 //               書けるのは、下の「参加者が書けるもの」に決めた形のデータだけ（それ以外はすべて管理者だけ）
 //   未登録の人: 何もできない
 //
@@ -67,6 +68,8 @@ service cloud.firestore {
         || (coll == 'memberships' && resource.data.published == true && (resource.data.hidden == false || resource.data.uid == me()))
         || (coll == 'notes' && resource.data.shared == true)
         || (coll in ['videos', 'archives'] && resource.data.visible == true)
+        // 作戦ボード（フットサル）：管理者が「参加者に公開する」をオンにしたときだけ
+        || (coll == 'boards' && resource.data.get('shown', false) == true)
         || (coll == 'checks' && (resource.data.uid == me() || resource.data.shared == true))
         || (coll in ['acks', 'payReports', 'pollRequests', 'pushSubs', 'pwChanged'] && resource.data.uid == me())
         // DM・管理者との連絡は当人だけ
@@ -132,6 +135,9 @@ service cloud.firestore {
         // チェックリスト（共有の項目は、誰が付け外ししてもよい）
         || (coll == 'checks' && only(['uid', 'listId', 'itemId', 'shared', 'at'])
             && (id == d().listId + '_' + d().itemId + '_' + me() || (d().shared == true && id == d().listId + '_' + d().itemId + '_shared')))
+        // 作戦ボード：「参加者も動かせる」がオンのときだけ、コマの位置（pos）と最後に動かした人だけ書き換えられる
+        || (coll == 'boards' && request.method == 'update' && resource.data.get('open', false) == true
+            && resource.data.get('shown', false) == true && changed().hasOnly(['pos', 'uid', 'at']) && d().pos is map)
         // 通知の宛先
         || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200))
         // パスワードを変えた記録
@@ -150,9 +156,9 @@ service cloud.firestore {
         || (coll in ['quizSabo', 'quizBets'] && wasMine() && resource.data.status == 'pending')
         || (coll == 'checks' && (wasMine() || resource.data.shared == true));
     }
-    // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats は除く）
+    // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats・作戦ボードは除く）
     function ownsBefore(coll) {
-      return request.method == 'create' || coll == 'stats' || wasMine() || (coll == 'checks' && resource.data.shared == true);
+      return request.method == 'create' || coll == 'stats' || coll == 'boards' || wasMine() || (coll == 'checks' && resource.data.shared == true);
     }
 
     function canVote(pid, pollId) {
