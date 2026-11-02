@@ -8833,7 +8833,9 @@ function buildMobileShell(allTabs) {
 
 // 管理者の PC 画面：左にお知らせ・チーム、右半分は1つの大きな欄（ふだんは表・メモ／参加者）。
 // 上部の「ポイント」「出欠・集金」「チェック」「チャット」「設定」は、小窓ではなく右半分の欄に出す（クイズ・地図は小窓のまま）
-const DESK_SIDE_KEYS = new Set(["points", "money", "videos", "checklist", "chat", "settings"]);
+const DESK_SIDE_KEYS = new Set(["points", "money", "videos", "archives", "checklist", "chat", "settings", "quiz", "allocs", "map"]);
+// PC で右の欄に出している画面（位置・クイズ・チャットだけが変わったときに、そこだけ描き直すため）
+let deskSideCurrent = null; // { key, view } | null
 let deskSideOpen = null; // buildDesktopShell が設定する（右の欄に出したら true を返す）
 function openSheet(tab) {
   if (deskSideOpen?.(tab)) return;
@@ -8908,10 +8910,12 @@ function buildDesktopShell(tabs) {
     sideView?.destroy?.();
     if (!t || sideTab?.key === t.key) { sideTab = null; sideView = null; } // もう一度押すと元に戻る
     else { closeSheet(); sideTab = t; sideView = t.view({ withTitle: false }); }
+    deskSideCurrent = sideTab ? { key: sideTab.key, view: sideView } : null;
     paintSide();
     scheduleRender();
   }
-  deskSideOpen = (t) => { if (!DESK_SIDE_KEYS.has(t.key)) return false; showInSide(t); return true; };
+  // 参加者の地図は今まで通り小窓（右の欄に出すのは管理者だけ）
+  deskSideOpen = (t) => { if (!DESK_SIDE_KEYS.has(t.key) || (t.key === "map" && !S.isAdmin)) return false; showInSide(t); return true; };
   // 参加者：受付中のアンケートと、期限内・未入金の集金を画面の一番上に出す
   const payTop = S.isAdmin || inLobby() ? null : memberMoney({ pinned: "only" });
   const ask = pushBanner();
@@ -9022,7 +9026,9 @@ function render(kinds) {
   if (!S.authReady) return;
   // 位置・クイズだけが変わったときは、開いている小窓とクイズの画面だけ描き直す
   if (kinds && !kinds.has("all") && shell && S.user) {
-    if ((kinds.has("loc") && S.sheet?.key === "map") || (kinds.has("quiz") && S.sheet?.key === "quiz") || (kinds.has("chat") && S.sheet?.key === "chat")) S.sheet.view.update();
+    for (const open of [S.sheet, deskSideCurrent]) { // 小窓と、PC の右の欄
+      if (open && ((kinds.has("loc") && open.key === "map") || (kinds.has("quiz") && open.key === "quiz") || (kinds.has("chat") && open.key === "chat"))) open.view.update();
+    }
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
     if (kinds.has("status")) document.querySelectorAll(".status").forEach(paintStatus);
@@ -9055,6 +9061,8 @@ function render(kinds) {
   if (!shell) {
     closeSheet();
     deskSideOpen = null;
+    deskSideCurrent?.view.destroy?.();
+    deskSideCurrent = null;
     const lobby = inLobby();
     if (desktopQuery.matches) shell = buildDesktopShell(S.isAdmin ? (lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS));
     else shell = S.isAdmin ? buildMobileShell(lobby ? LOBBY_ADMIN_TABS : ADMIN_TABS) : buildMemberPageShell();
