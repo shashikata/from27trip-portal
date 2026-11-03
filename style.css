@@ -57,6 +57,11 @@ body {
 }
 
 button, input, select, textarea { font: inherit; color: inherit; letter-spacing: inherit; }
+/* 選択肢の一覧（開いたときのリスト）は、select の文字色を受け継ぐと
+   白い背景に薄い文字になって読めない端末がある（ダークモードの Chrome など）。
+   一覧の背景と文字の色をはっきり決めておく */
+select option, select optgroup { background-color: var(--cell); color: var(--label); }
+select option:disabled { color: var(--label-3); }
 button { cursor: pointer; }
 [hidden] { display: none !important; }
 
