@@ -222,6 +222,8 @@ const S = {
   locations: new Map(),      // 参加者の現在地 locations/{uid}
   attrDefs: new Map(),       // 管理者：参加者の属性の項目 attrDefs/{id} { name, options: [..], order }
   memberAttrs: new Map(),    // 管理者：参加者ごとの属性 memberAttrs/{uid} { values: { 項目id: 値 } }
+  personFields: new Map(),   // 管理者：参加者の情報の項目 personFields/{id}（ルート直下。全旅行で共通）
+  personInfo: new Map(),     // 管理者：参加者の情報（住所・大学など） personInfo/{uid}（ルート直下。全旅行で共通）
   futsal: null,              // フットサルチーム用の旅行：config/futsal（選手名簿・役割）
   matches: new Map(),        // フットサルの試合 matches/{id}（タイマー・得点・シュートなど。参加者には公開したものだけ）
   ptQrs: new Map(),          // ポイントQR ptQrs/{id}（管理者）
@@ -389,6 +391,9 @@ function startAdmin() {
   listen("ptQrs", C("ptQrs"), (s) => { if (s) S.ptQrs = toMap(s); });
   listen("attrDefs", C("attrDefs"), (s) => { if (s) S.attrDefs = toMap(s); });
   listen("memberAttrs", C("memberAttrs"), (s) => { if (s) S.memberAttrs = toMap(s); });
+  // 参加者の情報（住所・大学など）は旅行をまたいで共通なので、どの旅行でもルート直下を見る
+  listen("personFields", collection(db, "personFields"), (s) => { if (s) S.personFields = toMap(s); });
+  listen("personInfo", collection(db, "personInfo"), (s) => { if (s) S.personInfo = toMap(s); });
   listen("ptClaims", C("ptClaims"), (s) => { if (s) S.ptClaims = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
@@ -667,7 +672,7 @@ function resetProfileData() {
   DATA_VER++;
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
-    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(),
+    members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(), personFields: new Map(), personInfo: new Map(),
     annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, futsal: null, matches: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
@@ -1319,11 +1324,13 @@ function ackBox(a, admin) {
 }
 
 function deleteAnnouncement(a) {
-  if (!confirm(`「${a.title}」を削除しますか？`)) return;
+  if (!confirm(`「${a.title}」を削除しますか？${a.personal ? "\n人ごとに送った内容も消えます。" : ""}`)) return;
   const b = writeBatch(db);
   b.delete(D("announcements", a.id));
   [...S.acks.values()].filter((x) => x.annId === a.id).forEach((x) => b.delete(D("acks", x.id)));
-  fire(b.commit(), "削除しました");
+  if (!a.personal) return fire(b.commit(), "削除しました");
+  // 人ごとの内容（annPrivate）もいっしょに消す
+  guard(null, async () => { await deletePrivates(b, a); await b.commit(); toast("削除しました"); });
 }
 
 function announcementCard(a, { admin = false } = {}) {
@@ -1331,6 +1338,7 @@ function announcementCard(a, { admin = false } = {}) {
   if (a.scope === "team") scope = admin ? `${teamName(a.target)} のみ` : `チーム限定（${teamName(a.target)}）`;
   if (a.scope === "user") scope = admin ? `${memberName(a.target)} のみ` : "あなた宛て";
   if (a.scope === "users") scope = admin ? `${annTargets(a).map(memberName).join("・")} のみ` : `あなた宛て（${annTargets(a).length}人）`;
+  if (a.personal) scope = admin ? `人ごと（${annTargets(a).length}人）` : "あなた宛て（あなただけの内容つき）";
   return h("article", { class: `card ann${a.pinned ? " pinned" : ""}`, "data-ann": a.id },
     h("div", { class: "ann-meta" },
       a.pinned ? h("span", { class: "ann-pin" }, icon("pin"), "固定") : null,
@@ -1342,6 +1350,8 @@ function announcementCard(a, { admin = false } = {}) {
     a.images?.length
       ? h("div", { class: `ann-images n${a.images.length}` }, a.images.map((src) => h("img", { src, alt: "", loading: "lazy", onclick: () => openLightbox(src) })))
       : null,
+    a.personal && !admin ? privateBox(a) : null,
+    a.personal && admin && !a.fromLobby ? privateAdminList(a) : null,
     ackBox(a, admin),
     admin && a.fromLobby ? h("div", { class: "cell-sub from-lobby" }, "確定前ページのお知らせ（固定・削除は確定前ページで）") : null,
     admin && !a.fromLobby ? h("div", { class: "ann-actions" },
@@ -2150,7 +2160,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches", "annPrivate"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2305,7 +2315,7 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v83"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v84"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2351,15 +2361,162 @@ function settingsView({ withTitle = true } = {}) {
 
 // ---------------------------------------------------------------- 画面：管理者
 
+// ---- 人ごとに別の内容を一斉に送るお知らせ（暗証番号など）
+//   announcements/{id} { …ふつうのお知らせ, scope: "users", targets: [uid], personal: true }   タイトル・共通の本文は宛先の人に見える
+//   annPrivate/{annId}_{uid} { annId, uid, body, at }   その人だけの内容。ルールで本人と管理者しか読めない
+//   お知らせは参加者全員が読める場所にあるので、人ごとの内容はお知らせには入れない（ほかの人に見られないように）
+const EACH_MAX = 1000;
+const privCache = new Map(); // `${annId}_${uid}` → { text } | { err, at } | { loading }
+function privateBox(a) {
+  const uid = S.user?.uid;
+  if (!uid) return null;
+  const key = `${a.id}_${uid}`;
+  const body = h("div", { class: "ann-private-body" });
+  const box = h("div", { class: "ann-private" }, h("div", { class: "ann-private-head" }, icon("lock"), "あなただけに届いた内容"), body);
+  const paint = () => {
+    const c = privCache.get(key);
+    if (c?.text != null) {
+      setKids(body, h("div", { class: "ann-private-text" }, c.text || "（空です）"),
+        c.text ? h("button", { type: "button", class: "text-btn", onclick: () => navigator.clipboard.writeText(c.text).then(() => toast("コピーしました"), () => toast("コピーできませんでした", true)) }, icon("copy"), "コピー") : null);
+    } else if (c?.err) setKids(body, h("span", { class: "secondary" }, "読み込めませんでした。電波のある所で開き直してください。"));
+    else setKids(body, h("span", { class: "secondary" }, "読み込み中…"));
+  };
+  const c = privCache.get(key);
+  if (!c || (c.err && Date.now() - c.at > 15000)) {
+    privCache.set(key, { loading: true });
+    getDoc(DX("annPrivate", key))
+      .then((d) => privCache.set(key, { text: d.exists() ? String(d.data().body ?? "") : "" }))
+      .catch((e) => { console.warn(e); privCache.set(key, { err: true, at: Date.now() }); })
+      .then(() => { if (box.isConnected) paint(); else scheduleRender(); });
+  }
+  paint();
+  return box;
+}
+// 管理者：だれに何を送ったか（開いたときだけ読み込む）
+function privateAdminList(a) {
+  const body = h("div", { class: "ann-names" }, h("span", { class: "secondary" }, "読み込み中…"));
+  const details = h("details", { class: "ack-list ann-private-admin" }, h("summary", null, icon("lock"), `人ごとの内容（${annTargets(a).length}人・管理者だけに表示）`), body);
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    getDocs(query(C("annPrivate"), where("annId", "==", a.id))).then((qs) => {
+      const by = new Map(qs.docs.map((d) => [d.data().uid, d.data().body ?? ""]));
+      setKids(body, h("table", { class: "attr-table each-table" }, h("tbody", null, annTargets(a).map((u) => h("tr", null, h("td", null, memberName(u)), h("td", { class: "each-val" }, by.has(u) ? by.get(u) || "（空）" : "（届いていません）"))))));
+    }, (e) => setKids(body, h("span", { class: "warn" }, errMsg(e))));
+  });
+  return details;
+}
+async function deletePrivates(b, a) {
+  const qs = await getDocs(query(C("annPrivate"), where("annId", "==", a.id)));
+  qs.docs.forEach((d) => b.delete(d.ref));
+}
+// 重ならないランダムな数字（digits 桁。先頭の 0 もそのまま残す）
+function randomCodes(n, digits) {
+  const max = 10 ** digits, out = new Set();
+  const unique = n <= max / 2;
+  const list = [];
+  while (list.length < n) {
+    const x = crypto.getRandomValues(new Uint32Array(1))[0] % max;
+    const s = String(x).padStart(digits, "0");
+    if (unique && out.has(s)) continue;
+    out.add(s); list.push(s);
+  }
+  return list;
+}
+// お知らせを書く欄の「人ごと」：宛先と、1人ずつの内容
+function eachEditor() {
+  const vals = new Map();     // uid → 内容（描き直しても消えないように持っておく）
+  const on = new Set();       // 送る人
+  let inited = false;
+  const rows = h("div", { class: "each-rows" });
+  const count = h("span", { class: "secondary" });
+  const digits = h("select", { class: "inline-select", "aria-label": "桁数" }, [4, 5, 6, 8].map((d) => h("option", { value: String(d), selected: d === 4 }, `${d}桁`)));
+  const fromField = h("select", { class: "inline-select", "aria-label": "参加者の情報の項目" });
+  const fromRow = h("div", { class: "each-tool" }, h("span", null, "参加者の情報から："), fromField,
+    h("button", { type: "button", class: "text-btn", onclick: () => {
+      const f = S.personFields.get(fromField.value);
+      if (!f) return toast("項目を選んでください", true);
+      const targets = sortedMembers().filter((m) => on.has(m.id));
+      if (targets.some((m) => vals.get(m.id)) && !confirm("入っている内容を、参加者の情報で書き換えますか？")) return;
+      let n = 0;
+      targets.forEach((m) => { const v = personVal(m.id, f.id); if (v) n++; vals.set(m.id, personValText(f, v)); });
+      paint(true);
+      toast(`${n}人分を入れました${n < targets.length ? `（${targets.length - n}人は未入力）` : ""}`);
+    } }, "入れる"));
+  const paste = h("textarea", { class: "each-paste", rows: "3", placeholder: "例：\nuser01\t4821\nはなこ,7350\n（1行に1人。ID か名前、タブかカンマ、内容。Excel からそのまま貼れます）" });
+  const pasteBox = h("div", { class: "each-paste-box", hidden: true }, paste,
+    h("button", { type: "button", class: "text-btn", onclick: () => {
+      const ms = sortedMembers();
+      let ok = 0; const miss = [];
+      for (const line of paste.value.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t) continue;
+        const m = t.match(/^(.+?)\s*[\t,，]\s*(.*)$/) ?? t.match(/^(\S+)\s+(.*)$/);
+        if (!m) { miss.push(t); continue; }
+        const who = m[1].trim(), what = m[2].trim();
+        const p = ms.find((x) => x.loginId === who.toLowerCase()) ?? ms.find((x) => x.name === who);
+        if (!p) { miss.push(who); continue; }
+        vals.set(p.id, what.slice(0, EACH_MAX)); on.add(p.id); ok++;
+      }
+      paint(true);
+      toast(`${ok}人分を入れました${miss.length ? `（見つからない：${miss.slice(0, 5).join("・")}${miss.length > 5 ? " ほか" : ""}）` : ""}`, miss.length > 0);
+      if (!miss.length) { paste.value = ""; pasteBox.hidden = true; }
+    } }, "反映する"));
+  const tools = h("div", { class: "each-tools" },
+    h("div", { class: "pick-tools" }, count,
+      h("button", { type: "button", class: "text-btn", onclick: () => { sortedMembers().forEach((m) => on.add(m.id)); paint(true); } }, "全員にチェック"),
+      h("button", { type: "button", class: "text-btn", onclick: () => { on.clear(); paint(true); } }, "全部外す")),
+    h("div", { class: "each-tool" }, h("span", null, "ランダムな数字："), digits,
+      h("button", { type: "button", class: "text-btn", onclick: () => {
+        const targets = sortedMembers().filter((m) => on.has(m.id));
+        if (!targets.length) return toast("送る人にチェックを付けてください", true);
+        if (targets.some((m) => vals.get(m.id)) && !confirm("入っている内容を、ランダムな数字で書き換えますか？")) return;
+        randomCodes(targets.length, Number(digits.value)).forEach((c, i) => vals.set(targets[i].id, c));
+        paint(true);
+      } }, "チェックした人に入れる")),
+    fromRow,
+    h("div", { class: "each-tool" }, h("button", { type: "button", class: "text-btn", onclick: () => { pasteBox.hidden = !pasteBox.hidden; if (!pasteBox.hidden) paste.focus(); } }, icon("copy"), "貼り付けでまとめて入れる")),
+    pasteBox);
+  const el = h("div", { class: "each-editor" }, tools, rows);
+  function paint(force = false) {
+    const ms = sortedMembers();
+    if (!inited && ms.length) { ms.forEach((m) => on.add(m.id)); inited = true; }
+    count.textContent = `${ms.filter((m) => on.has(m.id)).length} / ${ms.length}人に送る`;
+    const fs = sortedPersonFields();
+    fillSelect(fromField, fs.map((f) => ({ value: f.id, label: f.name })), "項目を選ぶ");
+    fromRow.hidden = !fs.length;
+    if (!force && rows.contains(document.activeElement)) return;
+    setKids(rows, ms.length ? ms.map((m) => {
+      const cb = h("input", { type: "checkbox", checked: on.has(m.id), "aria-label": `${m.name}に送る` });
+      const input = h("input", { type: "text", class: "plain", value: vals.get(m.id) ?? "", maxlength: String(EACH_MAX), placeholder: on.has(m.id) ? "内容（例：暗証番号）" : "送らない", disabled: !on.has(m.id), "aria-label": `${m.name}への内容` });
+      cb.addEventListener("change", () => { if (cb.checked) on.add(m.id); else on.delete(m.id); paint(true); });
+      input.addEventListener("input", () => vals.set(m.id, input.value));
+      return h("div", { class: `each-row${on.has(m.id) ? "" : " off"}` }, h("label", { class: "each-name" }, cb, h("span", null, m.name)), input);
+    }) : h("p", { class: "cell-sub" }, "まだ参加者がいません。"));
+  }
+  return {
+    el,
+    refresh: () => paint(false),
+    // 送る人と内容。空の人がいれば missing に入れる
+    value() {
+      const ms = sortedMembers().filter((m) => on.has(m.id));
+      return { items: ms.map((m) => ({ uid: m.id, body: (vals.get(m.id) ?? "").trim().slice(0, EACH_MAX) })), missing: ms.filter((m) => !(vals.get(m.id) ?? "").trim()).map((m) => m.name) };
+    },
+    reset() { vals.clear(); on.clear(); inited = false; paste.value = ""; pasteBox.hidden = true; paint(true); },
+  };
+}
+
 function adminAnnouncements() {
   const title = h("input", { type: "text", maxlength: "100", placeholder: "タイトル", required: true, class: "plain title-input" });
   const body = h("textarea", { rows: "4", placeholder: "本文", class: "plain" });
-  const scope = segmented([{ value: "all", label: "全員" }, ...(inLobby() ? [] : [{ value: "team", label: "チーム" }]), { value: "user", label: "個人" }]);
+  const scope = segmented([{ value: "all", label: "全員" }, ...(inLobby() ? [] : [{ value: "team", label: "チーム" }]), { value: "user", label: "個人" }, { value: "each", label: "人ごと" }]);
   const target = h("select", { "aria-label": "宛先" });
   const targetCell = field("宛先", target);
   // 個人宛て：何人でも選べる（1人なら従来どおり scope "user"、2人以上は scope "users"）
   const people = memberChecks([]);
   const peopleCell = h("div", { class: "cell" }, people.el);
+  // 人ごと：1人ずつ別の内容（暗証番号など）を、本人だけが読める形で送る
+  const each = eachEditor();
+  const eachCell = h("div", { class: "cell" }, each.el);
   const pinned = toggle();
   const ack = toggle();
   const pushT = toggle(true);
@@ -2381,8 +2538,10 @@ function adminAnnouncements() {
   const refreshTarget = () => {
     targetCell.hidden = scope.value !== "team";
     peopleCell.hidden = scope.value !== "user";
+    eachCell.hidden = scope.value !== "each";
     if (scope.value === "team") fillSelect(target, teamOptions(), "選択");
     if (scope.value === "user") people.refresh();
+    if (scope.value === "each") each.refresh();
   };
   scope.addEventListener("change", () => { target.value = ""; refreshTarget(); });
 
@@ -2395,9 +2554,38 @@ function adminAnnouncements() {
     renderPreview();
   }));
 
+  // 人ごと：お知らせ（タイトル・共通の本文）と、1人ずつの内容（annPrivate）を同時に書き込む
+  function postEach() {
+    const { items, missing } = each.value();
+    if (!items.length) return toast("送る人にチェックを付けてください", true);
+    if (missing.length) return toast(`内容が空の人がいます：${missing.slice(0, 5).join("・")}${missing.length > 5 ? ` ほか${missing.length - 5}人` : ""}（送らない人はチェックを外してください）`, true);
+    if (!confirm(`${items.length}人に、1人ずつ別の内容を送ります。\n内容は本人と管理者だけが読めます（ほかの参加者には見えません）。`)) return;
+    const uids = items.map((x) => x.uid);
+    const annRef = doc(C("announcements"));
+    const t = title.value.trim(), common = body.value.trim();
+    const writes = [[annRef, { title: t, body: common, scope: "users", target: null, targets: uids, personal: true, images: [...images], pinned: pinned.checked, ack: ack.checked, createdAt: serverTimestamp(), author: emailToId(S.user.email) }],
+      ...items.map((x) => [D("annPrivate", `${annRef.id}_${x.uid}`), { annId: annRef.id, uid: x.uid, body: x.body, at: serverTimestamp() }])];
+    guard(btn, async () => {
+      // 1回にまとめて書けるのは 500 件まで。人ごとの内容を先に書き、お知らせを最後に書く（届いたのに中身が無い、を防ぐ）
+      const rest = writes.slice(1), CH = 450;
+      for (let i = 0; i < rest.length; i += CH) { const b = writeBatch(db); rest.slice(i, i + CH).forEach(([r, d]) => b.set(r, d)); await b.commit(); }
+      await setDoc(annRef, writes[0][1]);
+      toast(`${items.length}人に送りました`);
+      // 通知には人ごとの内容を入れない（ロック画面に出るため）
+      if (S.pushWorker && pushT.checked) sendPush({ uids, title: t, body: common ? `${common.slice(0, 60)}（あなた宛ての内容はアプリで確認してください）` : "あなた宛ての内容が届いています。アプリで確認してください。" }).then((r) => toast(pushResultText(r)), (e) => toast(`通知：${errMsg(e)}`, true));
+      title.value = body.value = "";
+      pinned.checked = false;
+      ack.checked = false;
+      each.reset();
+      images.length = 0;
+      renderPreview();
+    });
+  }
+
   const form = h("form", {
     onsubmit: (e) => {
       e.preventDefault();
+      if (scope.value === "each") return postEach();
       const picked = scope.value === "user" ? sortedMembers().map((m) => m.id).filter((id) => people.value().includes(id)) : [];
       if (scope.value === "team" && !target.value) return toast("宛先を選んでください", true);
       if (scope.value === "user" && !picked.length) return toast("宛先の人を1人以上選んでください", true);
@@ -2432,8 +2620,8 @@ function adminAnnouncements() {
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
       h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, peopleCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
-      "「個人」は何人でも選べます。「チーム」宛ては、そのチーム表を発表するまで届きません。"),
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, peopleCell, eachCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
+      "「個人」は何人でも選べます。「チーム」宛ては、そのチーム表を発表するまで届きません。「人ごと」は、タイトルと本文は送る人みんなに同じものが、上の欄の内容（暗証番号など）は1人ずつ別のものが届きます。人ごとの内容は本人と管理者だけが読めて、通知にも出ません。"),
     btn,
   );
 
@@ -2545,6 +2733,7 @@ function adminMembers({ withTitle = true } = {}) {
   const listGroup = h("section", { class: "group" }, h("div", { class: "group-header" }, "参加者"), listBody,
     h("div", { class: "group-footer" }, "名前を書き換えたら「保存」を押してください。"));
   const created = [];
+  const info = personInfoSection();
 
   // 別の旅行ですでに作った ID なら、新しく作らずにこの旅行へ追加する（パスワードは前と同じ）
   async function createAccount(loginId, displayName, password) {
@@ -2627,6 +2816,7 @@ function adminMembers({ withTitle = true } = {}) {
     ], "この旅行の参加者全員分を印刷します。この機能を入れる前に作ったIDはパスワードの記録がないので、空欄（手書き用）になります。"),
     listEmpty,
     listGroup,
+    info.el,
   );
 
   let prefetched = false;
@@ -2655,6 +2845,7 @@ function adminMembers({ withTitle = true } = {}) {
       } else lobbyNote.replaceChildren();
       listEmpty.hidden = ms.length > 0;
       listGroup.hidden = ms.length === 0;
+      info.update();
       keyedList(listBody, ms, (m) => {
         const nm = editableInput({ class: "plain", "aria-label": `${m.loginId} の名前` });
         const sub = h("div", { class: "cell-sub" });
@@ -2669,6 +2860,7 @@ function adminMembers({ withTitle = true } = {}) {
               nm.saved();
             },
           }, "保存"),
+          h("button", { class: "text-btn", onclick: () => openPersonInfo(m.id) }, "情報"),
           h("button", {
             class: "text-btn destructive",
             onclick: () => {
@@ -2695,6 +2887,188 @@ function adminMembers({ withTitle = true } = {}) {
       });
     },
   };
+}
+
+// ---- 参加者の情報（住所・大学など）。同じ人（同じID）なら、どの旅行でも共通。管理者だけが読み書きできる
+//   personFields/{id} { name, kind: "text" | "long" | "choice" | "date", options: [..], order }   ルート直下（旅行をまたいで共通）
+//   personInfo/{uid}  { values: { 項目id: 値 }, name, loginId, at }                               uid は旅行をまたいで同じ
+//   どちらもルールで管理者だけにしている（参加者は本人の分も読めない）。チームの画面の「参加者の属性」（旅行ごと）とは別
+const PERSON_KINDS = [["text", "1行"], ["long", "複数行"], ["choice", "選択肢"], ["date", "日付"]];
+const PERSON_MAX = { text: 100, long: 300, choice: 40, date: 10 };
+const PERSON_PRESETS = [
+  { name: "住所", kind: "long" },
+  { name: "大学", kind: "text" },
+  { name: "学部・学科", kind: "text" },
+  { name: "学年", kind: "choice", options: ["1年", "2年", "3年", "4年", "修士1年", "修士2年", "その他"] },
+  { name: "電話番号", kind: "text" },
+  { name: "誕生日", kind: "date" },
+  { name: "緊急連絡先", kind: "text" },
+  { name: "アレルギー・食事の注意", kind: "long" },
+];
+const sortedPersonFields = () => [...S.personFields.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+const personVal = (uid, fid) => S.personInfo.get(uid)?.values?.[fid] ?? "";
+const splitPersonOptions = (s) => [...new Set(s.split(/[/／,、]/).map((x) => x.trim()).filter(Boolean))].slice(0, 50);
+const personKindLabel = (k) => PERSON_KINDS.find(([v]) => v === k)?.[1] ?? "1行";
+function personValText(f, v) {
+  if (!v) return "";
+  if (f.kind === "date") { const [y, mo, d] = v.split("-"); return y && mo && d ? `${y}年${Number(mo)}月${Number(d)}日` : v; }
+  return v;
+}
+
+// 1つの項目の入力欄
+function personInput(f, v) {
+  const kind = f.kind ?? "text";
+  const label = `${f.name}`;
+  if (kind === "choice") {
+    const opts = f.options ?? [];
+    return h("select", { class: "inline-select", "aria-label": label },
+      h("option", { value: "" }, "—"),
+      // 選択肢から消した値が入っていても、消さずにそのまま見せる
+      v && !opts.includes(v) ? h("option", { value: v, selected: true }, v) : null,
+      opts.map((o) => h("option", { value: o, selected: v === o }, o)));
+  }
+  if (kind === "long") return h("textarea", { class: "plain person-long", rows: "2", maxlength: String(PERSON_MAX.long), "aria-label": label, placeholder: "未入力" }, v);
+  if (kind === "date") return h("input", { type: "date", value: v, "aria-label": label });
+  return h("input", { type: "text", class: "plain", value: v, maxlength: String(PERSON_MAX.text), "aria-label": label, placeholder: "未入力" });
+}
+
+// 1人分の情報を入れる画面
+function openPersonInfo(uid) {
+  const m = S.members.get(uid);
+  if (!m) return;
+  const fields = sortedPersonFields();
+  const close = () => box.remove();
+  const inputs = fields.map((f) => [f, personInput(f, personVal(uid, f.id))]);
+  const rows = inputs.map(([f, input]) => (f.kind === "long"
+    ? h("label", { class: "cell field person-field-long" }, h("span", { class: "field-label" }, f.name), input)
+    : field(f.name, input)));
+  const save = h("button", { class: "btn-filled", onclick: () => guard(save, async () => {
+    const values = {};
+    for (const [f, input] of inputs) values[f.id] = input.value.trim().slice(0, PERSON_MAX[f.kind ?? "text"] ?? 100);
+    await setDoc(doc(db, "personInfo", uid), { values, name: m.name, loginId: m.loginId ?? "", at: serverTimestamp() }, { merge: true });
+    toast("保存しました");
+    close();
+  }) }, "保存");
+  const box = h("div", { class: "share-modal over-viewer", onclick: (e) => { if (e.target === box) close(); } },
+    h("div", { class: "share-panel pe-panel person-editor" },
+      h("div", { class: "share-head" }, h("b", null, `${m.name} の情報`), h("button", { class: "text-btn", onclick: close }, "閉じる")),
+      fields.length
+        ? group(null, rows, `ID：${m.loginId ?? "—"}。同じIDの人なら、ほかの旅行でも同じ情報が出ます。管理者だけに見えます（本人にも見えません）。`)
+        : h("p", { class: "cell-sub" }, "先に「項目を作る・直す」で、住所・大学などの項目を作ってください。"),
+      fields.length ? save : null));
+  document.body.append(box);
+  box.querySelector("input, textarea, select")?.focus();
+}
+
+// 管理者の参加者の画面に出す欄：項目の設定・一覧・CSV
+function personInfoSection() {
+  const defsBox = h("div");
+  const presetBox = h("div", { class: "person-presets" });
+  const name = h("input", { type: "text", class: "plain", placeholder: "例：住所 / 大学 / 出身", maxlength: "20" });
+  const kind = h("select", { class: "inline-select", "aria-label": "入れ方" }, PERSON_KINDS.map(([v, l]) => h("option", { value: v }, l)));
+  const opts = h("input", { type: "text", placeholder: "例：1年 / 2年 / 3年" });
+  const optsRow = field("選択肢", opts);
+  const syncOpts = () => { optsRow.hidden = kind.value !== "choice"; };
+  kind.addEventListener("change", syncOpts);
+  syncOpts();
+  const nextOrder = () => Math.max(0, ...sortedPersonFields().map((f) => f.order ?? 0)) + 1;
+  const addField = (spec) => fire(addDoc(collection(db, "personFields"), { name: spec.name, kind: spec.kind, options: spec.kind === "choice" ? spec.options ?? [] : [], order: nextOrder() }), `「${spec.name}」を追加しました`);
+  const add = h("form", { onsubmit: (e) => {
+    e.preventDefault();
+    const n = name.value.trim();
+    if (!n) return;
+    if (sortedPersonFields().some((f) => f.name === n)) return toast(`「${n}」はもうあります`, true);
+    if (kind.value === "choice" && !splitPersonOptions(opts.value).length) return toast("選択肢を入れてください（/ で区切る）", true);
+    addField({ name: n, kind: kind.value, options: splitPersonOptions(opts.value) });
+    name.value = ""; opts.value = "";
+  } }, group("項目を足す", [h("div", { class: "cell" }, name), field("入れ方", kind), optsRow, h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "項目を追加")]));
+  const table = h("div", { class: "attr-table-wrap" });
+  const csvBtn = h("button", { class: "cell cell-button", onclick: () => downloadPersonCsv() }, icon("table"), "この旅行の参加者の分を CSV で保存");
+  const el = h("div", { class: "person-info" },
+    h("div", { class: "group-header standalone" }, "参加者の情報（住所・大学など）"),
+    h("p", { class: "person-note" }, "管理者だけに見えます（参加者本人にも見えません）。同じIDの人なら、どの旅行でも同じ情報が出ます。参加者の名前の横の「情報」からも入れられます。"),
+    keptFold("person-fields", "項目を作る・直す", h("div", null, presetBox, defsBox, add), false),
+    keptFold("person-values", "一覧を見る・入れる", h("div", null, table, group(null, csvBtn, "Excel でそのまま開けます。住所などが入るので、保存したファイルの扱いに気をつけてください。")), false));
+  redrawOnLeave(el);
+
+  function move(f, dir) {
+    const fs = sortedPersonFields();
+    const i = fs.findIndex((x) => x.id === f.id), j = i + dir;
+    if (j < 0 || j >= fs.length) return;
+    const b = writeBatch(db);
+    // order が同じ値のときもあるので、並びの番号を振り直す
+    fs.forEach((x, k) => {
+      const want = k === i ? j : k === j ? i : k;
+      if ((x.order ?? 0) !== want + 1) b.update(doc(db, "personFields", x.id), { order: want + 1 });
+    });
+    fire(b.commit());
+  }
+
+  return {
+    el,
+    update() {
+      if (typingIn(el)) return;
+      const fs = sortedPersonFields();
+      const have = new Set(fs.map((f) => f.name));
+      const rest = PERSON_PRESETS.filter((p) => !have.has(p.name));
+      setKids(presetBox, rest.length ? h("div", { class: "person-preset-row" }, h("span", { class: "cell-sub" }, "よく使う項目："),
+        rest.map((p) => h("button", { type: "button", class: "person-preset-btn", onclick: () => addField(p) }, icon("plus"), p.name))) : null);
+      setKids(defsBox, fs.length ? group("今ある項目", fs.map((f, i) => {
+        const nm = h("input", { type: "text", value: f.name, class: "plain", maxlength: "20", "aria-label": "項目の名前" });
+        const kd = h("select", { class: "inline-select", "aria-label": `${f.name}の入れ方` }, PERSON_KINDS.map(([v, l]) => h("option", { value: v, selected: (f.kind ?? "text") === v }, l)));
+        const op = h("input", { type: "text", value: (f.options ?? []).join(" / "), placeholder: "選択肢を / で区切る", "aria-label": `${f.name}の選択肢` });
+        const opWrap = h("div", { class: "person-def-opts" }, op);
+        const syncOp = () => { opWrap.hidden = kd.value !== "choice"; };
+        kd.addEventListener("change", syncOp);
+        syncOp();
+        return h("div", { class: "cell person-def-row" },
+          h("div", { class: "cell-main" }, h("div", { class: "person-def-top" }, nm, kd), opWrap),
+          h("div", { class: "person-def-btns" },
+            h("button", { class: "text-btn", disabled: i === 0, "aria-label": `${f.name}を上へ`, onclick: () => move(f, -1) }, "↑"),
+            h("button", { class: "text-btn", disabled: i === fs.length - 1, "aria-label": `${f.name}を下へ`, onclick: () => move(f, 1) }, "↓"),
+            h("button", { class: "text-btn", onclick: () => {
+              const n = nm.value.trim() || f.name;
+              if (n !== f.name && fs.some((x) => x.id !== f.id && x.name === n)) return toast(`「${n}」はもうあります`, true);
+              if (kd.value === "choice" && !splitPersonOptions(op.value).length) return toast("選択肢を入れてください（/ で区切る）", true);
+              fire(updateDoc(doc(db, "personFields", f.id), { name: n, kind: kd.value, options: kd.value === "choice" ? splitPersonOptions(op.value) : [] }), "保存しました");
+            } }, "保存"),
+            h("button", { class: "text-btn destructive", onclick: () => {
+              if (confirm(`項目「${f.name}」を削除しますか？\nすべての旅行で、この項目に入れた値が見えなくなります。`)) fire(deleteDoc(doc(db, "personFields", f.id)), "削除しました");
+            } }, "削除")));
+      }), "入れ方：1行（大学など）・複数行（住所など）・選択肢（学年など）・日付（誕生日など）。入れ方を変えても、入れた値は消えません。") : null);
+      const ms = sortedMembers();
+      if (!fs.length) return setKids(table, h("p", { class: "cell-sub" }, "先に「項目を作る・直す」で項目を作ってください。"));
+      if (!ms.length) return setKids(table, h("p", { class: "cell-sub" }, "まだ参加者がいません。"));
+      const filled = ms.filter((m) => fs.some((f) => personVal(m.id, f.id))).length;
+      setKids(table, h("p", { class: "cell-sub" }, `${ms.length}人中 ${filled}人が入力済み（1項目でも入っていれば入力済み）`),
+        h("table", { class: "attr-table person-table" },
+          h("thead", null, h("tr", null, h("th", null, "名前"), fs.map((f) => h("th", null, f.name)), h("th", null, ""))),
+          h("tbody", null, ms.map((m) => h("tr", null,
+            h("td", null, m.name),
+            fs.map((f) => { const v = personValText(f, personVal(m.id, f.id)); return h("td", { class: v ? (f.kind === "long" ? "person-cell long" : "person-cell") : "person-cell empty" }, v || "—"); }),
+            h("td", null, h("button", { class: "text-btn", onclick: () => openPersonInfo(m.id) }, "入れる")))))));
+    },
+  };
+}
+
+// この旅行の参加者の情報を CSV（Excel 用に BOM 付き）で保存する
+function downloadPersonCsv() {
+  const fs = sortedPersonFields();
+  const ms = sortedMembers();
+  if (!fs.length || !ms.length) return toast("項目か参加者がまだありません", true);
+  const q = (v) => { const s = String(v ?? ""); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const lines = [["名前", "ID", ...fs.map((f) => f.name)], ...ms.map((m) => [m.name, m.loginId ?? "", ...fs.map((f) => personVal(m.id, f.id))])];
+  const csv = "﻿" + lines.map((r) => r.map(q).join(",")).join("\r\n") + "\r\n";
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const d = new Date();
+  const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  // ファイル名に日本語を入れると、端末によっては「download」という名前になってしまうので英数字にする
+  const a = h("a", { href: url, download: `members-info_${stamp}.csv` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast(`${ms.length}人分を保存しました`);
 }
 
 // ---- 参加者の属性（チーム分けの参考。管理者の画面だけに出す）

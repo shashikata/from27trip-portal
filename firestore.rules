@@ -11,6 +11,8 @@ rules_version = '2';
 //                 - ポイントQR の一覧は読めない（QR を読み取ったときの1件だけ）
 //                 - 作戦ボード（フットサル）は、管理者が公開したときだけ読める。動かす・描くのは「参加者も動かせる」がオンのときだけ
 //                 - 試合の記録（フットサル）は、公開した試合だけ読める。記録できるのは管理者と、管理者が指名した記録係（指名されている間・担当の分だけ）
+//                 - 参加者の情報（住所・大学など。/personFields, /personInfo）は読めない（本人の分も）。管理者だけ
+//                 - 人ごとに送ったお知らせの内容（暗証番号など。annPrivate）は、本人の分だけ読める
 //               書けるのは、下の「参加者が書けるもの」に決めた形のデータだけ（それ以外はすべて管理者だけ）
 //   未登録の人: 何もできない
 //
@@ -19,6 +21,7 @@ rules_version = '2';
 //   2つ目以降の旅行           : /profiles/{pid}/announcements … のようにプロファイルの下
 //   旅行の一覧                : /profiles/{pid}（root は1つ目の旅行を表す）
 //   アカウントの一覧          : /accounts/{loginId}（旅行をまたいでアカウントを使い回すため）
+//   参加者の情報（全旅行で共通）: /personFields/{id}（項目）, /personInfo/{uid}（住所・大学など）
 //
 // 新しいコレクションを足したときは、下の READ_ALL か各ルールに追加しないと、参加者は読み書きできない（管理者はできる）
 service cloud.firestore {
@@ -76,7 +79,9 @@ service cloud.firestore {
         || (coll == 'checks' && (resource.data.uid == me() || resource.data.shared == true))
         || (coll in ['acks', 'payReports', 'pollRequests', 'pushSubs', 'pwChanged'] && resource.data.uid == me())
         // DM・管理者との連絡は当人だけ
-        || (coll == 'dms' && me() in resource.data.parties);
+        || (coll == 'dms' && me() in resource.data.parties)
+        // 人ごとに送ったお知らせの内容（暗証番号など）は本人の分だけ
+        || (coll == 'annPrivate' && resource.data.uid == me());
     }
 
     // ---- 参加者が書けるもの
@@ -280,16 +285,27 @@ service cloud.firestore {
       allow delete: if canDelete(pid, coll);
     }
 
-    // 1つ目の旅行のデータ（ルート直下）
+    // 1つ目の旅行のデータ（ルート直下）。旅行のデータではない一覧（下の管理者だけのもの）は除く
+    function rootTrip(coll) {
+      return !(coll in ['profiles', 'accounts', 'personFields', 'personInfo']);
+    }
     match /{coll}/{docId} {
-      allow get: if coll != 'profiles' && coll != 'accounts' && (canGet('root', coll) || (coll == 'members' && signedIn() && docId == me()));
-      allow list: if coll != 'profiles' && coll != 'accounts' && canRead('root', coll);
-      allow create, update: if coll != 'profiles' && coll != 'accounts' && canWrite('root', coll, docId);
-      allow delete: if coll != 'profiles' && coll != 'accounts' && canDelete('root', coll);
+      allow get: if rootTrip(coll) && (canGet('root', coll) || (coll == 'members' && signedIn() && docId == me()));
+      allow list: if rootTrip(coll) && canRead('root', coll);
+      allow create, update: if rootTrip(coll) && canWrite('root', coll, docId);
+      allow delete: if rootTrip(coll) && canDelete('root', coll);
     }
 
     // アカウントの一覧（管理者だけ）
     match /accounts/{loginId} {
+      allow read, write: if isAdmin();
+    }
+
+    // 参加者の情報（住所・大学など。全旅行で共通）：管理者だけ。参加者は本人の分も読めない
+    match /personFields/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /personInfo/{uid} {
       allow read, write: if isAdmin();
     }
   }

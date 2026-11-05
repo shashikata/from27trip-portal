@@ -346,6 +346,50 @@ await test("試合の記録：ボール保持・ファウルの担当と、外�
   await assertSucceeds(updateDoc(doc(admin(), "matches/m1"), { periods: [{ label: "1本目", min: 10 }], cur: 0, uid: "adminUid", at: serverTimestamp() }));
   await assertFails(updateDoc(doc(carol(), "matches/m1"), { running: true, uid: "carol", at: serverTimestamp() }));           // 入っていない旅行
 });
+
+// ----- 参加者の情報（住所・大学など。全旅行で共通・管理者だけ）
+await test("参加者の情報：管理者は読み書きできる", async () => {
+  await assertSucceeds(setDoc(doc(admin(), "personFields/f1"), { name: "住所", kind: "long", options: [], order: 1 }));
+  await assertSucceeds(setDoc(doc(admin(), "personInfo/alice"), { values: { f1: "大阪府吹田市" }, name: "Alice", loginId: "user01" }));
+  await assertSucceeds(getDocs(collection(admin(), "personInfo")));
+  await assertSucceeds(getDoc(doc(admin(), "personFields/f1")));
+});
+await test("参加者の情報：参加者は本人の分も含めて読めない・書けない", async () => {
+  await assertFails(getDoc(doc(alice(), "personInfo/alice")));          // 本人の分
+  await assertFails(getDoc(doc(bob(), "personInfo/alice")));            // ほかの人の分
+  await assertFails(getDocs(collection(bob(), "personInfo")));
+  await assertFails(getDocs(collection(alice(), "personFields")));
+  await assertFails(getDoc(doc(carol(), "personInfo/alice")));
+  await assertFails(getDoc(doc(outsider(), "personInfo/alice")));
+  await assertFails(setDoc(doc(alice(), "personInfo/alice"), { values: { f1: "x" } }));
+  await assertFails(setDoc(doc(bob(), "personFields/f2"), { name: "x" }));
+  await assertFails(deleteDoc(doc(alice(), "personInfo/alice")));
+});
+
+// ----- 人ごとに送ったお知らせの内容（暗証番号など）
+await test("人ごとの内容：本人だけ読める・参加者は書けない", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, "announcements/e1"), { title: "暗証番号", scope: "users", targets: ["alice", "bob"], personal: true });
+    await setDoc(doc(db, "annPrivate/e1_alice"), { annId: "e1", uid: "alice", body: "4821" });
+    await setDoc(doc(db, "annPrivate/e1_bob"), { annId: "e1", uid: "bob", body: "7350" });
+    await setDoc(doc(db, "profiles/P2/annPrivate/f1_carol"), { annId: "f1", uid: "carol", body: "1111" });
+  });
+  await assertSucceeds(getDoc(doc(alice(), "annPrivate/e1_alice")));
+  await assertSucceeds(getDoc(doc(bob(), "annPrivate/e1_bob")));
+  await assertFails(getDoc(doc(bob(), "annPrivate/e1_alice")));             // ほかの人の分
+  await assertFails(getDocs(collection(bob(), "annPrivate")));              // 一覧（全員分）
+  await assertFails(getDocs(query(collection(bob(), "annPrivate"), where("annId", "==", "e1"))));
+  await assertSucceeds(getDocs(query(collection(bob(), "annPrivate"), where("uid", "==", "bob"))));
+  await assertFails(getDoc(doc(carol(), "annPrivate/e1_alice")));           // 入っていない旅行
+  await assertSucceeds(getDoc(doc(carol(), "profiles/P2/annPrivate/f1_carol")));
+  await assertFails(getDoc(doc(alice(), "profiles/P2/annPrivate/f1_carol")));
+  await assertFails(setDoc(doc(alice(), "annPrivate/e1_alice"), { annId: "e1", uid: "alice", body: "0000" }));
+  await assertFails(setDoc(doc(bob(), "annPrivate/x_bob"), { annId: "x", uid: "bob", body: "x" }));
+  await assertFails(deleteDoc(doc(alice(), "annPrivate/e1_alice")));
+  await assertSucceeds(getDocs(query(collection(admin(), "annPrivate"), where("annId", "==", "e1"))));
+  await assertSucceeds(setDoc(doc(admin(), "annPrivate/e2_alice"), { annId: "e2", uid: "alice", body: "x" }));
+});
 await env.cleanup();
 for (const r of results) console.log(r[0] === "ok" ? "✅" : "❌", r[1], r[2] ?? "");
 const ng = results.filter((r) => r[0] !== "ok").length;
