@@ -1,45 +1,32 @@
-/* Apple Human Interface Guidelines を基準にしたスタイル
-   - 色は iOS のシステムカラー（ライト / ダーク）
-   - 文字サイズは iOS の Dynamic Type 既定値（Large Title 34 / Body 17 / Subheadline 15 / Footnote 13）
-   - リストはインセットグループ、タップ領域は 44pt 以上 */
+/* デザイン：黒基調・モノクロ＋薄紫（v85〜）
+   - いつも黒地（端末のライト / ダークの設定に関係なく）。文字は白とグレー
+   - ボタン・リンクは白とグレー。「今どれが選ばれているか」などの目印だけ薄紫（--accent）
+   - チームの色・削除の赤・入金済みの緑など、意味のある色は残す
+   - 文字の大きさ（Body 17 / Footnote 13 など）・余白・行の高さは前のまま（1画面の表示量を変えない）。リストはインセットグループ、タップ領域は 44pt 以上 */
 
 :root {
-  --bg: #F2F2F7;                       /* systemGroupedBackground */
-  --cell: #FFFFFF;                     /* secondarySystemGroupedBackground */
-  --fill: rgba(118, 118, 128, .12);    /* tertiarySystemFill */
-  --label: #000000;
-  --label-2: rgba(60, 60, 67, .6);     /* secondaryLabel */
-  --label-3: rgba(60, 60, 67, .3);     /* tertiaryLabel */
-  --separator: rgba(60, 60, 67, .29);
-  --blue: #007AFF;
-  --red: #FF3B30;
-  --green: #34C759;
-  --orange: #FF9500;
-  --bar: rgba(249, 249, 249, .82);
-  --seg-on: #FFFFFF;
-  --radius: 10px;
+  --bg: #000000;
+  --cell: #151515;                     /* カード・グループ */
+  --cell-2: #1E1E1E;                   /* 小窓・浮いた部品 */
+  --fill: rgba(255, 255, 255, .09);
+  --label: #F5F5F7;
+  --label-2: rgba(255, 255, 255, .56);
+  --label-3: rgba(255, 255, 255, .3);
+  --separator: rgba(255, 255, 255, .1);
+  --edge: rgba(255, 255, 255, .07);    /* カードのふち（線の太さで大きさが変わらないよう box-shadow で描く） */
+  --blue: #F5F5F7;                     /* もとは iOS の青。ボタン・リンクの色 → 白 */
+  --accent: #A29EFF;                   /* 薄紫：選択中・オン・目印だけ */
+  --on-accent: #0B0B12;
+  --red: #FF5F57;
+  --green: #3DDC84;
+  --orange: #FFB547;
+  --bar: rgba(0, 0, 0, .78);
+  --seg-on: #F5F5F7;
+  --radius: 14px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
-  --font-rounded: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #000000;
-    --cell: #1C1C1E;
-    --fill: rgba(118, 118, 128, .24);
-    --label: #FFFFFF;
-    --label-2: rgba(235, 235, 245, .6);
-    --label-3: rgba(235, 235, 245, .3);
-    --separator: rgba(84, 84, 88, .65);
-    --blue: #0A84FF;
-    --red: #FF453A;
-    --green: #30D158;
-    --orange: #FF9F0A;
-    --bar: rgba(22, 22, 23, .8);
-    --seg-on: #636366;
-    color-scheme: dark;
-  }
+  --font-rounded: var(--font);
+  color-scheme: dark;
+  accent-color: var(--accent);
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -249,7 +236,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 /* ボタン */
 .btn-filled {
   display: block; width: 100%; min-height: 50px; border: none; border-radius: 12px;
-  background: var(--blue); color: #fff; font-size: 17px; font-weight: 600;
+  background: var(--blue); color: #000; font-size: 17px; font-weight: 600;
   margin: 0 0 32px;
 }
 .btn-filled:active { opacity: .7; }
@@ -745,7 +732,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .quiz-card-actions { display: flex; align-items: center; gap: 14px; justify-content: flex-end; margin-top: 4px; }
 .btn-small {
   display: inline-flex; align-items: center; gap: 4px; border: none; border-radius: 999px;
-  background: var(--blue); color: #fff; font-size: 14px; font-weight: 600; padding: 7px 14px; min-height: 34px;
+  background: var(--blue); color: #000; font-size: 14px; font-weight: 600; padding: 7px 14px; min-height: 34px;
 }
 .btn-small .icon { width: 16px; height: 16px; }
 .live-now { color: var(--red); font-weight: 600; }
@@ -1253,7 +1240,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
   border: none; border-radius: 999px; padding: 10px 16px; min-height: 44px; font-size: 16px; font-weight: 700;
   background: var(--cell); color: var(--label); box-shadow: 0 2px 10px rgba(0, 0, 0, .25);
 }
-.map-addpin.on { background: var(--blue); color: #fff; animation: livePulse 1.2s infinite; }
+.map-addpin.on { background: var(--blue); color: #000; animation: livePulse 1.2s infinite; }
 .mpin { position: relative; width: max-content; transform: translate(-50%, -100%); display: flex; flex-direction: column; align-items: center; pointer-events: auto; }
 .mpin-head {
   width: 38px; height: 38px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); display: grid; place-items: center;
@@ -1305,7 +1292,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .poll-actions { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: flex-end; }
 .poll-choices { display: flex; flex-wrap: wrap; gap: 8px; }
 .poll-choice { flex: 1 1 30%; min-height: 48px; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; color: var(--label); background: var(--fill); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.poll-choice.on { background: var(--blue); color: #fff; }
+.poll-choice.on { background: var(--blue); color: #000; }
 .poll-choice:disabled:not(.on) { opacity: .5; }
 .poll-comment { display: flex; gap: 8px; align-items: center; }
 .poll-comment input { flex: 1; min-width: 0; border: none; border-radius: 10px; padding: 10px 12px; background: var(--fill); font: inherit; color: var(--label); }
@@ -1430,13 +1417,13 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .chat-name { font-size: 12px; color: var(--label-2); font-weight: 700; padding: 0 6px; }
 .chat-msg.admin .chat-name { color: var(--orange); }
 .chat-bubble { padding: 8px 12px; border-radius: 18px; background: var(--fill); color: var(--label); font-size: 15px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
-.chat-msg.mine .chat-bubble { background: var(--blue); color: #fff; }
+.chat-msg.mine .chat-bubble { background: var(--blue); color: #000; }
 .chat-msg.admin:not(.mine) .chat-bubble { background: color-mix(in srgb, var(--orange) 16%, var(--cell)); }
 .chat-time { font-size: 11px; color: var(--label-3); padding: 0 6px; display: flex; gap: 8px; align-items: center; }
 .chat-del { border: none; background: none; color: var(--red); font-size: 11px; padding: 0; cursor: pointer; }
 .chat-composer { display: flex; align-items: flex-end; gap: 8px; padding-top: 8px; border-top: .5px solid var(--separator); }
 .chat-input { flex: 1; min-width: 0; resize: none; border: none; border-radius: 18px; padding: 9px 14px; font: inherit; font-size: 16px; line-height: 1.35; background: var(--fill); color: var(--label); outline: none; max-height: 140px; }
-.chat-send { border: none; border-radius: 18px; padding: 9px 16px; font-weight: 800; color: #fff; background: var(--blue); flex: none; }
+.chat-send { border: none; border-radius: 18px; padding: 9px 16px; font-weight: 800; color: #000; background: var(--blue); flex: none; }
 .chat-readonly { text-align: center; font-size: 13px; color: var(--label-2); padding: 10px; border-top: .5px solid var(--separator); }
 .nav-left .nav-gear[data-sheet=chat] { position: relative; }
 .chat-row { text-align: left; }
@@ -1557,11 +1544,11 @@ input.cl-title { padding: 2px 0; }
 .rank-slot-btn:disabled { color: inherit; opacity: 1; cursor: default; }
 .rank-slots li .seq-no { flex: none; }
 .rank-slots li.on { border-style: solid; border-color: transparent; background: var(--fill); }
-.rank-slots li.on .seq-no { background: var(--blue); color: #fff; }
+.rank-slots li.on .seq-no { background: var(--blue); color: #000; }
 .rank-slots .secondary { font-weight: 400; }
 .poll-choice.ranked { background: color-mix(in srgb, var(--blue) 14%, var(--fill)); box-shadow: inset 0 0 0 2px var(--blue); }
 .poll-choice.ranked:disabled { opacity: 1; }
-.rank-badge { flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 800; background: var(--blue); color: #fff; }
+.rank-badge { flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 800; background: var(--blue); color: #000; }
 .rank-actions { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
 .rank-pos { color: var(--blue); margin-right: 8px; }
 .rank-voters { display: grid; gap: 6px; font-size: 14px; padding: 4px 0; }
@@ -1619,11 +1606,8 @@ input.cl-title { padding: 2px 0; }
    ぼかし（backdrop-filter）はスクロールのたびに背景を描き直すので、スマホでは重くなりやすい。
    タッチ操作の端末では、ぼかしをやめて、ほぼ不透明な背景にする */
 @media (hover: none), (max-width: 1099px) {
-  :root { --bar: rgba(249, 249, 249, .97); }
+  :root { --bar: rgba(0, 0, 0, .96); }
   .navbar.scrolled, .tabbar, .toast, .desk-bar, .navbar .me-chip { -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
-@media (hover: none) and (prefers-color-scheme: dark), (max-width: 1099px) and (prefers-color-scheme: dark) {
-  :root { --bar: rgba(22, 22, 23, .97); }
 }
 
 /* ---- 位置の共有グループ ---- */
@@ -2373,3 +2357,131 @@ b .from-tag:not(:first-child) { margin: 0 0 0 6px; }
 .ann-private-body { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; margin-top: 4px; }
 .ann-private-text { font-size: 22px; font-weight: 700; letter-spacing: .04em; white-space: pre-wrap; word-break: break-all; color: var(--label); font-variant-numeric: tabular-nums; }
 .each-table td.each-val { white-space: pre-wrap; word-break: break-all; font-variant-numeric: tabular-nums; }
+
+/* =====================================================================
+   デザイン：黒基調・モノクロ＋薄紫（v85）
+   前からある部品の「色・角の丸み・影・書体」だけを上書きする。
+   余白（padding / margin）・文字の大きさ・高さは変えない（1画面に出る量を保つ）。
+   ふちは border ではなく box-shadow で描く（線の太さぶん大きさが変わらないように）
+   ===================================================================== */
+.large-title, .section-title, .panel .large-title, .ann-title, .empty-title, .login h1 { letter-spacing: -.035em; }
+.tile-value, .pn-delta, .me-points, .stat-value { letter-spacing: -.02em; }
+
+/* 面：カード・グループ・タイル。少し丸く、細いふち */
+.group-body, .card, .tile, .ack-names, .sheet, .share-panel { box-shadow: inset 0 0 0 1px var(--edge); }
+.card { border-radius: 18px; }
+.tile { border-radius: 18px; }
+.group-body > * + *::before { background: var(--separator); }
+
+/* 主ボタン：白地に黒文字の丸いボタン */
+.btn-filled { background: var(--label); color: #000; border-radius: 999px; }
+.btn-filled .icon { color: #000; }
+.btn-filled:disabled { opacity: .3; }
+
+/* 文字のボタン・リンク：白（太さは前のまま。太くすると文字の幅が変わり、折り返しが増えるため） */
+.cell-button:active, .desk-btn:hover { background: var(--fill); }
+.secondary-btn, .cell-button.secondary-btn { color: var(--label-2); }
+
+/* 上のアイコンボタン：黒地に浮かぶグレーの丸（参考：丸いアイコンボタン）。大きさは前と同じ 44×44 のまま、丸は内側に描く */
+.nav-gear { padding: 5px; background: var(--cell-2); background-clip: content-box; border-radius: 50%; color: var(--label); }
+.nav-gear:active { background-color: #2C2C2E; }
+.nav-left .nav-refresh { background: none; padding: 0; color: var(--label-2); }
+.badge { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 999px; }
+
+/* 下のタブ：選んでいるタブはグレーの丸い面 ＋ 白。ほかは薄いグレー */
+.tabbar { border-top-color: var(--separator); }
+.tabbar button { position: relative; color: rgba(255, 255, 255, .42); }
+.tabbar button.active { color: var(--label); }
+.tabbar button.active::before {
+  content: ""; position: absolute; left: 50%; top: 4px; width: 54px; height: 30px; transform: translateX(-50%);
+  border-radius: 999px; background: rgba(255, 255, 255, .13); z-index: -1;
+}
+.tabbar button .icon, .tabbar button span { position: relative; }
+.tabbar { isolation: isolate; }
+
+/* セグメント（切り替え）：選んでいる方を白地に黒文字 */
+.seg { background: var(--fill); border-radius: 999px; }
+.seg button { border-radius: 999px; color: var(--label-2); }
+.seg button[aria-selected=true] { background: var(--seg-on); color: #000; box-shadow: none; }
+/* スマホ1ページの移動用タブ（下線）：選んでいる所は白文字＋薄紫の線 */
+.jump .seg { border-radius: 0; }
+.jump .seg button { border-radius: 0; }
+.jump .seg button[aria-selected=true] { color: var(--label); border-bottom-color: var(--accent); }
+
+/* スイッチ：オンは薄紫。オフの溝は黒地で見えるよう少し明るいグレー */
+/* （入力欄の .field input { background: transparent } が溝の色を消すので、そちらにも同じ色を指定） */
+.switch, .field input.switch { background: rgba(255, 255, 255, .22); }
+.switch:checked, .field input.switch:checked { background: var(--accent); }
+
+/* 小窓 */
+.sheet-backdrop { background: rgba(0, 0, 0, .62); }
+.sheet { background: #0B0B0B; border-radius: 22px; box-shadow: inset 0 0 0 1px var(--edge), 0 24px 80px rgba(0, 0, 0, .7); }
+.sheet-head { background: #0B0B0B; }
+@media (max-width: 700px) { .sheet { border-radius: 22px 22px 0 0; } }
+.toast { background: var(--cell-2); box-shadow: 0 8px 30px rgba(0, 0, 0, .6), inset 0 0 0 1px var(--edge); }
+
+/* PC の上の帯・列 */
+.desk-bar { background: #000; }
+.panel { border-right-color: var(--separator); }
+.desk-icon { filter: grayscale(1); }
+
+/* お知らせ */
+.ann-pin { color: var(--accent); }
+.scope-team { color: var(--label); }
+.scope-user, .scope-users { color: var(--accent); }
+.ack-btn { border-color: var(--edge); background: var(--fill); color: var(--label); border: 1px solid transparent; }
+.ack-btn.done { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ack-list summary { color: var(--label); }
+.ann-private { background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.ann-private-head { color: var(--accent); }
+
+/* 右上の所属と点数 */
+.navbar .me-chip { background: var(--cell-2); box-shadow: inset 0 0 0 1px var(--edge); }
+.me-points { color: var(--label); }
+
+/* チーム表の切り替え（選んでいるのは白地に黒） */
+.set-bar button { background: var(--cell-2); }
+.set-bar button[aria-selected=true] { background: var(--label); color: #000; }
+.team-cell.me { background: rgba(255, 255, 255, .06); }
+
+/* ポイントのお知らせ：色の帯は残し、面はグレー */
+.point-notice { background: color-mix(in srgb, var(--pc) 7%, var(--cell)); }
+
+/* 入力・選択 */
+.inline-select, .field select { color: var(--label-2); }
+input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pill { background: var(--fill); }
+
+/* 「〜より」「確定前ページ」などの目印 */
+.from-lobby, .pt-login-note, .tint { color: var(--label); }
+.transfer, .pn-transfer { color: var(--accent); }
+
+/* 参加者スマホ：移動用タブの背景も黒 */
+.jump { background: var(--bg); }
+
+/* 画面の部品で iOS の青を直に書いていたものを白・薄紫へ */
+.app-icon { box-shadow: 0 6px 24px rgba(0, 0, 0, .6), inset 0 0 0 1px var(--edge); }
+
+/* 「まだやっていないこと」の目印：オレンジ → 薄紫（白黒＋薄紫の方針） */
+.todo-banner { background: var(--accent); color: var(--on-accent); border-radius: 18px; }
+.poll-card.todo { box-shadow: inset 0 0 0 2px var(--accent); }
+.poll-fold > summary .pf-note.fresh { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+/* 明るい緑の上は黒文字（白文字だと読みにくい） */
+.ongoing-tag.live { color: #000; }
+/* 進み具合のバー・順位の印 */
+.poll-track > div { background: var(--label); }
+.rank-badge, .rank-slots li.on .seq-no { background: var(--accent); color: var(--on-accent); }
+.poll-choice.ranked { box-shadow: inset 0 0 0 2px var(--accent); }
+.rank-slots li.sel { outline-color: var(--accent); }
+.poll-add { border-left-color: var(--accent); }
+
+/* 前からの不具合の修正：表・メモの表が広いと、カードごと列（スマホでは画面）の外へはみ出し、右端のボタンが押せなかった。
+   カードは列の幅に収め、表だけを横にスクロールさせる（.table-wrap はもともと横スクロール） */
+.stack > * { min-width: 0; }
+
+/* 印刷・PDF：画面は黒でも、紙は白。余白（@page の margin）に黒い背景が出ないよう、印刷のときだけ白に戻す */
+@media print {
+  :root { color-scheme: light; }
+  html, body { background: #fff !important; }
+}
