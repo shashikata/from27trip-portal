@@ -246,6 +246,10 @@ const S = {
   quizSabo: new Map(),       // 妨害の申し込み quizSabo/{id}
   quizBets: new Map(),       // 賭け quizBets/{id}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
+  games: new Map(),          // ゲーム（人狼など）の進行 games/{id}
+  gameSecrets: new Map(),    // ゲームで本人だけに配った内容 gameSecrets/{gameId}_{uid}（参加者は自分の分だけ）
+  gameActs: new Map(),       // 夜の行動・投票 gameActs/{gameId}_{key}_{uid}（参加者は自分の分だけ）
+  playLogs: new Map(),       // 管理者：終わったクイズ・ゲームの記録 playLogs/{quiz_run | game_id}
   lobbySrc: {},              // 参加者：旅行の分と、合流した確定前ページの分（S.polls などはこの2つを合わせたもの）
   annSrc: {},                // クエリごとのお知らせ（後で合成）
   logSrc: {},                // クエリごとのポイント履歴（後で合成）
@@ -275,7 +279,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz" };
+const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz", games: "game", gameSecrets: "game", gameActs: "game", playLogs: "game" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -401,6 +405,7 @@ function startAdmin() {
   listen("dmRecent", query(C("dms"), orderBy("at", "desc"), limit(300)), (s) => { if (s) { S.msgSrc.dm = toMap(s); mergeMsgs(); } });
   moveDmsOut();
   listenLiveQuiz();
+  if (pid !== LOBBY) { listenGames(null); listen("playLogs", C("playLogs"), (s) => { if (s) S.playLogs = toMap(s); }); }
 }
 
 // 1つ目の旅行（ルート直下のデータ）を、旅行の一覧に必ず登録しておく。
@@ -554,6 +559,7 @@ function startMemberData(uid) {
   if (inLobby()) listen("archives", query(C("archives"), where("visible", "==", true)), (s) => { if (s) S.archives = toMap(s); });
   listen("notes", query(C("notes"), where("shared", "==", true)), (s) => { if (s) S.notes = toMap(s); });
   listenLiveQuiz();
+  if (!inLobby()) listenGames(uid);
   listen("expenses", C("expenses"), (s) => { if (s) S.expenses = toMap(s); });
   listen("checklists", C("checklists"), (s) => { if (s) S.checklists = toMap(s); });
   listen("locGroups", C("locGroups"), (s) => { if (s) S.locGroups = toMap(s); });
@@ -1213,7 +1219,7 @@ function amountPicker(input, values, label = "ポイント") {
     h("option", { value: "" }, "選択"),
     values.map((v) => h("option", { value: String(v) }, `${signed(v)} pt`)),
     h("option", { value: CUSTOM }, "自由に入力"));
-  const customCell = field("点数を入力", input);
+  const customCell = field("点数", input);
   const sync = () => {
     const v = input.value === "" ? "" : String(Number(input.value));
     if (v === "") { if (sel.value !== CUSTOM) sel.value = ""; }
@@ -1581,7 +1587,7 @@ function notesView({ admin = false, compact = false, withTitle = true } = {}) {
   // 管理者：全体公開 と 管理者用 の2つの欄
   const section = (shared) => {
     const list = h("div", { class: "stack" });
-    const empty = h("p", { class: "note-empty" }, shared ? "参加者全員に表示されます。ルールやリーグ戦の表などに。" : "管理者だけが見られます。採点の内部メモなどに。");
+    const empty = h("p", { class: "note-empty" }, shared ? "全員が見られます。ルールやリーグ戦の表などに使えます。" : "管理者だけが見られます。内部メモに使えます。");
     const el = h("section", { class: `note-section ${shared ? "public" : "private"}` },
       h("div", { class: "note-section-head" },
         h("h3", null, icon(shared ? "people" : "lock"), shared ? "全体公開" : "管理者用"),
@@ -2118,7 +2124,7 @@ function memberPoints({ compact = false } = {}) {
       const rows = rankSel.value === "user" || !S.sets.has(rankSel.value)
         ? sortedMembers().map((m) => ({ label: m.name, value: ptTotal("user", m.id, "public"), highlight: m.id === uid }))
         : teamsInSet(rankSel.value).map((t) => ({ label: t.name, color: t.color, value: ptTotal("team", t.id, "public"), highlight: myTeams.some((x) => x.id === t.id) }));
-      parts.push(group("ランキング", [field("表示", rankSel), ...[rankingCells(rows)].flat()], "「全員に公開」のポイントだけで集計しています。"));
+      parts.push(group("ランキング", [field("表示する範囲", rankSel), ...[rankingCells(rows)].flat()], "「全員に公開」のポイントだけで集計しています。"));
       body.replaceChildren(...parts);
     },
   };
@@ -2151,7 +2157,7 @@ function memberSummary() {
       try { qrNote = sessionStorage.getItem("island.qrlogin") === "1" && !matchMedia("(display-mode: standalone)").matches; } catch { /* なし */ }
       if (qrNote) el.append(h("div", { class: "info-banner" },
         h("div", null, h("b", null, "ホーム画面に追加しておくと便利です"),
-          h("div", null, "Safari の共有ボタン →「ホーム画面に追加」。追加したアプリを初めて開いたときだけ、カードの ID とパスワードを入力してください（iPhone はログイン状態が別になるため）。")),
+          h("div", null, "Safari の共有ボタンから「ホーム画面に追加」を選びます。追加したアプリを初めて開いたときだけ、カードの ID とパスワードを入力してください（iPhone はログイン状態が別になるため）。")),
         h("button", { class: "text-btn", onclick: () => { try { sessionStorage.removeItem("island.qrlogin"); } catch { /* なし */ } scheduleRender(); } }, "閉じる")));
       if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => (myUnanswered(uid) || !document.getElementById("pay-top")?.childElementCount ? document.getElementById("sec-money") : document.getElementById("pay-top"))?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
     },
@@ -2160,7 +2166,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches", "annPrivate"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches", "annPrivate", "games", "gameSecrets", "gameActs", "playLogs"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2315,7 +2321,8 @@ function settingsView({ withTitle = true } = {}) {
         });
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v85"),
+    isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v86"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2348,10 +2355,10 @@ function settingsView({ withTitle = true } = {}) {
             fire(setDoc(doc(db, "profiles", S.pid), { name: title }, { merge: true }));
           },
         }, "タイトルを保存"),
-        field("参加者に地図を表示", mapSwitch),
-        field("参加者の位置を共有", locSwitch),
-        field("参加者同士でも見られる", locAllSwitch),
-      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき・止まっていても2分に1回。地図を開いている人だけが受け取ります）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
+        field("参加者に地図を表示する", mapSwitch),
+        field("参加者の位置を共有する", locSwitch),
+        field("参加者同士でも位置を見られるようにする", locAllSwitch),
+      ], "位置の共有をオンにすると、参加者がアプリを開いている間、現在地が届きます（30m 以上動いたとき、止まっていても2分に1回送られます。受け取るのは地図を開いている人だけです）。「参加者同士でも見られる」をオンにすると、参加者の地図にも全員が表示されます。オフのときは、下の「位置の共有グループ」で同じグループの人どうしだけ見えます。共有をオフにすると、位置のデータは消えます。"),
         locGroupsBox.el,
         exportBox(),
         S.pid !== ROOT ? ownerOnly(group(null, h("button", { class: "cell cell-button destructive", onclick: () => guard(null, () => deleteProfile(S.pid)) }, "この旅行を削除"))) : null);
@@ -2442,7 +2449,7 @@ function eachEditor() {
       paint(true);
       toast(`${n}人分を入れました${n < targets.length ? `（${targets.length - n}人は未入力）` : ""}`);
     } }, "入れる"));
-  const paste = h("textarea", { class: "each-paste", rows: "3", placeholder: "例：\nuser01\t4821\nはなこ,7350\n（1行に1人。ID か名前、タブかカンマ、内容。Excel からそのまま貼れます）" });
+  const paste = h("textarea", { class: "each-paste", rows: "3", placeholder: "例：\nuser01\t4821\nはなこ,7350\n（1行に1人ずつ、「ID か名前」「タブかカンマ」「内容」の順に入力します。Excel からそのまま貼り付けられます）" });
   const pasteBox = h("div", { class: "each-paste-box", hidden: true }, paste,
     h("button", { type: "button", class: "text-btn", onclick: () => {
       const ms = sortedMembers();
@@ -2619,8 +2626,8 @@ function adminAnnouncements() {
     },
   },
     group("新規", [h("div", { class: "cell" }, title), h("div", { class: "cell" }, body), preview,
-      h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで。自動で縮小されます。"),
-    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, peopleCell, eachCell, field("一番上に固定", pinned), field("見ましたボタン", ack), pushCell],
+      h("label", { class: "cell cell-button" }, icon("photo"), "写真を追加", fileInput)], "写真は3枚まで、自動で縮小して添付します。"),
+    group("公開範囲", [h("div", { class: "cell" }, scope), targetCell, peopleCell, eachCell, field("一番上に固定する", pinned), field("「見ました」を付ける", ack), pushCell],
       "「個人」は何人でも選べます。「チーム」宛ては、そのチーム表を発表するまで届きません。「人ごと」は、タイトルと本文は送る人みんなに同じものが、上の欄の内容（暗証番号など）は1人ずつ別のものが届きます。人ごとの内容は本人と管理者だけが読めて、通知にも出ません。"),
     btn,
   );
@@ -2795,7 +2802,7 @@ function adminMembers({ withTitle = true } = {}) {
           toast(`${todo.length}人分を作成しました`);
         });
       },
-    }, group("まとめて作成", [field("IDの頭", prefix), field("開始番号", from), field("終了番号", to), bulkBtn],
+    }, group("まとめて作成", [field("IDの先頭の文字", prefix), field("開始番号", from), field("終了番号", to), bulkBtn],
       "例：user・1・16 で user01〜user16 を作成します。名前はあとで変更できます。別の旅行で作ったIDは、新しく作らずにこの旅行へ追加します。")),
     result,
     h("form", {
@@ -3035,7 +3042,7 @@ function personInfoSection() {
             h("button", { class: "text-btn destructive", onclick: () => {
               if (confirm(`項目「${f.name}」を削除しますか？\nすべての旅行で、この項目に入れた値が見えなくなります。`)) fire(deleteDoc(doc(db, "personFields", f.id)), "削除しました");
             } }, "削除")));
-      }), "入れ方：1行（大学など）・複数行（住所など）・選択肢（学年など）・日付（誕生日など）。入れ方を変えても、入れた値は消えません。") : null);
+      }), "入力の形式は「1行（大学など）」「複数行（住所など）」「選択肢（学年など）」「日付（誕生日など）」から選べます。形式を変えても、入力済みの値は消えません。") : null);
       const ms = sortedMembers();
       if (!fs.length) return setKids(table, h("p", { class: "cell-sub" }, "先に「項目を作る・直す」で項目を作ってください。"));
       if (!ms.length) return setKids(table, h("p", { class: "cell-sub" }, "まだ参加者がいません。"));
@@ -3695,7 +3702,7 @@ function openBoard() {
     titleEl.textContent = B?.title ? `作戦ボード：${B.title}` : "作戦ボード";
     const who = B?.uid ? (isAdminUid(B.uid) ? "管理者" : memberName(B.uid)) : null;
     setKids(status,
-      h("div", null, canMove() ? "「動かす」で選手・相手・ボールをドラッグ（指でなぞる）、「走る・パス・線・ペン」でコートに描けます。開いている全員の画面に同時に反映されます（線は指を離したとき）。" : "管理者が動かしたり矢印を描いたりすると、この画面にそのまま反映されます。"),
+      h("div", null, canMove() ? "「動かす」で選手・相手・ボールをドラッグ（指でなぞる）、「走る・パス・線・ペン」でコートに描けます。開いている全員の画面に同時に反映されます（線は指を離したときに反映されます）。" : "管理者が動かしたり矢印を描いたりすると、この画面にそのまま反映されます。"),
       who ? h("div", { class: "secondary" }, `最後に動かした人：${who}`) : null);
     paintTools();
   }
@@ -3778,7 +3785,7 @@ const MATCH_ROLES = [
   { id: "goal", label: "得点", short: "得点", hint: "ゴール・決めた人・アシスト・オウンゴール" },
   { id: "shot", label: "シュート", short: "シュート", hint: "シュートと結果（枠内・枠外・ブロック・ポスト）" },
   { id: "play", label: "ファウル・セットプレー", short: "ファウル等", hint: "ファウル・カード・CK・キックイン・FK・PK・タイムアウト・交代" },
-  { id: "poss", label: "ボール保持", short: "保持", hint: "押している間、そのチームのボール保持として数える" },
+  { id: "poss", label: "ボール保持", short: "保持", hint: "押している間、そのチームのボール保持として数えます" },
 ];
 const ALL_MATCH_ROLES = MATCH_ROLES.map((r) => r.id);
 const roleLabel = (id) => MATCH_ROLES.find((r) => r.id === id)?.label ?? id;
@@ -4071,7 +4078,7 @@ function matchStatsView() {
       mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}|${r.pkw}`, (r, rk) => h("tr", null, h("td", null, rk), h("td", null, h("span", { class: "team-label" }, dot(r.color), r.name)), h("td", null, r.n), h("td", null, r.w), h("td", null, r.d), h("td", null, r.l), h("td", null, r.gf), h("td", null, r.ga), h("td", null, r.gd > 0 ? `+${r.gd}` : r.gd), h("td", null, h("b", null, r.pts)), standings.some((x) => x.pkw) ? h("td", null, r.pkw) : null))), true) : null,
     players.length ? keptFold("m-scorers", "個人成績（得点ランキング）", tbl(["順位", "名前", "得点", "うちPK", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"],
       mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => h("tr", { class: r.uid === S.user?.uid ? "me" : null }, h("td", null, rk), h("td", null, futsalName(r.uid)), h("td", null, h("b", null, r.g)), h("td", null, r.pkn ? `${r.pk}/${r.pkn}` : "—"), h("td", null, r.a), h("td", null, r.s), h("td", null, r.on), h("td", null, r.f), h("td", null, r.y), h("td", null, r.rc)))), false) : null,
-    h("div", { class: "group-footer" }, "勝ち3点・引き分け1点（PK戦は引き分けとして数え、PK勝ちを別に表示）。順位は 勝点→得失点差→得点→PK勝ち の順。シュートはゴールと試合中の PK を含みます（オウンゴールは除く）。「うちPK」は 決めた数/蹴った数（PK戦は入れない）。"));
+    h("div", { class: "group-footer" }, "勝ちは3点、引き分けは1点です（PK戦は引き分けとして数え、PK勝ちは別に表示します）。順位は勝点、得失点差、得点、PK勝ちの順に決めます。シュートの数にはゴールと試合中の PK を含みます（オウンゴールは除きます）。「うちPK」は「決めた数／蹴った数」です（PK戦は含みません）。"));
 }
 // 参加者・管理者のチームの画面に出す「試合」の欄
 function matchesBlock() {
@@ -4138,7 +4145,7 @@ function openMatchEditor(m = null) {
         : (() => { const t = S.teams.get(sel.value.slice(2)); return { kind: "team", teamId: t.id, name: t.name, color: t.color ?? null }; })()) };
   };
   const home = sideSel("home"), away = sideSel("away");
-  const title = h("input", { type: "text", class: "plain", placeholder: "試合の名前（例：練習試合・第1試合。空欄でもよい）", maxlength: "40", value: m?.title ?? "" });
+  const title = h("input", { type: "text", class: "plain", placeholder: "試合の名前（例：練習試合、第1試合。空欄でもかまいません）", maxlength: "40", value: m?.title ?? "" });
   let rows = (m?.periods ?? MATCH_PRESETS[0].periods).map((p) => ({ ...p }));
   const rowsBox = h("div");
   const paintRows = () => setKids(rowsBox, rows.map((r, i) => {
@@ -4371,7 +4378,7 @@ function openMatch(id) {
       statRow("PK・第2PK", st.home.pk, st.away.pk),
       statRow("タイムアウト", st.home.timeout, st.away.timeout),
       statRow("交代", st.home.sub, st.away.sub),
-      h("p", { class: "secondary" }, "シュートの数にはゴールを含みます（オウンゴールは除く）。ボール保持は、担当が長押ししていた時間の割合です。"));
+      h("p", { class: "secondary" }, "シュートの数にはゴールを含みます（オウンゴールは除きます）。ボール保持は、担当が長押ししていた時間の割合です。"));
     const tabs = segmented([{ value: "log", label: `記録（${evs.length}）` }, { value: "stats", label: "チームの数" }], tab);
     tabs.addEventListener("change", () => { tab = tabs.value; update(); });
     const pk = picker(m);
@@ -4538,7 +4545,7 @@ function adminTeams() {
         class: "cell cell-button",
         onclick: () => { fire(updateDoc(D("teamSets", setId), { name: setName.value.trim() || "チーム表" }), "保存しました"); setName.saved(); },
       }, "名前を保存"),
-      field("参加者に発表", publish),
+      field("参加者に発表する", publish),
     ], publishFooter),
     h("form", {
       onsubmit: (e) => {
@@ -4723,7 +4730,7 @@ function adminPoints() {
   const delta = h("input", { type: "number", step: "any", placeholder: "0", inputmode: "decimal", class: "delta-input" });
   const reason = h("input", { type: "text", maxlength: "200", placeholder: "ビーチフラッグ1位" });
   const contributor = h("select", { "aria-label": "誰の功績か" });
-  const contributorCell = field("誰の功績", contributor);
+  const contributorCell = field("功績のあった人", contributor);
   const spyDest = segmented([]);
   const spyDestCell = h("div", { class: "cell spy-dest" });
   const spyDestHelp = h("div", { class: "cell-sub" });
@@ -4997,22 +5004,22 @@ const READ_SPEED = 6;        // 問題読みの速さ（文字/秒）の初期�
 // 妨害の種類を増やすときは、SABO_TYPES に1行足して、効果（effectOn を見ている所）を書く。
 // for はその妨害が使える問題の種類、needsTime は「4択・記述では制限時間がある問題だけ」。
 const SABO_TYPES = {
-  seal: { label: "封印", mark: "封", desc: "その問題に解答できない", price: 10, for: ["choice", "text", "buzz", "order", "vote"], on: true },
-  time: { label: "時間短縮", mark: "短", desc: "解答できる時間が半分になる（早押しは入力6秒→3秒）", price: 5, for: ["choice", "text", "buzz", "order", "vote"], needsTime: true, on: true },
-  blind: { label: "目隠し", mark: "隠", desc: "スマホに問題文と選択肢の文字が出ない", price: 3, for: ["choice", "text", "buzz", "order", "vote"], on: true },
-  late: { label: "出遅れ", mark: "遅", desc: "出題から5秒間は解答できない（早押しも押せない）", price: 4, for: ["choice", "text", "buzz", "order", "vote"], on: false },
-  shuffle: { label: "シャッフル", mark: "混", desc: "スマホの選択肢の並びがバラバラ・色が全部灰色になる", price: 3, for: ["choice"], on: false },
-  flip: { label: "逆さま", mark: "逆", desc: "スマホの問題と解答欄が上下逆さまになる", price: 2, for: ["choice", "text", "buzz", "order", "vote"], on: false },
+  seal: { label: "封印", mark: "封", desc: "その問題に解答できなくなります", price: 10, for: ["choice", "text", "buzz", "order", "vote"], on: true },
+  time: { label: "時間短縮", mark: "短", desc: "解答できる時間が半分になります（早押しは入力時間が6秒から3秒になります）", price: 5, for: ["choice", "text", "buzz", "order", "vote"], needsTime: true, on: true },
+  blind: { label: "目隠し", mark: "隠", desc: "スマホに問題文と選択肢の文字が表示されなくなります", price: 3, for: ["choice", "text", "buzz", "order", "vote"], on: true },
+  late: { label: "出遅れ", mark: "遅", desc: "出題から5秒間は解答できません（早押しのボタンも押せません）", price: 4, for: ["choice", "text", "buzz", "order", "vote"], on: false },
+  shuffle: { label: "シャッフル", mark: "混", desc: "スマホの選択肢の並びがバラバラになり、色もすべて灰色になります", price: 3, for: ["choice"], on: false },
+  flip: { label: "逆さま", mark: "逆", desc: "スマホの問題と解答欄が上下逆さまに表示されます", price: 2, for: ["choice", "text", "buzz", "order", "vote"], on: false },
 };
 const SABO_KEYS = Object.keys(SABO_TYPES);
 const LATE_SEC = 5;
 
 // 賭けの券種（競馬と同じ考え方）。増やすときはここに1行足す（n = 何人を選ぶか、ordered = 順番どおりか）
 const BET_KINDS = {
-  win: { label: "単勝", desc: "1位を当てる", n: 1, ordered: true, on: true },
-  exacta: { label: "2連単", desc: "1位・2位を順番どおりに当てる", n: 2, ordered: true, on: false },
-  trifecta: { label: "3連単", desc: "1位・2位・3位を順番どおりに当てる", n: 3, ordered: true, on: true },
-  trio: { label: "3連複", desc: "1〜3位の3人を当てる（順番は問わない）", n: 3, ordered: false, on: false },
+  win: { label: "単勝", desc: "1位を当てます", n: 1, ordered: true, on: true },
+  exacta: { label: "2連単", desc: "1位と2位を順番どおりに当てます", n: 2, ordered: true, on: false },
+  trifecta: { label: "3連単", desc: "1位・2位・3位を順番どおりに当てます", n: 3, ordered: true, on: true },
+  trio: { label: "3連複", desc: "1〜3位に入る3人を、順番を問わずに当てます", n: 3, ordered: false, on: false },
 };
 const BET_KEYS = Object.keys(BET_KINDS);
 
@@ -5148,7 +5155,8 @@ function settleBets(bets, rows, cfg) {
 }
 const QTYPE = { choice: "4択", text: "記述", buzz: "早押し", order: "並べ替え", vote: "投票当て" };
 // 並べ替え（order）：q.choices を「正しい順番」で登録しておき、スマホにはバラバラに出す。答えは元の番号の並び（正解は 0,1,2…）
-// 投票当て（vote） ：事前のアンケート（q.pollId）の結果が正解。voteMode "top" は1位を当てる、"rank" は上位 rankN 位までの順番を当てる
+// 投票当て（vote） ：事前のアンケート（q.pollId）の結果が正解。voteMode "top" は1位を当てる、"rank" は上位 rankN 位までの順番を当てる、
+//                    "self" は自分の結果を当てる（selfKind "rank"＝自分の順位、"count"＝自分の票数。選択肢が参加者の名前のアンケートだけ）
 const isSeqType = (q) => q?.type === "order" || (q?.type === "vote" && q.voteMode === "rank");
 const seqLen = (q) => (q.type === "order" ? (q.choices ?? []).length : Math.max(2, Math.min(5, Number(q.rankN) || 3)));
 const CHOICE_COLORS = ["#FF3B30", "#007AFF", "#FF9500", "#34C759"];
@@ -5216,8 +5224,18 @@ function voteResult(q) {
   const counts = options.map((o) => pts.get(o) ?? 0);
   const rank = options.map((_, i) => i).sort((a, b) => counts[b] - counts[a] || a - b);
   const max = Math.max(0, ...counts);
-  return { counts, rank, top: max > 0 ? rank.filter((i) => counts[i] === max) : [], texts: options, total: votes.length, unit: poll ? pollUnit(poll) : "票" };
+  return { counts, rank, top: max > 0 ? rank.filter((i) => counts[i] === max) : [], texts: options, total: votes.length, unit: poll ? pollUnit(poll) : "票", uids: poll?.optionUids ?? null };
 }
+// 「自分を当てる」：その人の正解（順位は同じ票数なら同じ順位。選択肢に入っていない人は null）
+const isSelfVote = (q) => q?.type === "vote" && q.voteMode === "self";
+const selfCountMode = (q) => q?.selfKind === "count";
+function selfTruth(q, uid) {
+  const r = voteResult(q);
+  const k = (r.uids ?? []).indexOf(uid);
+  if (k < 0) return null;
+  return selfCountMode(q) ? r.counts[k] : voteRankOf(r, k);
+}
+const selfUnit = (q, A) => (selfCountMode(q) ? A?.unit ?? "票" : "位");
 // 並べ替え・順位当ての正解の並び
 const correctSeq = (q) => (q.type === "order" ? (q.choices ?? []).map((_, i) => i) : voteResult(q).rank.slice(0, seqLen(q)));
 // 順位当ては、同じ票数どうしならどちらの順でも合っているとする（例：3位が同票なら、どちらを3位にしても正解）
@@ -5236,6 +5254,7 @@ function autoJudge(q, a) {
   if (q.type === "choice") return a.choice === q.answer;
   if (q.type === "text") return acceptedAnswers(q).includes(normAnswer(a.text));
   if (isSeqType(q)) return Array.isArray(a.order) && a.order.length === seqLen(q) && seqHits(q, a) === seqLen(q);
+  if (isSelfVote(q)) { const t = selfTruth(q, a.uid); return t == null ? null : a.num === t; }
   if (q.type === "vote") return typeof a.choice === "number" && voteResult(q).top.includes(a.choice);
   return null;
 }
@@ -5307,7 +5326,8 @@ function publicQuestion(q) {
     const perm = shuffledIdx(list.length);
     Object.assign(base, { choices: perm.map((i) => list[i]), perm, partial: !!q.partial });
   }
-  if (q.type === "vote") Object.assign(base, { choices: S.polls.get(q.pollId)?.options ?? [], voteMode: q.voteMode === "rank" ? "rank" : "top", rankN: seqLen(q), partial: !!q.partial });
+  if (q.type === "vote") Object.assign(base, { choices: S.polls.get(q.pollId)?.options ?? [], voteMode: ["rank", "self"].includes(q.voteMode) ? q.voteMode : "top", selfKind: selfCountMode(q) ? "count" : "rank", rankN: seqLen(q), partial: !!q.partial,
+    selfMax: (S.polls.get(q.pollId)?.options ?? []).length, uids: q.voteMode === "self" ? S.polls.get(q.pollId)?.optionUids ?? [] : null });
   return base;
 }
 // 発表のときに全員へ渡す正解（並べ替えは正しい順の文字、投票当ては集計結果）
@@ -5322,6 +5342,11 @@ function answerLabel(q, A) {
   if (q?.type === "order") return (A.texts ?? []).join(" → ");
   if (q?.type === "vote") {
     if (!A.total) return "（まだ投票がありません）";
+    if (q.voteMode === "self") {
+      // 各自の正解（例：たろう 1位・2票）。同じ票数は同じ順位
+      const k = A.rank ?? [];
+      return `各自の${selfCountMode(q) ? "票数" : "順位"}：` + k.map((i) => `${A.texts[i]} ${1 + A.counts.filter((n) => n > A.counts[i]).length}位・${A.counts[i]}${A.unit ?? "票"}`).join("／");
+    }
     if (q.voteMode === "rank") {
       // 同じ票数のものは「／」でまとめる（どちらの順でも正解なので）
       const out = [];
@@ -5342,6 +5367,7 @@ function answerTextOf(q, a) {
   if (!a) return "";
   const texts = q.type === "vote" ? voteResult(q).texts : q.choices ?? [];
   if (isSeqType(q)) return (a.order ?? []).map((k) => texts[k] ?? "?").join(" → ");
+  if (isSelfVote(q)) return typeof a.num === "number" ? `${a.num}${selfUnit(q, voteResult(q))}` : "?";
   if (q.type === "vote") return texts[a.choice] ?? "?";
   if (q.type === "choice") return `${CHOICE_MARKS[a.choice] ?? "?"}：${q.choices?.[a.choice] ?? ""}`;
   return a.text ?? "";
@@ -5443,6 +5469,7 @@ function quizOpenQuestion(qz, i, read = wantsRead(qz, i)) {
   b.set(liveRef(), {
     ...base, run: S.live?.run ?? null,
     index: i, phase: reading ? "reading" : "question", seq: Date.now(), openedAt: serverTimestamp(), q: publicQuestion(q), answer: null, scores: null,
+    marks: [...(S.live?.marks ?? []).slice(-400), { i, k: "open", t: Date.now() }], // 出題・発表の時刻（履歴の再生に使う。始めるたびに空に戻る）
     read: !!read, fullText: false, turn: null, readStop: null, effects, saboWin: null, betWin: null, slide: null,
   });
   fire(b.commit());
@@ -5552,6 +5579,7 @@ function quizFinish(qz) {
   if (S.live?.betWin?.open) bets = resolveBets(qz, b, base);
   if (S.live?.bet?.on) settleInto(b, qz, bets, rows, base.bet);
   b.update(liveRef(), { phase: "results", scores: rows.map(({ uid, score }) => ({ uid, score })), saboWin: null, betWin: null, slide: null });
+  b.set(D("playLogs", `quiz_${S.live?.run ?? Date.now()}`), quizArchive(qz, rows, false));
   fire(b.commit());
 }
 
@@ -5598,7 +5626,7 @@ function quizReveal(patch) {
   const first = L.phase !== "reveal";
   fire(updateDoc(liveRef(), {
     phase: "reveal", answer: revealAnswerOf(qz.questions[L.index]),
-    ...(first ? { showAns: [], shown: [], answerShown: false } : {}),
+    ...(first ? { showAns: [], shown: [], answerShown: false, marks: arrayUnion({ i: L.index, k: "reveal", t: Date.now() }) } : {}),
     ...patch,
   }));
 }
@@ -5622,6 +5650,10 @@ function quizEnd() {
     return;
   }
   QZ.endArm = 0;
+  // 結果発表の前に終えたときも、そこまでの記録を残す（解答が1件もなければ残さない）
+  const L0 = S.live, qz0 = L0 && S.quizzes.get(L0.quizId);
+  if (qz0 && L0.run && L0.phase !== "results" && !S.playLogs.has(`quiz_${L0.run}`) && S.quizAnswers.size)
+    fire(setDoc(D("playLogs", `quiz_${L0.run}`), quizArchive(qz0, quizScores(qz0), true)));
   updateDoc(liveRef(), { phase: "off" })
     .then(() => toast("クイズを終了しました"))
     .catch((e) => { console.error(e); toast(`終了できませんでした：${errMsg(e)}`, true); });
@@ -5782,7 +5814,7 @@ function quizManager({ withTitle = true } = {}) {
         if (q.type !== "choice" && typeof q.answer === "number") q.answer = "";
         if (q.type === "buzz" && !q.time) q.time = 0;
         if (q.type === "order") { q.choices = (q.choices ?? []).filter((c) => String(c ?? "").trim()); while (q.choices.length < 3) q.choices.push(""); q.partial ??= false; }
-        if (q.type === "vote") { q.pollId ??= null; q.voteMode ??= "top"; q.rankN ??= 3; q.partial ??= false; }
+        if (q.type === "vote") { q.pollId ??= null; q.voteMode ??= "top"; q.selfKind ??= "rank"; q.rankN ??= 3; q.partial ??= false; }
         if (isSeqType(q) || q.type === "vote") { q.answer = ""; if (!q.time) q.time = 30; }
         touch(); paintQuestions();
       });
@@ -5825,8 +5857,10 @@ function quizManager({ withTitle = true } = {}) {
         const sel = h("select", { class: "inline-select" }, h("option", { value: "" }, "アンケートを選ぶ"),
           polls.map((p) => h("option", { value: p.id, selected: p.id === q.pollId }, p.question.length > 24 ? `${p.question.slice(0, 24)}…` : p.question)));
         sel.addEventListener("change", () => { q.pollId = sel.value || null; touch(); paintQuestions(); });
-        const mode = segmented([{ value: "top", label: "1位を当てる" }, { value: "rank", label: "上位の順番を当てる" }], q.voteMode === "rank" ? "rank" : "top");
+        const mode = segmented([{ value: "top", label: "1位を当てる" }, { value: "rank", label: "上位の順番" }, { value: "self", label: "自分を当てる" }], ["rank", "self"].includes(q.voteMode) ? q.voteMode : "top");
         mode.addEventListener("change", () => { q.voteMode = mode.value; touch(); paintQuestions(); });
+        const selfMode = segmented([{ value: "rank", label: "自分の順位を当てる" }, { value: "count", label: "自分の票数を当てる" }], selfCountMode(q) ? "count" : "rank");
+        selfMode.addEventListener("change", () => { q.selfKind = selfMode.value; touch(); });
         const partial = toggle(!!q.partial);
         partial.addEventListener("change", () => { q.partial = partial.checked; touch(); });
         const r = poll ? voteResult(q) : null;
@@ -5836,7 +5870,11 @@ function quizManager({ withTitle = true } = {}) {
             field("もとにするアンケート", polls.length ? sel : h("span", { class: "secondary" }, "アンケートがありません（「出欠・集金」で作れます）")),
             h("div", { class: "cell" }, mode),
             q.voteMode === "rank" ? field(`何位まで当てるか（2〜${maxN}）`, num(seqLen(q), (v) => { q.rankN = Math.max(2, Math.min(maxN, v)); }, { min: "2", max: String(maxN) })) : null,
-            q.voteMode === "rank" ? field("部分点（合っている順位の数に応じて）", partial) : null),
+            q.voteMode === "rank" ? field("部分点（合っている順位の数に応じて）", partial) : null,
+            q.voteMode === "self" ? h("div", { class: "cell" }, selfMode) : null,
+            q.voteMode === "self" ? h("div", { class: "cell-sub q-hint" }, poll && !poll.optionUids?.length
+              ? "このアンケートは選択肢が参加者の名前ではないため、「自分を当てる」には使えません。選択肢を参加者の名前にしたアンケートを選んでください。"
+              : "解答者は自分の" + (selfCountMode(q) ? "票数" : "順位") + "を数字で答えます。正解は人によって異なり、同じ票数の人は同じ順位として扱います。選択肢に入っていない人は回答できません。") : null),
           poll ? h("div", { class: "vote-now" },
             h("div", { class: "cell-sub" }, `いまの集計（${r.total}人が回答${isRankPoll(poll) ? "・順位投票の点数" : ""}${pollOpen(poll) ? "・受付中" : "・締切済み"}）`),
             r.rank.slice(0, 5).map((k, n) => h("div", { class: "vote-now-row" }, h("span", { class: "seq-no" }, n + 1), h("span", null, r.texts[k]), h("b", null, `${r.counts[k]}${r.unit}`)))) : null,
@@ -5846,7 +5884,7 @@ function quizManager({ withTitle = true } = {}) {
             poll && pollOpen(poll) ? "クイズの前にアンケートを締め切っておくと、答えが動きません。" : null,
           ].filter(Boolean).join(" ")));
       } else {
-        const ans = h("input", { type: "text", value: q.answer ?? "", placeholder: q.type === "text" ? "正解（「/」で区切ると複数OK）" : "正解のメモ（自分用）" });
+        const ans = h("input", { type: "text", value: q.answer ?? "", placeholder: q.type === "text" ? "正解（「/」で区切ると複数の正解を登録できます）" : "正解のメモ（自分用）" });
         ans.addEventListener("input", () => { q.answer = ans.value; touch(); });
         body = h("div", { class: "group-body" }, field("正解", ans));
       }
@@ -5870,12 +5908,12 @@ function quizManager({ withTitle = true } = {}) {
             sel.addEventListener("change", () => { q.session = sel.value; normalize(); touch(); paintQuestions(); });
             return sel;
           })()) : null,
-          field("スマホに問題文を表示", (() => {
+          field("スマホに問題文を表示する", (() => {
             const t = toggle(q.phone !== false);
             t.addEventListener("change", () => { q.phone = t.checked; touch(); });
             return t;
           })()),
-          field("問題読み画面を入れる", (() => {
+          field("問題を読む画面を表示する", (() => {
             const t = toggle(defaultRead(q));
             t.addEventListener("change", () => { q.read = t.checked; touch(); paintQuestions(); });
             return t;
@@ -5883,7 +5921,7 @@ function quizManager({ withTitle = true } = {}) {
           defaultRead(q) ? field("読み上げの速さ（文字/秒）", num(q.speed ?? READ_SPEED, (v) => { q.speed = v; }, { min: "1", max: "30" })) : null,
           field("配点", num(q.points ?? 10, (v) => { q.points = v; })),
           field(q.type === "buzz" ? "制限時間（秒・0で無制限）" : "制限時間（秒）", num(q.time ?? 0, (v) => { q.time = v; })),
-          q.type === "buzz" ? field("誤答・時間切れ（減点）", num(q.penalty ?? 0, (v) => { q.penalty = v; })) : null),
+          q.type === "buzz" ? field("誤答・時間切れのときの減点", num(q.penalty ?? 0, (v) => { q.penalty = v; })) : null),
         h("div", { class: "cell-sub q-hint" }, defaultRead(q)
           ? (q.type === "buzz" ? "問題文を1文字ずつ表示し、読み上げ中も早押しできます。誰かが押すと表示が止まります。" : "問題文を1文字ずつ表示し、操作用の画面で「解答開始」を押すまで解答できません。")
           : "問題文と選択肢をすぐに全部表示します。"),
@@ -5911,14 +5949,14 @@ function quizManager({ withTitle = true } = {}) {
           ...(sb.on ? [
             h("div", { class: "cell" }, who),
             ...paySel(sb),
-            field("同じ人を2問続けて狙うと値段2倍", sw(sb.streak2x, (v) => { sb.streak2x = v; })),
+            field("同じ人を2問続けて狙うと価格を2倍にする", sw(sb.streak2x, (v) => { sb.streak2x = v; })),
             ...SABO_KEYS.map((t) => h("div", { class: "cell sabo-type" },
               h("div", { class: "cell-main" }, h("b", null, SABO_TYPES[t].label), h("div", { class: "cell-sub" }, SABO_TYPES[t].desc + (SABO_TYPES[t].for.length < 3 ? `（${SABO_TYPES[t].for.map((x) => QTYPE[x]).join("・")}のみ）` : ""))),
               numIn(sb.types[t].price, (v) => { sb.types[t].price = v; }, { class: "price-input", "aria-label": `${SABO_TYPES[t].label}の値段` }), h("span", { class: "secondary" }, "pt"),
               sw(sb.types[t].on, (v) => { sb.types[t].on = v; }, true))),
           ] : []),
         ], sb.on ? (sb.who === "spectators" && !d.answerers ? "⚠ 解答者が「全員」なので、このままだと妨害できる人がいません。解答者を選ぶか「全員」にしてください。"
-          : "1問で1人が受ける妨害は1つまで（早い者勝ち）。回数の上限は区切りごとに下で決めます。") : "オンにすると、問題と問題の間にポイントで解答者を妨害できます。"),
+          : "1問で1人が受けられる妨害は1つまでです（早い者勝ち）。回数の上限は、区切りごとに下で設定します。") : "オンにすると、問題と問題の間にポイントで解答者を妨害できます。"),
         group("順位予想（賭け）", [
           field("賭けを使う", sw(bt.on, (v) => { bt.on = v; }, true)),
           ...(bt.on ? [
@@ -5927,7 +5965,7 @@ function quizManager({ withTitle = true } = {}) {
             field("1人が賭けられる上限（pt）", numIn(bt.max, (v) => { bt.max = Math.max(1, v); }, { min: "1" })),
             ...BET_KEYS.map((k) => field(`${BET_KINDS[k].label}（${BET_KINDS[k].desc}）`, sw(bt.kinds[k].on, (v) => { bt.kinds[k].on = v; }))),
           ] : []),
-        ], bt.on ? "オッズは賭け金の合計で決まります（パリミュチュエル方式）。払戻率100%なら、集まったポイントが全部当たった人に分けられます。" : "オンにすると、クイズの最終順位を予想してポイントを賭けられます。"));
+        ], bt.on ? "オッズは賭け金の合計で決まります（パリミュチュエル方式）。払戻率が100%の場合、集まったポイントはすべて当たった人に分配されます。" : "オンにすると、クイズの最終順位を予想してポイントを賭けられます。"));
     }
     paintSettings();
 
@@ -6075,7 +6113,7 @@ function resultsBody(qz, withButton) {
       return h("li", { class: `r${rank}` }, h("span", { class: "pr-rank-no" }, rank), h("span", { class: "pr-rank-name" }, r.name), h("span", { class: "pr-rank-pt" }, r.score, h("small", null, "点")));
     })),
     resultsExtras(),
-    withButton ? h("button", { class: "pr-btn ghost", onclick: () => quizToPoints(qz) }, "この得点を個人ポイントに加算") : null);
+    withButton ? h("button", { class: "pr-btn ghost", onclick: () => quizToPoints(qz) }, "この得点を個人ポイントに加算する") : null);
 }
 
 // ---- 妨害・賭け・スライドの操作（操作用の画面）
@@ -6106,7 +6144,7 @@ function opExtras(L, qz) {
   if (L.phase === "lobby") {
     const n = ruleSlides(L).length;
     rows.push(L.slide == null
-      ? h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ slide: 0 }) }, "ルール説明（スライド）を表示")
+      ? h("button", { class: "btn-small ghost", onclick: () => quizLiveUpdate({ slide: 0 }) }, "ルール説明（スライド）を表示する")
       : h("div", { class: "op-slidectl" },
         h("b", null, "ルール説明"),
         h("button", { class: "btn-small ghost", disabled: L.slide <= 0, onclick: () => quizLiveUpdate({ slide: L.slide - 1 }) }, "← 前"),
@@ -6283,14 +6321,14 @@ function paintDisplay(P, L, qz, rem) {
     } else if (q.type === "vote") {
       const r = voteResult(q);
       const n = q.voteMode === "rank" ? seqLen(q) : 0;
-      const picks = q.voteMode === "rank" ? null : r.texts.map((_, k) => answers.filter((a) => a.choice === k).length);
+      const picks = q.voteMode === "rank" || isSelfVote(q) ? null : r.texts.map((_, k) => answers.filter((a) => a.choice === k).length);
       const max = Math.max(1, ...r.counts);
       detail = revealed
         ? h("div", { class: `pr-vote${firstTime(`sv:${L.seq}`) ? " enter" : ""}` }, r.rank.map((k, i) => {
           const pos = voteRankOf(r, k);
-          const hit = n ? pos <= n : r.top.includes(k);
+          const hit = isSelfVote(q) ? false : n ? pos <= n : r.top.includes(k);
           return h("div", { class: `pr-vote-row${hit ? " hit" : ""}`, style: `--d:${(r.rank.length - i) * 0.25}s` },
-            h("span", { class: "pr-vote-no" }, n && pos <= n ? `${pos}位` : ""), h("span", { class: "pr-vote-txt" }, r.texts[k]),
+            h("span", { class: "pr-vote-no" }, (n && pos <= n) || isSelfVote(q) ? `${pos}位` : ""), h("span", { class: "pr-vote-txt" }, r.texts[k]),
             h("span", { class: "pr-vote-track" }, h("span", { style: `width:${(r.counts[k] / max) * 100}%` })), h("b", null, `${r.counts[k]}${r.unit}`));
         }))
         : h("div", { class: "pr-seq-items" }, r.texts.map((c, k) => h("span", null, c, picks && L.phase === "reveal" && L.showAns === "all" ? h("small", null, ` ${picks[k]}人`) : null)));
@@ -6332,7 +6370,7 @@ function paintOperator(P, L, qz, rem) {
       nq.type === "choice"
         ? h("div", { class: "op-next-sub" }, (nq.choices ?? []).map((c, k2) => `${CHOICE_MARKS[k2]} ${c}`).join("　"), "　→ 正解 ", CHOICE_MARKS[nq.answer] ?? "?")
         : h("div", { class: "op-next-sub" }, "正解：", (nq.type === "order" || nq.type === "vote" ? answerLabel(nq, revealAnswerOf(nq)) : nq.answer) || "（未設定）"),
-      h("label", { class: "op-next-read" }, t, h("span", null, "問題読み画面を入れる")));
+      h("label", { class: "op-next-read" }, t, h("span", null, "問題を読む画面を表示する")));
   })() : null;
 
   let body;
@@ -6583,26 +6621,26 @@ function ruleSlides(L) {
     h("div", { class: "sl-big" }, `全${L.total}問`),
     ss.length > 1 ? h("div", { class: "sl-chips" }, ss.map((s) => h("span", null, h("b", null, s.name), range(s)))) : null) });
   slides.push({ title: "答え方", body: h("div", { class: "sl-cards" },
-    types.has("choice") ? h("div", { class: "sl-card" }, h("b", null, "4択"), "スマホで A〜D を選ぶ。締切までは変えられる") : null,
-    types.has("text") ? h("div", { class: "sl-card" }, h("b", null, "記述"), "スマホに答えを入力して送信。締切までは送り直せる") : null,
-    types.has("buzz") ? h("div", { class: "sl-card" }, h("b", null, "早押し"), `問題を読んでいる途中でも押せる。押した順に解答権 → ${BUZZ_ANSWER_SEC}秒以内に答えを入力。間違い・時間切れは次の人へ（減点あり）`) : null,
-    types.has("order") ? h("div", { class: "sl-card" }, h("b", null, "並べ替え"), "バラバラに出る項目を、正しいと思う順にタップして送信。全部合って正解（部分点の問題もある）") : null,
-    types.has("vote") ? h("div", { class: "sl-card" }, h("b", null, "投票当て"), "事前のアンケートで多かった答えを当てる。1位を選ぶ問題と、上位の順番をタップで並べる問題がある") : null) });
+    types.has("choice") ? h("div", { class: "sl-card" }, h("b", null, "4択"), "スマホで A〜D から選びます。締切までは何度でも変えられます。") : null,
+    types.has("text") ? h("div", { class: "sl-card" }, h("b", null, "記述"), "スマホに答えを入力して送信します。締切までは送り直せます。") : null,
+    types.has("buzz") ? h("div", { class: "sl-card" }, h("b", null, "早押し"), `問題を読んでいる途中でも押せます。押した順に解答権が移り、${BUZZ_ANSWER_SEC}秒以内に答えを入力します。間違い・時間切れの場合は次の人に解答権が移ります（減点があります）。`) : null,
+    types.has("order") ? h("div", { class: "sl-card" }, h("b", null, "並べ替え"), "バラバラに表示される項目を、正しいと思う順にタップして送信します。すべて合っていれば正解です（部分点がある問題もあります）。") : null,
+    types.has("vote") ? h("div", { class: "sl-card" }, h("b", null, "投票当て"), "事前のアンケートの結果を当てます。1位を選ぶ問題、上位の順番をタップで並べる問題、自分の順位や票数を答える問題があります。") : null) });
   const sb = L.sabo;
   if (sb?.on) {
     const on = SABO_KEYS.filter((k) => sb.types[k]?.on);
     slides.push({ title: "妨害システム", body: h("ul", { class: "sl-points" },
-      h("li", null, h("b", null, sb.who === "all" ? "全員" : "解答者以外の人"), "が、ポイントを使って解答者を妨害できる"),
+      h("li", null, h("b", null, sb.who === "all" ? "全員" : "解答者以外の人"), "が、ポイントを使って解答者を妨害できます"),
       h("li", null, "使うのは ", h("b", null, setName(sb))),
-      h("li", null, "問題と問題の間の「妨害受付」の時間に、スマホから相手と種類を選んで申し込む"),
-      h("li", null, "次の問題が出た瞬間に発動。", h("b", null, "誰が誰を妨害したかは画面に出る"))) });
+      h("li", null, "問題と問題の間の「妨害受付」の時間に、スマホで相手と種類を選んで申し込みます"),
+      h("li", null, "妨害は次の問題が出た瞬間に発動し、", h("b", null, "誰が誰を妨害したかが画面に表示されます"))) });
     slides.push({ title: "妨害の種類", body: h("div", { class: "sl-cards" }, on.map((k) => h("div", { class: "sl-card sabo" },
       h("div", { class: "sl-mark" }, SABO_TYPES[k].mark), h("b", null, SABO_TYPES[k].label), h("span", null, SABO_TYPES[k].desc), h("em", null, `${sb.types[k].price}pt`)))) });
     slides.push({ title: "妨害のルール", body: h("div", null,
       h("ul", { class: "sl-points" },
-        h("li", null, "1問で1人が受ける妨害は ", h("b", null, "1つまで"), "（早い者勝ち）"),
-        h("li", null, "失敗した申し込みは ", h("b", null, "ポイントが引かれない")),
-        sb.streak2x ? h("li", null, "同じ人を2問続けて妨害すると ", h("b", null, "値段が2倍")) : null),
+        h("li", null, "1問で1人が受ける妨害は ", h("b", null, "1つまで"), "です（早い者勝ち）"),
+        h("li", null, "申し込みが通らなかった場合、", h("b", null, "ポイントは引かれません")),
+        sb.streak2x ? h("li", null, "同じ人を2問続けて妨害すると、", h("b", null, "価格が2倍"), "になります") : null),
       h("table", { class: "sl-table" },
         h("caption", null, "区切りごとの上限（種類の列は、同じ人が受けられる回数）"),
         h("tr", null, h("th", null, "区切り"), h("th", null, "1人が妨害できる"), on.map((k) => h("th", null, SABO_TYPES[k].label))),
@@ -6613,9 +6651,9 @@ function ruleSlides(L) {
     slides.push({ title: "順位予想（賭け）", body: h("div", null,
       h("div", { class: "sl-cards" }, BET_KEYS.filter((k) => bt.kinds[k]?.on).map((k) => h("div", { class: "sl-card" }, h("b", null, BET_KINDS[k].label), BET_KINDS[k].desc))),
       h("ul", { class: "sl-points" },
-        h("li", null, "最終順位を予想して ", h("b", null, setName(bt)), " を賭ける（1人 ", h("b", null, `${bt.max}pt`), " まで）"),
-        h("li", null, "オッズは全員の賭け金で決まる（多く賭けられた予想ほど低い）。払戻率 ", h("b", null, `${bt.rate}%`)),
-        h("li", null, "同点のときはどちらの順番でも当たり。誰も当たらなければ全額返す"))) });
+        h("li", null, "最終順位を予想して ", h("b", null, setName(bt)), " を賭けます（1人 ", h("b", null, `${bt.max}pt`), " まで）"),
+        h("li", null, "オッズは全員の賭け金で決まり、多く賭けられた予想ほど低くなります。払戻率は ", h("b", null, `${bt.rate}%`), " です"),
+        h("li", null, "同点の場合はどちらの順番でも当たりになります。誰も当たらなかった場合は、賭けたポイントを全額返します。"))) });
   }
   return slides;
 }
@@ -6894,6 +6932,32 @@ function paintMemberQuiz(full = true) {
       ta.disabled = locked;
       input = h("div", { class: "ql-textbox" }, ta,
         h("button", { class: "ql-send", disabled: locked, onclick: () => { if (ta.value.trim()) quizAnswer({ text: ta.value.trim() }); } }, mine ? "送り直す" : "送信"));
+    } else if (isSelfVote(q)) {
+      // 自分を当てる：順位はボタン、票数は数字を入れて送る
+      const A = answerVisible(L) ? L.answer : null;
+      const truth = A ? selfTruth({ ...q, answer: A }, uid) : null;
+      if (!(q.uids ?? []).includes(uid)) {
+        input = h("div", { class: "ql-sealed" }, "あなたはこのアンケートの選択肢に入っていないため、この問題には回答できません。");
+      } else if (!selfCountMode(q)) {
+        const n = Math.max(1, Number(q.selfMax) || (q.choices ?? []).length || 1);
+        input = h("div", { class: "ql-options" }, Array.from({ length: n }, (_, i) => i + 1).map((k) => h("button", {
+          class: `ql-option${mine?.num === k ? " picked" : ""}${truth === k ? " correct" : ""}`, disabled: locked,
+          onclick: () => quizAnswer({ num: k }),
+        }, `${k}位`)));
+      } else {
+        const key = `n${L.seq}`;
+        let inp = QZ.textDraft.get(key);
+        if (!inp) {
+          inp = h("input", { type: "number", class: "ql-input ql-num", inputmode: "numeric", min: "0", placeholder: "票数を入力" });
+          inp.value = typeof mine?.num === "number" ? String(mine.num) : "";
+          QZ.textDraft.clear();
+          QZ.textDraft.set(key, inp);
+        }
+        inp.disabled = locked;
+        const send = () => { const v = Math.floor(Number(inp.value)); if (inp.value === "" || !Number.isFinite(v) || v < 0) return toast("0以上の数字を入力してください", true); quizAnswer({ num: v }); };
+        input = h("div", { class: "ql-textbox" }, inp, h("button", { class: "ql-send", disabled: locked, onclick: send }, mine ? "送り直す" : "送信"));
+      }
+      if (truth != null) input = h("div", null, input, h("div", { class: "ql-status ql-self-res" }, `あなたの${selfCountMode(q) ? "票数" : "順位"}は ${truth}${selfUnit(q, A)} でした`));
     } else if (q.type === "vote" && q.voteMode !== "rank") {
       const A = answerVisible(L) ? L.answer : null;
       input = h("div", { class: "ql-options" }, (q.choices ?? []).map((c, k) => h("button", {
@@ -7381,7 +7445,7 @@ function pollRequestBox() {
       "申請しました。管理者が承認すると公開されます");
     q.value = opts.value = deadline.value = "";
   } },
-    group(null, [h("div", { class: "cell" }, q), h("div", { class: "cell" }, opts), field("締切（任意）", deadline), field("ひとこと欄", allowCom), field("集計をみんなに見せる", showRes), field("自分の名前を出す", showName)],
+    group(null, [h("div", { class: "cell" }, q), h("div", { class: "cell" }, opts), field("締切（任意）", deadline), field("ひとことコメント欄を付ける", allowCom), field("集計を参加者に表示する", showRes), field("自分の名前を出す", showName)],
       "管理者が内容を確認して承認すると、みんなに公開されます。「自分の名前を出す」をオフにすると「参加者の提案」とだけ表示されます（管理者には誰の申請かわかります）。"),
     h("button", { class: "btn-filled", type: "submit" }, "申請する"));
   const fold = keptFold("pollReqForm", "＋ アンケートを申請する", form);
@@ -7461,8 +7525,8 @@ function adminMoney({ withTitle = true } = {}) {
   const nameChecks = memberChecks([]);
   const nameCell = h("div", { class: "cell target-wrap" }, h("div", { class: "cell-sub" }, "選択肢にする人"), nameChecks.el);
   const noSelfCell = field("自分には投票できない", noSelf);
-  const depthCell = field("何位まで付けるか", depth);
-  const optsCell = field("選択肢（/ で区切る）", opts);
+  const depthCell = field("順位を付ける数", depth);
+  const optsCell = field("選択肢（「/」で区切る）", opts);
   const paintPollForm = () => {
     optsCell.hidden = nameOpts.checked;
     nameCell.hidden = noSelfCell.hidden = !nameOpts.checked;
@@ -7499,8 +7563,8 @@ function adminMoney({ withTitle = true } = {}) {
     q.value = ""; deadline.value = ""; pollWho.reset();
   } },
     group("新しいアンケート", [h("div", { class: "cell" }, q), optsCell, field("選択肢を参加者の名前にする", nameOpts), nameCell, noSelfCell,
-      field("順位をつけて投票する", rankT), depthCell, field("締切（なしでもOK）", deadline),
-      field("参加者にも集計を見せる", showRes), field("ひとことコメント欄", allowCom), field("誰が何に入れたかを出さない", anon)],
+      field("順位をつけて投票する", rankT), depthCell, field("締切（任意）", deadline),
+      field("集計を参加者に表示する", showRes), field("ひとことコメント欄を付ける", allowCom), field("誰が何に投票したかを表示しない", anon)],
       "「参加者の名前にする」は「誰が一番〇〇？」のような投票向けで、選択肢にする人を選べます。「順位をつけて投票する」は、1人ずつ「優しいと思う順」のように順位を付けて投票し、1位＝多い点…の合計点で集計します（何位まで付けるかは空欄なら全部）。クイズの「投票当て」に使うアンケートは、答えがばれないよう「集計を見せる」をオフにしてください。「出さない」をオンにすると、管理者の画面でも点数・票数だけを表示します。"),
     group("答えてもらう人", [h("div", { class: "cell" }, pollWho.el), pollPushCell], "「全員」は、あとから追加した参加者も自動で対象になります。通知は答えてもらう人だけに届きます。"),
     h("button", { class: "btn-filled", type: "submit" }, "アンケートを作る"));
@@ -7911,7 +7975,7 @@ function checklistAdmin({ withTitle = true } = {}) {
     newTitle.value = "";
   } }, h("div", { class: "group-body" }, h("div", { class: "cell" }, newTitle), h("button", { class: "cell cell-button", type: "submit" }, icon("plus"), "セクションを追加")));
   const body = h("div");
-  el.append(withTitle ? largeTitle("チェックリスト") : null, body, group(null, addSection, "持ち物・片付け・出発前の確認など、セクションはいくつでも作れます。"));
+  el.append(...(withTitle ? [largeTitle("チェックリスト")] : []), body, group(null, addSection, "持ち物・片付け・出発前の確認など、セクションはいくつでも作れます。"));
   redrawOnLeave(el);
   const forms = new Map(); // セクションごとの「項目を追加」欄（描き直しても入力が消えないように使い回す）
 
@@ -8014,7 +8078,7 @@ function checklistMember({ compact = false } = {}) {
             const mineToDo = it.kind !== "shared" || !it.assignee || it.assignee === uid;
             return h("label", { class: `cl-item${on ? " on" : ""}${mineToDo ? "" : " other"}` }, cb,
               h("span", { class: "cl-text" }, it.text,
-                it.kind === "shared" ? h("small", null, c ? `${memberName(c.uid)} がチェック` : it.assignee ? `担当：${it.assignee === uid ? "あなた" : memberName(it.assignee)}` : "誰か1人でOK") : null));
+                it.kind === "shared" ? h("small", null, c ? `${memberName(c.uid)} がチェック` : it.assignee ? `担当：${it.assignee === uid ? "あなた" : memberName(it.assignee)}` : "誰か1人がチェックすれば完了") : null));
           })));
       }) : emptyState("check", "まだありません", "持ち物や片付けのチェックリストがあるとここに表示されます。"));
     },
@@ -8311,7 +8375,7 @@ function adminAllocs({ withTitle = true } = {}) {
   const list = h("div", { class: "stack" });
   const tools = h("div", { class: "alloc-tools" });
   const el = h("div", null, withTitle ? largeTitle("部屋・車") : null, h("div", { class: "alloc-kind" }, kindSeg),
-    group(null, [field("参加者に発表", publish)], publishNote), keptFold("newAlloc", "＋ 追加する", form, false), summary, tools, list);
+    group(null, [field("参加者に発表する", publish)], publishNote), keptFold("newAlloc", "＋ 追加する", form, false), summary, tools, list);
   redrawOnLeave(el);
 
   // 移す：元の部屋（車）から外して、新しいほうに入れる
@@ -8381,7 +8445,7 @@ function adminAllocs({ withTitle = true } = {}) {
       h("button", { class: "text-btn", onclick: () => {
         const n = prompt("名前", a.name);
         if (n == null || !n.trim()) return;
-        const c = prompt("定員（人）。決めないときは 0", String(a.capacity ?? 0));
+        const c = prompt("定員（人）。決めない場合は 0 にしてください", String(a.capacity ?? 0));
         if (c == null) return;
         fire(updateDoc(D("allocs", a.id), { name: n.trim(), capacity: Math.max(0, Math.min(99, Number(c) || 0)) }), "変更しました");
       } }, "変更"),
@@ -8821,7 +8885,7 @@ function adminArchives({ withTitle = true } = {}) {
         h("button", { class: "text-btn", onclick: () => {
           const t = prompt("資料の名前", a.title);
           if (t == null || !t.trim()) return;
-          const nt = prompt("ひとこと（空でもよい）", a.note ?? "");
+          const nt = prompt("ひとこと（空欄でもかまいません）", a.note ?? "");
           fire(updateDoc(D("archives", a.id), { title: t.trim(), note: (nt ?? a.note ?? "").trim() }), "変更しました");
         } }, "名前"),
         h("button", { class: "text-btn destructive", onclick: () => {
@@ -8853,7 +8917,7 @@ function adminArchives({ withTitle = true } = {}) {
       if (last === S.archives) return;
       last = S.archives;
       const as = sortedArchives();
-      usage.textContent = as.length ? `${as.length}件・表示中 ${as.filter((a) => a.visible).length}件・資料の合計 ${fmtBytes(totalBytes(as.map((a) => a.files ?? [])))}（無料枠はアプリ全体で 1GB まで。PDF は1つ 20MB まで、写真は自動で縮小）` : "";
+      usage.textContent = as.length ? `${as.length}件・表示中 ${as.filter((a) => a.visible).length}件・資料の合計 ${fmtBytes(totalBytes(as.map((a) => a.files ?? [])))}（無料枠はアプリ全体で 1GB までです。PDF は1つ 20MB まで、写真は自動で縮小されます）` : "";
       if (!as.length) { list._rows?.clear(); return setKids(list, emptyState("photo", "まだありません", "「＋ 旅行の資料を作る」から、旅行ごとに写真・PDF をまとめられます。")); }
       if (!list._rows?.size) list.replaceChildren();
       keyedList(list, as, (a) => card(a), (row, a) => row.patch(a, as.indexOf(a), as));
@@ -9477,7 +9541,7 @@ function remindBox() {
     });
     const last = S.reminderLast?.at?.toDate ? `${fmtDate(S.reminderLast.at)}（${S.reminderLast.items ?? 0}件・${S.reminderLast.sent ?? 0}台に送信）` : "まだ動いていません";
     setKids(el, group("自動リマインド", [
-      field("自動リマインド", on), ...rows,
+      field("自動でリマインドする", on), ...rows,
       cell("最後に確かめた時刻", h("span", { class: "secondary" }, last)),
       h("button", { class: "cell cell-button", onclick: () => ask(true) }, "送る予定を確かめる（送らない）"),
       h("button", { class: "cell cell-button", onclick: () => ask(false) }, "今すぐ送る"),
@@ -9814,8 +9878,8 @@ async function printCredentials(rows, mode) {
         h("div", { class: "pcard-row" }, h("span", null, "ID"), h("b", { class: "mono" }, r.loginId)),
         h("div", { class: "pcard-row" }, h("span", null, "パスワード"), pwText(r) ? h("b", { class: `mono${r.password && !r.changed ? "" : " muted"}` }, pwText(r)) : h("b", { class: "blank" })),
         h("ol", { class: "pcard-steps" }, canAuto(r)
-          ? [h("li", null, "右のQRコードを読むとログイン"), h("li", null, "共有 →「ホーム画面に追加」"), h("li", null, "追加したアプリで1回だけID・パスワード入力")]
-          : [h("li", null, "QRコードか下のURLを開く"), h("li", null, "IDとパスワードでログイン"), h("li", null, "共有 →「ホーム画面に追加」")]),
+          ? [h("li", null, "右のQRコードを読み取ります"), h("li", null, "共有から「ホーム画面に追加」を選びます"), h("li", null, "追加したアプリでID・パスワードを1回入力します")]
+          : [h("li", null, "QRコードか下のURLを開きます"), h("li", null, "IDとパスワードでログインします"), h("li", null, "共有から「ホーム画面に追加」を選びます")]),
         h("div", { class: "pcard-url mono" }, url)),
       qr ? h("div", { class: "pcard-qrbox" }, (() => { const box = h("div", { class: "pcard-qr" }); box.innerHTML = qrSvg(canAuto(r) ? qrLoginUrl(url, r.loginId, r.password) : url); return box; })(),
         h("div", { class: "pcard-qrcap" }, canAuto(r) ? "読むとログイン" : "ログイン画面")) : null)));
@@ -10041,7 +10105,7 @@ function exportBuild(parts) {
             let ans;
             if (q.type === "choice") ans = h("ol", { class: "rp-choices", type: "A" }, (q.choices ?? []).map((c, k) => h("li", { class: q.answer === k ? "ok" : null }, c || "（空欄）", q.answer === k ? " ◎正解" : "")));
             else if (q.type === "order") ans = h("p", null, "正しい順：", (q.choices ?? []).join(" → "));
-            else if (q.type === "vote") ans = h("p", null, `アンケート「${S.polls.get(q.pollId)?.question ?? "未設定"}」の結果（${q.voteMode === "rank" ? `上位${seqLen(q)}位の順番` : "1位"}）　`, answerLabel(q, revealAnswerOf(q)));
+            else if (q.type === "vote") ans = h("p", null, `アンケート「${S.polls.get(q.pollId)?.question ?? "未設定"}」の結果（${q.voteMode === "rank" ? `上位${seqLen(q)}位の順番` : q.voteMode === "self" ? `自分の${selfCountMode(q) ? "票数" : "順位"}` : "1位"}）　`, answerLabel(q, revealAnswerOf(q)));
             else ans = h("p", null, "正解：", q.answer || "（未設定）");
             return h("div", { class: "rp-q" },
               h("div", { class: "rp-qhead" }, h("b", null, `第${i + 1}問`), se ? h("span", null, se) : null, h("span", null, QTYPE[q.type] ?? q.type), h("span", null, `${q.points ?? 10}点`), q.time ? h("span", null, `${q.time}秒`) : null),
@@ -10092,7 +10156,7 @@ function exportBuild(parts) {
       const sign = (n) => (n > 0 ? `+${n}` : String(n));
       return sec("試合の記録",
         standings.length ? [h("h3", null, "仲間内の成績（終わった試合）"), T(["順位", "チーム", "試合", "勝", "分", "負", "得点", "失点", "差", "勝点", "PK勝"], mRankRows(standings, (r) => `${r.pts}|${r.gd}|${r.gf}|${r.pkw}`, (r, rk) => [rk, r.name, r.n, r.w, r.d, r.l, r.gf, r.ga, sign(r.gd), r.pts, r.pkw])),
-          h("p", { class: "rp-sub" }, "勝ち3点・引き分け1点（PK戦は引き分けとして数え、PK勝ちを別に表示）。順位は 勝点→得失点差→得点→PK勝ち の順。")] : null,
+          h("p", { class: "rp-sub" }, "勝ちは3点、引き分けは1点です（PK戦は引き分けとして数え、PK勝ちは別に表示します）。順位は勝点、得失点差、得点、PK勝ちの順に決めます。")] : null,
         players.length ? [h("h3", null, "個人成績"), T(["順位", "名前", "得点", "うちPK", "アシスト", "シュート", "枠内", "ファウル", "警告", "退場"], mRankRows(players, (r) => `${r.g}|${r.a}|${r.s}`, (r, rk) => [rk, futsalName(r.uid), r.g, r.pkn ? `${r.pk}/${r.pkn}` : "—", r.a, r.s, r.on, r.f, r.y, r.rc]))] : null,
         all.length ? all.map((m) => {
           const sc = mScore(m), st = mTeamStats(m), pc = mPossPct(m);
@@ -10227,7 +10291,7 @@ function openPollEditor(p, votes) {
   const box = h("div", { class: "share-modal", onclick: (e) => { if (e.target === box) close(); } },
     h("div", { class: "share-panel pe-panel" },
       h("div", { class: "share-head" }, h("b", null, "アンケートを編集"), h("button", { class: "text-btn", onclick: close }, "閉じる")),
-      group(null, [h("div", { class: "cell" }, q), field("締切", deadline), field("ひとことを書ける", allowCom), rank ? field("何位まで付けるか", depth) : null]),
+      group(null, [h("div", { class: "cell" }, q), field("締切", deadline), field("ひとことコメント欄を付ける", allowCom), rank ? field("順位を付ける数", depth) : null]),
       named ? group(`${rank ? "順位に入れる人" : "選択肢にする人"}${votes.length ? `（回答 ${votes.length}人）` : ""}`, [h("div", { class: "cell target-wrap" }, people.el), field("自分には投票できない", noSelfT)],
           votes.length ? `外した人は、回答済みの人の${rank ? "順位から消えて、下の人が繰り上がります" : "回答から消えます（その人に入れていた人は未回答に戻ります）"}。足した人は、回答済みの人の画面に「追加されました」と出て、${rank ? "何位に入れるかを選んでもらいます" : "答え直せます"}。` : null)
         : group(`選択肢${votes.length ? `（回答 ${votes.length}人）` : ""}`, [h("div", { class: "cell" }, list)],
@@ -10331,7 +10395,7 @@ async function startPrint() {
     h("b", null, "印刷の準備ができました"),
     h("button", { class: "btn-filled", onclick: () => { go.remove(); window.print(); } }, icon("table"), "印刷・PDFにする"),
     h("button", { class: "text-btn", onclick: () => { go.remove(); window.dispatchEvent(new Event("afterprint")); } }, "やめる"),
-    h("div", { class: "cell-sub" }, "PDF にするときは、開いた画面の共有ボタン（□↑）から「ファイルに保存」。ホーム画面のアイコンから開いていて反応しないときは、Safari で開き直してください。")));
+    h("div", { class: "cell-sub" }, "PDF にするときは、開いた画面の共有ボタン（□↑）から「ファイルに保存」を選んでください。ホーム画面のアイコンから開いていて反応しないときは、Safari で開き直してください。")));
   document.body.append(go);
 }
 async function printReport(root, fileTitle) {
@@ -10377,6 +10441,1179 @@ function exportBox() {
     ...exportParts().map((p) => field(p.label, checks.get(p.key))),
     h("button", { class: "cell cell-button", onclick: () => guard(null, () => exportPdf(exportParts().map((p) => p.key).filter((k) => checks.get(k).checked))) }, icon("note"), "PDF で出力（印刷画面 →「PDF に保存」）"),
   ], "この旅行のデータを、項目ごとにページを分けて出力します。印刷画面で「送信先：PDF に保存」（iPhone は共有ボタン →「プリント」→ 2本指で拡大 → 共有 →「ファイルに保存」）を選んでください。");
+}
+
+// ---------------------------------------------------------------- ゲーム（人狼・ワード人狼・NGワード・数字ならべ）
+//
+//   games/{id}                : 進行（参加者全員が読める）。書くのは管理者だけ（NGワードの「アウト」だけは、遊んでいる人も付け外しできる）
+//   gameSecrets/{id}_{uid}    : 本人だけに配る内容（役職・仲間の人狼・お題・NGワード・数字・占いの結果など）。本人と管理者だけが読める
+//   gameActs/{id}_{key}_{uid} : 夜の行動・投票。本人と管理者だけが読める。書けるのは、いま受け付けている回（games.actKey）の対象者（games.actors）だけ
+//
+// 夜を明かす・開票するなどの「司会」は管理者の端末が行う（役職を見て判定するため。参加者の端末はほかの人の役職を読めない）。
+// 人狼で「自動の司会」をオンにすると、管理者の端末が開いている間、全員がそろう・時間切れになるたびに自動で次へ進む。
+// 司会の画面（管理者）では、進行を読み上げる（端末の音声合成）。
+
+const GAME_KINDS = {
+  wolf: { label: "人狼", min: 4, desc: "役職がこっそり配られます。夜に人狼が1人を襲い、昼に話し合って怪しい人を投票で処刑します。人狼を全員処刑すれば村人陣営の勝ち、人狼の数が人間と同じになれば人狼陣営の勝ちです。" },
+  word: { label: "ワード人狼", min: 3, desc: "全員にお題が配られますが、少数派の人だけ少し違うお題です（例：うどん／そば）。お題そのものは言わずに話して、少数派を投票で当てます。自分が少数派だと気づいたら、ばれないように話を合わせましょう。" },
+  ng: { label: "NGワード", min: 2, desc: "ほかの人のNGワードは見えますが、自分のNGワードだけは見えません。うっかり自分のNGワードを言ってしまったらアウトです。ほかの人がNGワードを言うように話を振りましょう。最後まで残った人の勝ちです。" },
+  num: { label: "数字ならべ", min: 2, desc: "1〜100の数字がこっそり配られます。お題（例：人気の食べ物）に合わせて、自分の数字の大きさを例えで伝え合い、話し合って小さい順に並びます。最後に答え合わせをします。" },
+};
+const WOLF_ROLES = {
+  wolf: { label: "人狼", side: "wolf", desc: "夜に人間を1人襲います。仲間の人狼が誰かはわかります。人狼の数が人間と同じになれば勝ちです。" },
+  madman: { label: "狂人", side: "wolf", desc: "人間ですが、人狼の味方です。人狼陣営が勝てばあなたも勝ちです。占われても「人間」と表示されます。だれが人狼かは知りません。" },
+  seer: { label: "占い師", side: "village", desc: "夜に1人を占い、人狼かどうかを知ることができます。" },
+  medium: { label: "霊媒師", side: "village", desc: "昼に処刑された人が人狼だったかどうかを、次の朝に知ることができます。" },
+  knight: { label: "騎士", side: "village", desc: "夜に自分以外の1人を選び、人狼の襲撃から守ります。" },
+  villager: { label: "村人", side: "village", desc: "特別な力はありません。話し合いで人狼を見つけましょう。" },
+};
+const WOLF_SPECIAL = ["wolf", "madman", "seer", "medium", "knight"];
+const WORD_PAIRS = [
+  ["うどん", "そば"], ["海", "プール"], ["コーヒー", "紅茶"], ["犬", "猫"], ["カレー", "シチュー"], ["温泉", "サウナ"],
+  ["夏", "冬"], ["焼肉", "しゃぶしゃぶ"], ["ラーメン", "つけ麺"], ["遊園地", "動物園"], ["新幹線", "飛行機"], ["ギター", "ピアノ"],
+  ["サッカー", "バスケ"], ["おにぎり", "サンドイッチ"], ["映画館", "カラオケ"], ["花火", "お祭り"], ["スマホ", "パソコン"], ["ケーキ", "アイス"],
+  ["山", "川"], ["パン", "ごはん"], ["朝", "夜"], ["メガネ", "コンタクト"], ["図書館", "本屋"], ["キャンプ", "バーベキュー"],
+  ["雪", "雨"], ["寿司", "刺身"], ["お化け屋敷", "ジェットコースター"], ["ハンバーガー", "ピザ"], ["コンビニ", "スーパー"], ["歯ブラシ", "くし"],
+  ["リュック", "スーツケース"], ["枕", "布団"], ["バス", "電車"], ["たこ焼き", "お好み焼き"], ["シャワー", "お風呂"], ["チョコ", "クッキー"],
+  ["ビーチ", "砂浜"], ["自転車", "バイク"], ["先生", "先輩"], ["誕生日", "クリスマス"],
+];
+const NG_WORDS = [
+  "えー", "なんで", "すごい", "ありがとう", "ほんとに", "やばい", "まじで", "たしかに", "わかる", "ちょっと", "ごめん", "いいね",
+  "おいしい", "楽しい", "眠い", "疲れた", "お腹", "写真", "旅行", "海", "名前", "明日", "今日", "時間", "どこ", "だれ", "なに",
+  "いくら", "好き", "嫌い", "最高", "かわいい", "かっこいい", "うそ", "本当", "大丈夫", "了解", "おつかれ", "ふつう", "あとで",
+  "ちがう", "そうそう", "なるほど", "へー", "うける", "ねえ", "いや", "でも", "だから", "結局", "なんか", "あれ", "それ", "これ",
+  "先輩", "後輩", "部活", "授業", "テスト", "バイト", "お金", "スマホ", "ゲーム", "ごはん", "お酒", "ジュース", "アイス", "部屋",
+  "寝る", "起きる", "早い", "遅い", "暑い", "寒い", "高い", "安い", "大きい", "小さい", "いっしょに", "そういえば", "とりあえず", "めっちゃ",
+];
+const NUM_THEMES = [
+  "人気の食べ物（1＝不人気 → 100＝大人気）", "旅行に持っていきたい物（1＝いらない → 100＝絶対いる）", "強そうな動物（1＝弱い → 100＝最強）",
+  "怖いもの（1＝平気 → 100＝めちゃくちゃ怖い）", "テンションが上がるもの（1＝上がらない → 100＝最高に上がる）", "もらってうれしい物（1＝いらない → 100＝最高）",
+  "朝ごはんに食べたい物（1＝食べたくない → 100＝毎朝食べたい）", "大きいもの（1＝小さい → 100＝巨大）", "有名な人・キャラ（1＝無名 → 100＝だれでも知ってる）",
+  "合宿の夜にしたいこと（1＝したくない → 100＝絶対したい）", "重いもの（1＝軽い → 100＝重い）", "高いもの・値段（1＝安い → 100＝高い）",
+  "速いもの（1＝遅い → 100＝速い）", "モテそうな特技（1＝モテない → 100＝モテる）", "生まれ変わりたいもの（1＝なりたくない → 100＝なりたい）",
+  "夏っぽいもの（1＝夏っぽくない → 100＝夏そのもの）", "辛い食べ物（1＝甘い → 100＝激辛）", "便利な道具（1＝不便 → 100＝便利）",
+];
+
+// 乱数は暗号用の乱数（配り方を予想されないように）
+const gRand = (n) => { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; };
+const gShuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = gRand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const gPick = (arr) => arr[gRand(arr.length)];
+const gSecret = (g, uid) => S.gameSecrets.get(`${g.id}_${uid}`) ?? null;
+const gAct = (g, key, uid) => S.gameActs.get(`${g.id}_${key}_${uid}`)?.target ?? null;
+const gLive = (g) => !!g && g.phase !== "ended";
+// ev：あとで「履歴の再生」に使う、進行の区切り（公開してよい内容だけ。夜の行動などの秘密は入れない）
+const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
+const gNames = (uids) => (uids ?? []).map(memberName).join("・");
+const sortedGames = () => [...S.games.values()].sort((a, b) => (b.no ?? 0) - (a.no ?? 0));
+const GV = { hidden: new Set(), show: new Set(), stage: null }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
+const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
+const GBUSY = new Set(); // 進めている最中のゲーム
+const GDONE = new Map(); // 全員そろった時刻（自動の司会で、最後の人が選び直せるよう少し待つ）
+
+function listenGames(uid) {
+  listen("games", C("games"), (s) => { if (s) S.games = toMap(s); });
+  listen("gameSecrets", uid ? query(C("gameSecrets"), where("uid", "==", uid)) : C("gameSecrets"), (s) => { if (s) S.gameSecrets = toMap(s); });
+  listen("gameActs", uid ? query(C("gameActs"), where("uid", "==", uid)) : C("gameActs"), (s) => { if (s) S.gameActs = toMap(s); });
+}
+
+// ---- 人狼：役職の数
+function wolfPreset(n) {
+  return { wolf: n >= 14 ? 3 : n >= 8 ? 2 : 1, madman: n >= 10 ? 1 : 0, seer: 1, medium: n >= 9 ? 1 : 0, knight: n >= 6 ? 1 : 0 };
+}
+const wolfVillagers = (n, r) => n - WOLF_SPECIAL.reduce((a, k) => a + (r[k] ?? 0), 0);
+function wolfRolesError(n, r) {
+  if (n < GAME_KINDS.wolf.min) return `人狼は${GAME_KINDS.wolf.min}人以上で遊べます（いま ${n}人）`;
+  if ((r.wolf ?? 0) < 1) return "人狼を1人以上にしてください";
+  if (wolfVillagers(n, r) < 0) return "役職の数が参加人数より多くなっています";
+  if (r.wolf * 2 >= n) return "人狼が多すぎます（人狼は人間より少なくしてください）";
+  return null;
+}
+const wolfRole = (g, uid) => gSecret(g, uid)?.role ?? null;
+const wolfIsWolf = (g, uid) => wolfRole(g, uid) === "wolf";
+
+// 一番多く選ばれた人（同数なら全員）
+function gTop(targets) {
+  const n = new Map();
+  for (const t of targets) n.set(t, (n.get(t) ?? 0) + 1);
+  const max = Math.max(0, ...n.values());
+  return { counts: n, top: [...n].filter(([, c]) => c === max && max > 0).map(([t]) => t) };
+}
+
+// ---- 配って始める（管理者）
+async function startGame(kind, players, o) {
+  const ref = doc(C("games"));
+  const gid = ref.id;
+  const b = writeBatch(db);
+  const now = Date.now();
+  const order = gShuffle(players);
+  const sec = (uid, data) => b.set(D("gameSecrets", `${gid}_${uid}`), { gameId: gid, uid, ...data });
+  const base = { kind, title: GAME_KINDS[kind].label, players, no: now, createdAt: serverTimestamp(), step: 0, phase: "play", day: 1,
+    actKey: null, actors: [], candidates: [], endsAt: null, log: [], result: null, reveal: null, opts: o };
+  let g;
+  if (kind === "wolf") {
+    const roles = [];
+    for (const k of WOLF_SPECIAL) for (let i = 0; i < (o.roles[k] ?? 0); i++) roles.push(k);
+    while (roles.length < players.length) roles.push("villager");
+    const deal = new Map(order.map((u, i) => [u, roles[i]]));
+    const wolves = players.filter((u) => deal.get(u) === "wolf");
+    for (const u of players) sec(u, { role: deal.get(u), mates: deal.get(u) === "wolf" ? wolves.filter((x) => x !== u) : [], results: [] });
+    g = { ...base, phase: "night", alive: players, actKey: "n1", actors: players, endsAt: now + o.nightSec * 1000, lastExec: null,
+      log: [gLog(`役職を配りました。1日目の夜です。全員、自分のスマホで1人を選んでください。${o.firstNightSafe ? "今夜は人狼の襲撃はありません。" : ""}`, null, { type: "night", day: 1 })] };
+  } else if (kind === "word") {
+    const [a, c] = o.pair ?? gPick(WORD_PAIRS);
+    const flip = gRand(2) === 1;
+    const major = flip ? c : a, minor = flip ? a : c;
+    const minors = new Set(order.slice(0, o.minority));
+    for (const u of players) sec(u, { word: minors.has(u) ? minor : major });
+    g = { ...base, phase: "talk", endsAt: now + o.talkMin * 60000, log: [gLog("お題を配りました。お題そのものは言わずに、お題について話し合いましょう。", null, { type: "talk" })] };
+  } else if (kind === "ng") {
+    const pool = [...new Set([...(o.words ?? []), ...gShuffle(NG_WORDS.filter((w) => !(o.words ?? []).includes(w)))])];
+    const words = new Map(order.map((u, i) => [u, pool[i % pool.length]]));
+    for (const u of players) sec(u, { others: Object.fromEntries(players.filter((x) => x !== u).map((x) => [x, words.get(x)])) });
+    g = { ...base, phase: "play", outs: {}, log: [gLog("NGワードを配りました。ほかの人のNGワードは見えますが、自分のNGワードは見えません。言ってしまったらアウト！")] };
+  } else {
+    const nums = gShuffle(Array.from({ length: 100 }, (_, i) => i + 1)).slice(0, players.length);
+    order.forEach((u, i) => sec(u, { number: nums[i] }));
+    g = { ...base, phase: "play", theme: o.theme || gPick(NUM_THEMES), log: [gLog("数字を配りました。お題に合わせて、自分の数字を例えで伝え合い、小さい順に並びましょう。")] };
+  }
+  b.set(ref, g);
+  await b.commit();
+  return gid;
+}
+
+// ---- 1段階進める。同じ段階を2台の端末が同時に進めないよう、段階の番号（step）が変わっていないときだけ書く
+async function gameStep(gid, step, fn) {
+  const ref = D("games", gid);
+  return runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return false;
+    const g = { id: gid, ...snap.data() };
+    if ((g.step ?? 0) !== step || g.phase === "ended") return false;
+    const r = fn(g);
+    if (!r) return false;
+    tx.update(ref, { ...r.update, step: step + 1 });
+    for (const [uid, data] of r.secrets ?? []) tx.set(D("gameSecrets", `${gid}_${uid}`), data, { merge: true });
+    return true;
+  });
+}
+function gameGo(g, fn, btn) {
+  if (GBUSY.has(g.id)) return;
+  GBUSY.add(g.id);
+  guard(btn, () => gameStep(g.id, g.step ?? 0, fn)).finally(() => { GBUSY.delete(g.id); });
+}
+
+// ---- 人狼の進行
+function wolfWin(g, alive) {
+  const w = alive.filter((u) => wolfIsWolf(g, u)).length;
+  if (!w) return { winner: "village", text: "人狼がいなくなりました。村人陣営の勝ちです！" };
+  if (w >= alive.length - w) return { winner: "wolf", text: "人狼の数が人間と同じになりました。人狼陣営の勝ちです！" };
+  return null;
+}
+function wolfEnd(g, alive, log, win) {
+  return { phase: "ended", alive, actKey: null, actors: [], candidates: [], endsAt: null, result: win,
+    reveal: Object.fromEntries(g.players.map((u) => [u, WOLF_ROLES[wolfRole(g, u)]?.label ?? "?"])),
+    log: [...log, gLog(`ゲームが終了しました。${win.text}`, null, { type: "end" })] };
+}
+const wolfDeath = (g, u) => (g.opts?.revealOnDeath ? `（${WOLF_ROLES[wolfRole(g, u)]?.label ?? "?"}）` : "");
+// 夜 → 朝
+function wolfMorning(g) {
+  if (g.phase !== "night") return null;
+  const d = g.day, key = `n${d}`, alive = [...g.alive];
+  const acts = alive.map((u) => [u, gAct(g, key, u)]).filter(([, t]) => t && alive.includes(t));
+  const wolves = alive.filter((u) => wolfIsWolf(g, u));
+  const prey = alive.filter((u) => !wolfIsWolf(g, u));
+  let victim = null;
+  if (!(g.opts.firstNightSafe && d === 1) && wolves.length && prey.length) {
+    const picks = acts.filter(([u, t]) => wolfIsWolf(g, u) && !wolfIsWolf(g, t)).map(([, t]) => t);
+    const { top } = gTop(picks);
+    victim = top.length ? gPick(top) : gPick(prey); // 人狼が選ばなかったときは、人間の中からくじ
+  }
+  const knight = alive.find((u) => wolfRole(g, u) === "knight");
+  const guardT = knight ? gAct(g, key, knight) : null;
+  const dead = victim && !(guardT && guardT === victim && guardT !== knight) ? victim : null;
+  const secrets = [];
+  for (const [u, t] of acts) {
+    if (wolfRole(g, u) === "seer" && t !== u) secrets.push([u, { results: [...(gSecret(g, u)?.results ?? []), { day: d, target: t, wolf: wolfIsWolf(g, t), kind: "seer" }] }]);
+  }
+  if (g.lastExec) for (const u of alive) if (wolfRole(g, u) === "medium") secrets.push([u, { results: [...(gSecret(g, u)?.results ?? []), { day: d, target: g.lastExec, wolf: wolfIsWolf(g, g.lastExec), kind: "medium" }] }]);
+  const next = alive.filter((u) => u !== dead);
+  const log = [...(g.log ?? []), gLog(dead ? `${d + 1}日目の朝になりました。${memberName(dead)}さんが無残な姿で見つかりました${wolfDeath(g, dead)}。` : `${d + 1}日目の朝になりました。昨夜の犠牲者はいませんでした。`, null, { type: "morning", day: d + 1, night: key, dead })];
+  const win = wolfWin(g, next);
+  if (win) return { update: wolfEnd(g, next, log, win), secrets };
+  log.push(gLog(`話し合いの時間です（${g.opts.talkMin}分）。生き残っているのは ${next.length}人です。`, null, { type: "day", day: d + 1 }));
+  return { update: { phase: "day", day: d + 1, alive: next, actKey: null, actors: [], candidates: [], endsAt: Date.now() + g.opts.talkMin * 60000, lastExec: null, lastDeath: dead, log }, secrets };
+}
+// 話し合い → 投票
+function wolfToVote(g) {
+  if (g.phase !== "day") return null;
+  return { update: { phase: "vote", actKey: `v${g.day}`, actors: g.alive, candidates: g.alive, endsAt: Date.now() + g.opts.voteSec * 1000,
+    log: [...(g.log ?? []), gLog("投票の時間です。処刑する人を1人選んでください。", null, { type: "vote", key: `v${g.day}` })] } };
+}
+// 投票の集計（ワード人狼と共通）。{ top, lines, runoff }
+function gTally(g) {
+  const key = g.actKey;
+  const votes = g.actors.map((u) => [u, gAct(g, key, u)]);
+  const valid = votes.filter(([u, t]) => t && t !== u && g.candidates.includes(t));
+  const { counts, top } = gTop(valid.map(([, t]) => t));
+  const lines = votes.map(([u, t]) => `${memberName(u)} → ${t && valid.some(([x]) => x === u) ? memberName(t) : "（投票なし）"}`).join("\n");
+  const sum = [...counts].sort((a, b) => b[1] - a[1]).map(([t, c]) => `${memberName(t)} ${c}票`).join("・") || "投票なし";
+  return { top: top.length ? top : [...g.candidates], lines, sum, runoff: key.endsWith("b") };
+}
+function wolfTally(g) {
+  if (g.phase !== "vote") return null;
+  const r = gTally(g);
+  const log = [...(g.log ?? []), gLog(`開票結果：${r.sum}`, r.lines, { type: "tally", key: g.actKey, cands: g.candidates })];
+  let x;
+  if (r.top.length === 1) x = r.top[0];
+  else if (!r.runoff) {
+    log.push(gLog(`同じ票数の人がいるので、決選投票をします（候補：${gNames(r.top)}）。`, null, { type: "runoff", cands: r.top }));
+    return { update: { phase: "vote", actKey: `v${g.day}b`, actors: g.alive, candidates: r.top, endsAt: Date.now() + g.opts.voteSec * 1000, log } };
+  } else { x = gPick(r.top); log.push(gLog("決選投票も同じ票数だったので、くじで決めました。", null, { type: "lottery", uid: x })); }
+  const next = g.alive.filter((u) => u !== x);
+  log.push(gLog(`${memberName(x)}さんが処刑されました${wolfDeath(g, x)}。`, null, { type: "exec", uid: x }));
+  const win = wolfWin(g, next);
+  if (win) return { update: wolfEnd(g, next, log, win) };
+  log.push(gLog(`${g.day}日目の夜になりました。全員、自分のスマホで1人を選んでください。`, null, { type: "night", day: g.day }));
+  return { update: { phase: "night", alive: next, actKey: `n${g.day}`, actors: next, candidates: [], endsAt: Date.now() + g.opts.nightSec * 1000, lastExec: x, log } };
+}
+
+// ---- ワード人狼の進行
+function wordToVote(g) {
+  if (g.phase !== "talk") return null;
+  return { update: { phase: "vote", actKey: "v1", actors: g.players, candidates: g.players, endsAt: Date.now() + 60000,
+    log: [...(g.log ?? []), gLog("投票の時間です。少数派だと思う人を1人選んでください。", null, { type: "vote", key: "v1" })] } };
+}
+function wordReveal(g) {
+  const words = new Map(g.players.map((u) => [u, gSecret(g, u)?.word ?? "?"]));
+  const cnt = gTop([...words.values()]).counts;
+  const minorWord = [...cnt].sort((a, b) => a[1] - b[1])[0]?.[0];
+  return { words, minorWord, minors: g.players.filter((u) => words.get(u) === minorWord), majorWord: [...cnt].find(([w]) => w !== minorWord)?.[0] ?? "?" };
+}
+function wordTally(g) {
+  if (g.phase !== "vote") return null;
+  const r = gTally(g);
+  const log = [...(g.log ?? []), gLog(`開票結果：${r.sum}`, r.lines, { type: "tally", key: g.actKey, cands: g.candidates })];
+  if (r.top.length > 1 && !r.runoff) {
+    log.push(gLog(`同じ票数の人がいるので、決選投票をします（候補：${gNames(r.top)}）。`, null, { type: "runoff", cands: r.top }));
+    return { update: { actKey: "v1b", candidates: r.top, endsAt: Date.now() + 60000, log } };
+  }
+  const w = wordReveal(g);
+  const x = r.top.length === 1 ? r.top[0] : null;
+  const caught = x && w.minors.includes(x);
+  const text = !x ? "決選投票でも決まらなかったので、少数派の勝ちです！"
+    : caught ? `${memberName(x)}さんは少数派でした。多数派の勝ちです！（少数派が多数派のお題「${w.majorWord}」を言い当てたら逆転）`
+      : `${memberName(x)}さんは多数派でした。少数派の勝ちです！`;
+  log.push(gLog(`答え：多数派「${w.majorWord}」、少数派「${w.minorWord}」（${gNames(w.minors)}）。${text}`, null, { type: "end", voted: x }));
+  return { update: { phase: "ended", actKey: null, actors: [], endsAt: null, result: { winner: caught ? "major" : "minor", text },
+    reveal: Object.fromEntries(w.words), minors: w.minors, log } };
+}
+// ---- NGワード・数字ならべの答え合わせ
+function ngEnd(g) {
+  const words = {};
+  for (const u of g.players) { const other = g.players.find((x) => x !== u); words[u] = other ? gSecret(g, other)?.others?.[u] ?? "?" : "?"; }
+  const left = g.players.filter((u) => !g.outs?.[u]);
+  const text = left.length ? `最後まで残ったのは ${gNames(left)} さん！` : "全員アウトになりました。";
+  return { update: { phase: "ended", result: { text }, reveal: words, log: [...(g.log ?? []), gLog(`ゲームが終了しました。${text}`, null, { type: "end" })] } };
+}
+function numEnd(g) {
+  const nums = Object.fromEntries(g.players.map((u) => [u, gSecret(g, u)?.number ?? 0]));
+  const line = [...g.players].sort((a, b) => nums[a] - nums[b]).map((u) => `${memberName(u)}（${nums[u]}）`).join(" → ");
+  return { update: { phase: "ended", result: { text: "答え合わせ" }, reveal: nums, log: [...(g.log ?? []), gLog(`答え合わせ：${line}`, null, { type: "end" })] } };
+}
+// どのゲームでも「ここで終える」（答えを公開）
+function gameForceEnd(g) {
+  if (g.kind === "wolf") return { update: wolfEnd(g, g.alive ?? g.players, g.log ?? [], { winner: null, text: "司会がゲームを終了しました。" }) };
+  if (g.kind === "word") {
+    const w = wordReveal(g);
+    return { update: { phase: "ended", actKey: null, actors: [], endsAt: null, result: { text: "司会がゲームを終了しました。" }, reveal: Object.fromEntries(w.words), minors: w.minors,
+      log: [...(g.log ?? []), gLog(`ゲームが終了しました。答え：多数派「${w.majorWord}」、少数派「${w.minorWord}」（${gNames(w.minors)}）`, null, { type: "end" })] } };
+  }
+  return g.kind === "ng" ? ngEnd(g) : numEnd(g);
+}
+async function deleteGame(g) {
+  if (!gLive(g) && !S.playLogs.has(`game_${g.id}`)) await setDoc(D("playLogs", `game_${g.id}`), gameArchive(g));
+  const b = writeBatch(db);
+  b.delete(D("games", g.id));
+  for (const [id, x] of S.gameSecrets) if (x.gameId === g.id) b.delete(D("gameSecrets", id));
+  for (const [id, x] of S.gameActs) if (x.gameId === g.id) b.delete(D("gameActs", id));
+  await b.commit();
+}
+
+// ---- 自動の司会（管理者の端末で1秒ごと）
+function gameAutoTick() {
+  if (!S.isAdmin || !S.user) return;
+  const now = Date.now();
+  for (const g of S.games.values()) {
+    if (g.kind !== "wolf" || !g.opts?.auto || !gLive(g) || GBUSY.has(g.id)) continue;
+    const k = `${g.id}:${g.step ?? 0}`;
+    const done = !!g.actKey && g.actors.length > 0 && g.actors.every((u) => gAct(g, g.actKey, u));
+    if (done && !GDONE.has(k)) GDONE.set(k, now);
+    if (!done) GDONE.delete(k);
+    const ready = done && now - GDONE.get(k) >= 3000;
+    const timeUp = g.endsAt && now >= g.endsAt + 1000;
+    const fn = g.phase === "night" && (ready || timeUp) ? wolfMorning : g.phase === "day" && timeUp ? wolfToVote : g.phase === "vote" && (ready || timeUp) ? wolfTally : null;
+    if (!fn) continue;
+    GBUSY.add(g.id);
+    gameStep(g.id, g.step ?? 0, fn).catch((e) => console.warn("game", e)).finally(() => GBUSY.delete(g.id));
+  }
+}
+setInterval(gameAutoTick, 1000);
+
+// ---- 読み上げ（司会の画面を開いている管理者の端末だけ）
+function gameSpeak(text) {
+  if (!GSPEAK.on || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "ja-JP";
+  window.speechSynthesis.speak(u);
+}
+function gameNarrate(g) {
+  const n = g.log?.length ?? 0;
+  const prev = GSPEAK.said.get(g.id);
+  if (prev === undefined) { GSPEAK.said.set(g.id, n); return; }
+  if (n > prev) { for (const l of g.log.slice(prev)) gameSpeak(l.text); GSPEAK.said.set(g.id, n); }
+}
+
+// ---- 表示の部品
+const gTimer = (g) => (g.endsAt ? h("span", { class: "g-timer", "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt)) : null);
+function gTimeText(endsAt) {
+  const s = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  return s ? `残り ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "時間です";
+}
+setInterval(() => { for (const el of document.querySelectorAll("[data-endsat]")) el.textContent = gTimeText(Number(el.dataset.endsat)); }, 500);
+
+function gPhaseText(g) {
+  if (g.phase === "ended") return "ゲーム終了";
+  if (g.kind === "wolf") return g.phase === "night" ? `${g.day}日目の夜` : g.phase === "day" ? `${g.day}日目の昼` : g.actKey?.endsWith("b") ? `${g.day}日目の決選投票` : `${g.day}日目の投票`;
+  if (g.kind === "word") return g.phase === "talk" ? "話し合い" : g.actKey?.endsWith("b") ? "決選投票" : "投票";
+  return "プレイ中";
+}
+function gPrompt(g) {
+  if (g.phase === "ended") return g.result?.text ?? "";
+  if (g.kind === "wolf") {
+    if (g.phase === "night") return `人狼・占い師・騎士は行動を、ほかの人は怪しいと思う人を、自分のスマホで1人選んでください。${g.opts?.firstNightSafe && g.day === 1 ? "今夜は襲撃はありません。" : ""}`;
+    if (g.phase === "day") return "話し合いの時間です。だれが人狼か話し合いましょう。";
+    return g.actKey?.endsWith("b") ? `決選投票です（候補：${gNames(g.candidates)}）。` : "処刑する人を1人選んで投票してください。";
+  }
+  if (g.kind === "word") return g.phase === "talk" ? "お題そのものは言わずに、お題について話しましょう。" : g.actKey?.endsWith("b") ? `決選投票です（候補：${gNames(g.candidates)}）。` : "少数派だと思う人を1人選んで投票してください。";
+  if (g.kind === "ng") return "自分のNGワードを言ったらアウトです。言った人を見つけたら「アウト」を押してください。";
+  return `お題：${g.theme ?? ""}`;
+}
+function gLogList(g, n = 50) {
+  const items = [...(g.log ?? [])].reverse().slice(0, n);
+  return h("ul", { class: "gl-log" }, items.map((l) => h("li", null, l.text, l.detail ? h("small", null, l.detail) : null)));
+}
+function gPlayerChips(g) {
+  const out = g.kind === "ng" ? (u) => !!g.outs?.[u] : g.kind === "wolf" ? (u) => !(g.alive ?? g.players).includes(u) : () => false;
+  return h("div", { class: "gl-chips" }, g.players.map((u) => h("span", { class: `gl-chip${out(u) ? " dead" : ""}` }, memberName(u))));
+}
+// 答え（終わったあとに全員へ公開）
+function gRevealList(g) {
+  if (!g.reveal) return null;
+  const minors = new Set(g.minors ?? []);
+  const order = g.kind === "num" ? [...g.players].sort((a, b) => (g.reveal[a] ?? 0) - (g.reveal[b] ?? 0)) : g.players;
+  return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, g.kind === "wolf" ? "みんなの役職" : g.kind === "num" ? "みんなの数字（小さい順）" : g.kind === "ng" ? "みんなのNGワード" : "みんなのお題"),
+    h("div", { class: "gl-reveal" }, order.map((u) => h("div", { class: `gl-reveal-row${minors.has(u) ? " hl" : ""}` }, h("span", null, memberName(u)), h("b", null, String(g.reveal[u] ?? "?"), minors.has(u) ? "（少数派）" : "")))));
+}
+
+// ---- 参加者の画面（全画面）
+function myGame() {
+  if (S.isAdmin || !S.user) return null;
+  const uid = S.user.uid;
+  return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || Date.now() - (g.no ?? 0) < 6 * 3600000)) ?? null;
+}
+function paintGameLive() {
+  let el = document.querySelector(".game-live");
+  let fab = document.querySelector(".game-fab");
+  const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : null) : myGame();
+  if (!g) { el?.remove(); fab?.remove(); if (S.isAdmin && GV.stage) { GV.stage = null; if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); } return; }
+  if (S.isAdmin) gameNarrate(g);
+  if (!S.isAdmin && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
+    el?.remove();
+    if (gLive(g) && !fab) document.body.append(h("button", { class: "game-fab", onclick: () => { GV.hidden.delete(`${g.id}:false`); paintGameLive(); } }, icon("people"), `${g.title}に戻る`));
+    if (!gLive(g)) fab?.remove();
+    return;
+  }
+  fab?.remove();
+  if (!el) { el = h("div", { class: "game-live", role: "dialog", "aria-label": "ゲーム" }); document.body.append(el); }
+  const scroll = el.scrollTop;
+  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (S.isAdmin) return closeGameStage(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
+  if (S.isAdmin) {
+    // みんなに見せる画面（秘密の内容は出さない）
+    el.className = `game-live stage ph-${g.phase === "vote" ? "vote" : g.phase === "night" ? "night" : g.phase === "ended" ? "ended" : "day"}`;
+    const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : "💬";
+    setKids(el, h("div", { class: "gl-inner st-inner" },
+      h("div", { class: "st-top" }, h("span", { class: "st-title" }, g.title), g.opts?.auto && gLive(g) ? h("span", { class: "st-auto" }, h("span", { class: "live-dot" }), "自動で進行中") : null, close),
+      h("div", { class: "st-phase" }, h("span", { class: "st-icon" }, ic), h("span", null, gPhaseText(g))),
+      g.endsAt && gLive(g) ? h("div", { class: "st-timer", "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt)) : null,
+      h("p", { class: "st-prompt" }, gPrompt(g)),
+      gameStageBody(g)));
+    el.scrollTop = scroll;
+    return;
+  }
+  el.className = "game-live";
+  setKids(el, h("div", { class: "gl-inner" },
+    h("div", { class: "gl-head" }, h("div", { class: "gl-title" }, g.title), close),
+    h("div", { class: "gl-phase" }, gPhaseText(g), " ", gTimer(g)),
+    h("p", { class: "gl-prompt" }, gPrompt(g)),
+    gameMemberBody(g)));
+  el.scrollTop = scroll;
+}
+function gameStageBody(g) {
+  const acted = g.actKey ? g.actors.filter((u) => gAct(g, g.actKey, u)).length : null;
+  const last = (g.log ?? []).at(-1);
+  const fresh = last && GSTAGE.newsKey !== `${g.id}:${last.t}`;
+  if (last) GSTAGE.newsKey = `${g.id}:${last.t}`;
+  const out = g.kind === "ng" ? (u) => !!g.outs?.[u] : g.kind === "wolf" ? (u) => !(g.alive ?? g.players).includes(u) : () => false;
+  return [
+    acted != null ? h("div", { class: "st-progress" }, h("div", { class: "st-bar" }, h("span", { style: `width:${g.actors.length ? (acted / g.actors.length) * 100 : 0}%` })),
+      h("span", null, `選び終わった人 ${acted} / ${g.actors.length}人`)) : null,
+    last ? h("div", { class: `st-news${fresh ? " enter" : ""}` }, last.text) : null,
+    h("div", { class: "st-players" }, g.players.map((u) => h("span", { class: `st-player${out(u) ? " out" : ""}` }, out(u) ? h("i", null, g.kind === "ng" ? "OUT" : "✝") : null, memberName(u)))),
+    gRevealList(g),
+    h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 6)),
+  ];
+}
+function gameMemberBody(g) {
+  const uid = S.user.uid;
+  const sec = gSecret(g, uid);
+  const out = [];
+  // 本人だけの内容（押すまで隠す。周りに見られないように）
+  const shown = GV.show.has(g.id) || g.phase === "ended";
+  const secretBody = () => {
+    if (!sec) return h("p", { class: "cell-sub" }, "読み込み中です…（電波を確認してください）");
+    if (g.kind === "wolf") {
+      const R = WOLF_ROLES[sec.role] ?? WOLF_ROLES.villager;
+      return [h("div", { class: "gl-big" }, R.label), h("p", { class: "gl-desc" }, R.desc),
+        sec.mates?.length ? h("p", { class: "gl-mates" }, "仲間の人狼：", gNames(sec.mates)) : sec.role === "wolf" ? h("p", { class: "gl-mates" }, "仲間の人狼はいません（人狼はあなた1人）") : null,
+        sec.results?.length ? h("ul", { class: "gl-results" }, sec.results.map((r) => h("li", null, r.kind === "medium" ? `処刑された ${memberName(r.target)} は` : `${r.day}日目の夜：${memberName(r.target)} は`, h("b", { class: r.wolf ? "wolf" : "" }, r.wolf ? "人狼" : "人間"), "でした"))) : null];
+    }
+    if (g.kind === "word") return [h("div", { class: "gl-label" }, "あなたのお題"), h("div", { class: "gl-big" }, sec.word), h("p", { class: "gl-desc" }, "自分が少数派かどうかは、自分ではわかりません。")];
+    if (g.kind === "num") return [h("div", { class: "gl-label" }, "あなたの数字（1〜100）"), h("div", { class: "gl-big" }, String(sec.number)), h("p", { class: "gl-desc" }, `お題：${g.theme ?? ""}`)];
+    return null;
+  };
+  if (g.kind !== "ng") {
+    out.push(h("div", { class: `gl-card gl-secret${shown ? "" : " covered"}` },
+      shown ? secretBody() : h("button", { class: "gl-reveal-btn", onclick: () => { GV.show.add(g.id); paintGameLive(); } }, icon("lock"), g.kind === "wolf" ? "押して自分の役職を見る" : g.kind === "num" ? "押して自分の数字を見る" : "押して自分のお題を見る", h("small", null, "周りの人に画面を見られないようにしてください")),
+      shown && g.phase !== "ended" ? h("button", { class: "text-btn gl-hide", onclick: () => { GV.show.delete(g.id); paintGameLive(); } }, "隠す") : null));
+  }
+  // 選ぶ（夜の行動・投票）
+  if (g.actKey && g.actors.includes(uid)) {
+    const mine = gAct(g, g.actKey, uid);
+    let title = "1人を選んでください", cands = g.candidates?.length ? g.candidates : (g.alive ?? g.players);
+    if (g.kind === "wolf" && g.phase === "night") {
+      const role = sec?.role;
+      cands = (g.alive ?? []).filter((u) => u !== uid && !(role === "wolf" && sec?.mates?.includes(u)));
+      title = role === "wolf" ? (g.opts?.firstNightSafe && g.day === 1 ? "今夜は襲撃はありません。形だけ1人選んでください" : "襲う人を選んでください")
+        : role === "seer" ? "占う人を選んでください" : role === "knight" ? "守る人を選んでください" : "怪しいと思う人を選んでください（全員が選びます）";
+    } else { cands = cands.filter((u) => u !== uid); title = g.kind === "wolf" ? "処刑する人に投票" : "少数派だと思う人に投票"; }
+    if (!shown && g.kind === "wolf" && g.phase === "night") title = "1人を選んでください";
+    out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, title),
+      h("div", { class: "gl-choices" }, cands.map((u) => h("button", { class: `gl-choice${mine === u ? " on" : ""}`, onclick: () => gameChoose(g, u) }, mine === u ? icon("check") : null, memberName(u)))),
+      h("p", { class: "cell-sub" }, mine ? `「${memberName(mine)}」を選びました。締め切りまでは選び直せます。` : "まだ選んでいません。")));
+  } else if (g.kind === "wolf" && gLive(g) && !(g.alive ?? []).includes(uid)) {
+    out.push(h("div", { class: "gl-card gl-dead" }, "あなたは死亡しました。これからは話さずに見守ってください。"));
+  }
+  // NGワード：ほかの人のNGワードと「アウト」
+  if (g.kind === "ng") {
+    const others = sec?.others ?? {};
+    out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "みんなのNGワード（自分のは見えません）"),
+      g.players.map((u) => {
+        const isOut = !!g.outs?.[u];
+        const word = u === uid ? (g.phase === "ended" ? g.reveal?.[u] ?? "?" : "？？？") : others[u] ?? "…";
+        return h("div", { class: `g-ng-row${isOut ? " out" : ""}` },
+          h("div", null, h("div", { class: "g-ng-name" }, memberName(u), u === uid ? "（あなた）" : ""), h("div", { class: "g-word" }, word)),
+          gLive(g) && u !== uid ? h("button", { class: `btn-small${isOut ? " ghost-out" : ""}`, onclick: () => ngToggleOut(g, u) }, isOut ? "戻す" : "アウト") : isOut ? h("span", { class: "g-out-tag" }, "アウト") : null);
+      })));
+  }
+  out.push(gRevealList(g));
+  out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "参加者"), gPlayerChips(g)));
+  out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "進行"), gLogList(g)));
+  return out;
+}
+function gameChoose(g, target) {
+  const uid = S.user.uid;
+  fire(setDoc(D("gameActs", `${g.id}_${g.actKey}_${uid}`), { uid, gameId: g.id, key: g.actKey, target, at: serverTimestamp() }));
+}
+function ngToggleOut(g, target) {
+  const outs = { ...(g.outs ?? {}) };
+  if (outs[target]) delete outs[target]; else outs[target] = S.user.uid;
+  fire(updateDoc(D("games", g.id), { outs, uid: S.user.uid, at: serverTimestamp() }));
+}
+
+// ---- クイズ・ゲームの記録（管理者だけが読める playLogs）
+// 終わったときに、その回の内容を1件にまとめて残す。参加者やクイズを消しても記録は残るよう、名前もいっしょに保存する
+function quizArchive(qz, rows, partial) {
+  const L = S.live ?? {};
+  const answers = [...S.quizAnswers.values()].filter((a) => a.quizId === qz.id).map((a) => {
+    const q = qz.questions[a.index];
+    const ok = q ? judged(q, a) : null;
+    return {
+      i: a.index, uid: a.uid, ans: q ? (q.type === "buzz" ? buzzText(a) || "（ボタンを押した）" : answerTextOf(q, a)) : "",
+      c: typeof a.choice === "number" ? a.choice : null, ok: typeof ok === "boolean" ? ok : null, pts: q ? answerPoints(q, a) : 0,
+      ms: Number(a.reactionMs) || null, t: ts(a.at) || null,
+    };
+  });
+  const uids = new Set([...rows.map((r) => r.uid), ...answers.map((a) => a.uid)]);
+  return {
+    kind: "quiz", title: qz.title || "クイズ", quizId: qz.id, run: L.run ?? null, startedAt: L.run ?? null, endedAt: Date.now(), partial: !!partial,
+    names: Object.fromEntries([...uids].map((u) => [u, memberName(u)])),
+    questions: qz.questions.map((q, i) => ({
+      i, type: q.type, text: q.text ?? "", points: Number(q.points ?? 10) || 0, session: sessionAt(L, i)?.name ?? "",
+      choices: q.type === "choice" || q.type === "order" ? (q.choices ?? []).map((c) => c ?? "") : q.type === "vote" ? voteResult(q).texts : [],
+      answer: q.type === "choice" ? `${CHOICE_MARKS[q.answer] ?? ""}：${q.choices?.[q.answer] ?? ""}` : q.type === "order" || q.type === "vote" ? answerLabel(q, revealAnswerOf(q)) : String(q.answer ?? ""),
+      correct: q.type === "choice" && typeof q.answer === "number" ? q.answer : null,
+    })),
+    answers, marks: L.marks ?? [],
+    scores: rows.map(({ uid, score }) => ({ uid, score })),
+    sabo: [...S.quizSabo.values()].filter((x) => x.run === L.run && x.status === "ok").map((x) => ({ by: x.uid, target: x.target ?? null, type: x.type ?? "", i: x.forIndex ?? null })),
+    bets: runBets().filter((x) => x.status !== "pending").map((x) => ({ uid: x.uid, kind: x.kind ?? "", pick: x.pick ?? [], amount: x.amount ?? 0, status: x.status ?? "" })),
+    at: serverTimestamp(),
+  };
+}
+function gameArchive(g) {
+  const secrets = {};
+  for (const u of g.players ?? []) {
+    const s = gSecret(g, u);
+    if (!s) continue;
+    secrets[u] = g.kind === "wolf" ? { role: s.role ?? "villager", results: s.results ?? [] } : g.kind === "word" ? { word: s.word ?? "" } : g.kind === "num" ? { number: s.number ?? 0 } : {};
+  }
+  const acts = [...S.gameActs.values()].filter((a) => a.gameId === g.id).map((a) => ({ key: a.key, uid: a.uid, target: a.target ?? null, t: ts(a.at) || null }));
+  return {
+    kind: "game", game: g.kind, title: g.title, startedAt: g.no ?? null, endedAt: Date.now(), players: g.players ?? [],
+    names: Object.fromEntries((g.players ?? []).map((u) => [u, memberName(u)])), opts: g.opts ?? {}, theme: g.theme ?? null,
+    log: g.log ?? [], result: g.result ?? null, reveal: g.reveal ?? null, minors: g.minors ?? null, outs: g.outs ?? null, secrets, acts,
+    at: serverTimestamp(),
+  };
+}
+// 終わったゲームは自動で記録する（管理者の端末。役職などが届いてから）
+const GARCH = new Set();
+function gameAutoArchive() {
+  if (!S.isAdmin || !S.meta.playLogs || !S.meta.games) return;
+  for (const g of S.games.values()) {
+    if (gLive(g) || GARCH.has(g.id) || S.playLogs.has(`game_${g.id}`)) continue;
+    if ((g.players ?? []).some((u) => !gSecret(g, u))) continue;
+    GARCH.add(g.id);
+    setDoc(D("playLogs", `game_${g.id}`), gameArchive(g)).catch((e) => { console.warn("archive", e); GARCH.delete(g.id); });
+  }
+}
+setInterval(gameAutoArchive, 3000);
+
+// ---- 記録の読み方
+const plName = (P, u) => P.names?.[u] ?? memberName(u);
+const plNames = (P, us) => (us ?? []).map((u) => plName(P, u)).join("・");
+const plKindLabel = (P) => (P.kind === "quiz" ? "クイズ" : GAME_KINDS[P.game]?.label ?? "ゲーム");
+const plWhen = (ms) => { if (!ms) return ""; const d = new Date(ms); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
+const plClock = (ms) => { if (!ms) return "--:--:--"; const d = new Date(ms); return [d.getHours(), d.getMinutes(), d.getSeconds()].map((x) => String(x).padStart(2, "0")).join(":"); };
+const sortedPlayLogs = () => [...S.playLogs.values()].sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
+const plRole = (P, u) => WOLF_ROLES[P.secrets?.[u]?.role]?.label ?? "?";
+// クイズ：問題ごとの累計点
+function plQuizTotals(P) {
+  const uids = Object.keys(P.names ?? {});
+  const run = new Map(uids.map((u) => [u, 0]));
+  return P.questions.map((q) => {
+    for (const a of P.answers.filter((x) => x.i === q.i)) run.set(a.uid, (run.get(a.uid) ?? 0) + (a.pts ?? 0));
+    return new Map(run);
+  });
+}
+function plSummary(P) {
+  if (P.kind === "quiz") {
+    const top = P.scores?.[0];
+    return `${P.questions.length}問・${Object.keys(P.names ?? {}).length}人${top ? `・1位 ${plName(P, top.uid)}（${top.score}点）` : ""}${P.partial ? "・途中で終了" : ""}`;
+  }
+  return `${(P.players ?? []).length}人・${P.result?.text ?? ""}`;
+}
+// 時刻つきの進行（一覧・文字でコピーに使う）
+function plTimeline(P) {
+  if (P.kind !== "quiz") return (P.log ?? []).map((l) => ({ t: l.t, text: l.text, sub: l.detail ?? "" }));
+  const out = [{ t: P.startedAt, text: `クイズ「${P.title}」を始めました（全${P.questions.length}問）` }];
+  const marks = P.marks ?? [];
+  for (const q of P.questions) {
+    const open = marks.find((m) => m.i === q.i && m.k === "open");
+    const rev = marks.find((m) => m.i === q.i && m.k === "reveal");
+    const as = P.answers.filter((a) => a.i === q.i);
+    if (!open && !as.length) continue;
+    const okN = as.filter((a) => a.ok === true).length;
+    const fast = as.filter((a) => a.ok === true && a.ms).sort((a, b) => a.ms - b.ms)[0];
+    out.push({ t: open?.t ?? as[0]?.t ?? null, text: `第${q.i + 1}問（${QTYPE[q.type] ?? ""}・${q.points}点）：${q.text}` });
+    out.push({ t: rev?.t ?? null, text: `正解：${q.answer || "（なし）"}　正解 ${okN}人 / 回答 ${as.length}人${fast ? `　最速 ${plName(P, fast.uid)}（${(fast.ms / 1000).toFixed(2)}秒）` : ""}`,
+      sub: as.map((a) => `${plName(P, a.uid)}：${a.ans}${a.ok === true ? "（○）" : a.ok === false ? "（×）" : ""}${a.pts ? ` ${signed(a.pts)}点` : ""}`).join("\n") });
+  }
+  for (const x of P.sabo ?? []) out.push({ t: marks.find((m) => m.i === x.i && m.k === "open")?.t ?? null, text: `妨害：${plName(P, x.by)} → ${plName(P, x.target)}「${SABO_TYPES[x.type]?.label ?? x.type}」（第${(x.i ?? 0) + 1}問）` });
+  out.push({ t: P.endedAt, text: P.partial ? "途中で終了しました" : `結果発表：${(P.scores ?? []).slice(0, 3).map((r, k) => `${k + 1}位 ${plName(P, r.uid)}（${r.score}点）`).join("・")}` });
+  return out.sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
+}
+const plText = (P) => [`${plKindLabel(P)}「${P.title}」 ${plWhen(P.startedAt)}`, ...plTimeline(P).map((r) => `${plClock(r.t)} ${r.text}${r.sub ? `\n${r.sub.split("\n").map((x) => `　　${x}`).join("\n")}` : ""}`)].join("\n");
+
+// ---- 履歴の画面（管理者の「クイズ・ゲーム」の中）
+const GH = { open: null };
+function historyAdmin() {
+  const el = h("div", { class: "history-admin" });
+  function detail(P) {
+    const copy = h("button", { class: "btn-small" }, icon("copy"), "文字でコピー");
+    copy.addEventListener("click", () => navigator.clipboard?.writeText(plText(P)).then(() => toast("コピーしました"), () => toast("コピーできませんでした", true)));
+    const del = h("button", { class: "text-btn destructive" }, "この記録を削除");
+    del.addEventListener("click", () => { if (confirm(`「${P.title}」の記録を削除しますか？（元に戻せません）`)) guard(del, async () => { await deleteDoc(D("playLogs", P.id)); GH.open = null; toast("削除しました"); }); });
+    let summary;
+    if (P.kind === "quiz") {
+      summary = [
+        group("最終結果", [h("div", { class: "cell hl-rank" }, (P.scores ?? []).map((r, k) => h("div", { class: "hl-rank-row" }, h("span", { class: "hl-no" }, `${k + 1}位`), h("span", null, plName(P, r.uid)), h("b", null, `${r.score}点`))))]),
+        group("問題ごとの結果", P.questions.map((q) => {
+          const as = P.answers.filter((a) => a.i === q.i);
+          const fast = as.filter((a) => a.ok === true && a.ms).sort((a, b) => a.ms - b.ms)[0];
+          return h("div", { class: "cell hl-q" }, h("div", { class: "cell-main" },
+            h("div", { class: "hl-q-title" }, `第${q.i + 1}問　${q.text || "（問題文なし）"}`),
+            h("div", { class: "cell-sub" }, `正解：${q.answer || "（なし）"}　正解 ${as.filter((a) => a.ok === true).length}人 / 回答 ${as.length}人${fast ? `　最速 ${plName(P, fast.uid)}（${(fast.ms / 1000).toFixed(2)}秒）` : ""}`)));
+        })),
+      ];
+    } else {
+      const rows = (P.players ?? []).map((u) => {
+        const v = P.game === "wolf" ? plRole(P, u) : P.game === "word" ? P.secrets?.[u]?.word ?? P.reveal?.[u] ?? "?" : P.game === "num" ? String(P.secrets?.[u]?.number ?? P.reveal?.[u] ?? "?") : String(P.reveal?.[u] ?? "?");
+        return h("div", { class: "hl-rank-row" }, h("span", null, plName(P, u)), h("b", null, v, (P.minors ?? []).includes(u) ? "（少数派）" : ""));
+      });
+      summary = [group("結果", [h("div", { class: "cell" }, h("div", { class: "cell-main" }, h("div", null, P.result?.text ?? ""), P.theme ? h("div", { class: "cell-sub" }, `お題：${P.theme}`) : null)),
+        h("div", { class: "cell hl-rank" }, rows)])];
+    }
+    return h("div", { class: "history-detail" },
+      h("button", { class: "text-btn", onclick: () => { GH.open = null; scheduleRender(); } }, "‹ 履歴の一覧へ"),
+      h("div", { class: "gp-head" }, h("h2", null, P.title), h("span", { class: "gp-phase" }, plKindLabel(P))),
+      h("p", { class: "cell-sub" }, `${plWhen(P.startedAt)} 〜 ${plWhen(P.endedAt)}　${plSummary(P)}`),
+      h("div", { class: "gp-actions" },
+        h("button", { class: "btn-filled", onclick: () => openReplay(P) }, icon("play"), "進行を再生する（動画用）"), copy),
+      ...summary,
+      h("div", { class: "group-header standalone" }, "時刻つきの進行"),
+      h("div", { class: "gl-card" }, h("ul", { class: "hl-timeline" }, plTimeline(P).map((r) => h("li", null, h("time", null, plClock(r.t)), h("span", null, r.text, r.sub ? h("small", null, r.sub) : null))))),
+      h("div", { class: "gp-actions" }, del));
+  }
+  return {
+    el,
+    update() {
+      const P = GH.open ? S.playLogs.get(GH.open) : null;
+      if (GH.open && !P) GH.open = null;
+      if (P) return setKids(el, detail(P));
+      const logs = sortedPlayLogs();
+      setKids(el,
+        h("p", { class: "game-desc" }, "終わったクイズとゲームの記録です。だれが何を答えたか、どう進んだかを時刻つきで確認できます。「進行を再生する」を押すと、動画の撮影に使える全画面の再生画面が開きます。"),
+        logs.length ? group(`記録（${logs.length}件）`, logs.map((x) => h("button", { class: "cell cell-button game-row", onclick: () => { GH.open = x.id; scheduleRender(); } },
+          h("div", { class: "cell-main" }, h("div", null, h("span", { class: "hl-kind" }, plKindLabel(x)), x.title), h("div", { class: "cell-sub" }, `${plWhen(x.endedAt)}　${plSummary(x)}`)), icon("chevron"))))
+          : h("p", { class: "empty-note" }, "まだ記録はありません。クイズの結果発表や、ゲームの終了のときに自動で残ります。"));
+    },
+  };
+}
+
+// ---- 進行の再生（動画用。全画面で1場面ずつ見せる）
+const RP = { el: null, P: null, scenes: [], i: 0, playing: false, timer: null, speed: 1, aspect: "wide", spoil: true, clean: false, keys: null };
+const RP_SPEEDS = [0.5, 1, 1.5, 2];
+function replayScenes(P) {
+  const sc = [];
+  const add = (label, dur, body, cls = "") => sc.push({ label, dur, body, cls });
+  const chip = (u, extra = "", cls = "") => h("span", { class: `rp-chip ${cls}` }, h("b", null, plName(P, u)), extra ? h("small", null, extra) : null);
+  const bars = (rows, max, opt = {}) => h("div", { class: "rp-bars" }, rows.map((r, k) => h("div", { class: `rp-bar${r.hl ? " hl" : ""}`, style: `--d:${0.15 + k * 0.12}s` },
+    h("span", { class: "rp-bar-name" }, r.name), h("span", { class: "rp-bar-track" }, h("span", { class: "rp-bar-fill", style: `--w:${max ? (r.v / max) * 100 : 0}%;--w0:${max && r.v0 != null ? (r.v0 / max) * 100 : 0}%` })),
+    h("b", { class: "rp-bar-v" }, `${r.v}${opt.unit ?? ""}`, r.delta ? h("small", null, ` ${signed(r.delta)}`) : null))));
+  if (P.kind === "quiz") {
+    const totals = plQuizTotals(P);
+    const people = Object.keys(P.names ?? {});
+    add("タイトル", 4, () => h("div", { class: "rp-title-card" }, h("div", { class: "rp-kicker" }, "QUIZ"), h("h1", null, P.title), h("p", null, `全${P.questions.length}問・参加 ${people.length}人`), h("p", { class: "rp-dim" }, plWhen(P.startedAt))));
+    P.questions.forEach((q, n) => {
+      const as = P.answers.filter((a) => a.i === q.i);
+      if (!as.length && !(P.marks ?? []).some((m) => m.i === q.i)) return;
+      const head = h("div", { class: "rp-qhead" }, h("span", { class: "rp-qno" }, `Q${q.i + 1}`), h("span", { class: "rp-tag" }, QTYPE[q.type] ?? ""), h("span", { class: "rp-tag" }, `${q.points}点`), q.session ? h("span", { class: "rp-dim" }, q.session) : null);
+      add(`第${q.i + 1}問`, 5, () => h("div", { class: "rp-q" }, head.cloneNode(true), h("div", { class: "rp-qtext" }, q.text || "（問題文なし）"),
+        q.type === "choice" ? h("div", { class: "rp-choices" }, q.choices.map((c, k) => h("div", { class: "rp-choice", style: `--c:${CHOICE_COLORS[k]};--d:${0.3 + k * 0.15}s` }, h("b", null, CHOICE_MARKS[k]), c)))
+          : q.choices?.length ? h("div", { class: "rp-items" }, q.choices.map((c, k) => h("span", { style: `--d:${0.3 + k * 0.1}s` }, c))) : null));
+      const sorted = [...as].sort((a, b) => (b.ok === true) - (a.ok === true) || (a.ms ?? 9e9) - (b.ms ?? 9e9));
+      const fast = sorted.find((a) => a.ok === true && a.ms);
+      add(`第${q.i + 1}問の答え`, 6, () => h("div", { class: "rp-q" }, head.cloneNode(true),
+        h("div", { class: "rp-answer" }, h("small", null, "正解"), q.answer || "（なし）"),
+        q.type === "choice" ? bars(q.choices.map((c, k) => ({ name: `${CHOICE_MARKS[k]} ${c}`, v: as.filter((a) => a.c === k).length, hl: q.correct === k })), Math.max(1, as.length), { unit: "人" }) : null,
+        h("div", { class: "rp-chips" }, sorted.map((a, k) => h("span", { class: `rp-chip ${a.ok === true ? "ok" : a.ok === false ? "ng" : ""}${a === fast ? " star" : ""}`, style: `--d:${0.4 + k * 0.06}s` },
+          h("i", null, a.ok === true ? "○" : a.ok === false ? "×" : "・"), h("b", null, plName(P, a.uid)), h("small", null, a.ans), a.ms && a.ok === true ? h("em", null, `${(a.ms / 1000).toFixed(1)}秒`) : null))),
+        h("p", { class: "rp-foot" }, `正解 ${as.filter((a) => a.ok === true).length}人 / 回答 ${as.length}人${fast ? `　最速：${plName(P, fast.uid)}（${(fast.ms / 1000).toFixed(2)}秒）` : ""}`)));
+      const now = totals[n], prev = n ? totals[n - 1] : new Map();
+      const rows = [...now].map(([u, v]) => ({ u, v, v0: prev.get(u) ?? 0 })).sort((a, b) => b.v - a.v).slice(0, 10);
+      const max = Math.max(1, ...rows.map((r) => r.v));
+      add(`第${q.i + 1}問のあとの順位`, 5, () => h("div", { class: "rp-q" }, h("div", { class: "rp-sub-title" }, `第${q.i + 1}問までの順位`),
+        bars(rows.map((r) => { const rk = 1 + rows.filter((x) => x.v > r.v).length; return { name: `${rk}. ${plName(P, r.u)}`, v: r.v, v0: r.v0, delta: r.v - r.v0, hl: rk === 1 }; }), max, { unit: "点" })), "rp-grow");
+    });
+    const sc3 = P.scores ?? [];
+    const rkOf = (r) => 1 + sc3.filter((x) => x.score > r.score).length; // 同じ点数は同じ順位
+    add(P.partial ? "途中結果" : "結果発表", 9, () => h("div", { class: "rp-final" }, h("div", { class: "rp-kicker" }, P.partial ? "途中結果" : "RESULT"),
+      h("div", { class: "rp-podium" }, [1, 0, 2].map((k) => sc3[k] ? h("div", { class: `rp-pod p${k + 1}`, style: `--d:${k === 0 ? 1.4 : k === 1 ? 0.8 : 0.3}s` }, h("b", null, plName(P, sc3[k].uid)), h("span", null, `${sc3[k].score}点`), h("div", { class: "rp-pod-base" }, `${rkOf(sc3[k])}`)) : null)),
+      sc3.length > 3 ? h("div", { class: "rp-rest" }, sc3.slice(3, 12).map((r) => h("span", null, `${rkOf(r)}位 ${plName(P, r.uid)} ${r.score}点`))) : null));
+    return sc;
+  }
+  // ゲーム
+  const players = P.players ?? [];
+  const spoil = () => RP.spoil;
+  const secretOf = (u) => (P.game === "wolf" ? plRole(P, u) : P.game === "word" ? P.secrets?.[u]?.word ?? P.reveal?.[u] ?? "" : P.game === "num" ? String(P.secrets?.[u]?.number ?? P.reveal?.[u] ?? "") : P.game === "ng" ? String(P.reveal?.[u] ?? "") : "");
+  const isWolf = (u) => P.secrets?.[u]?.role === "wolf";
+  const grid = (dead, hl = new Set()) => h("div", { class: "rp-chips grid" }, players.map((u, k) => h("span", { class: `rp-chip${dead.has(u) ? " dead" : ""}${hl.has(u) ? " star" : ""}${spoil() && isWolf(u) ? " wolf" : ""}`, style: `--d:${0.2 + k * 0.05}s` },
+    dead.has(u) ? h("i", null, "✝") : null, h("b", null, plName(P, u)), spoil() && secretOf(u) ? h("small", null, secretOf(u)) : null)));
+  const votesOf = (key) => (P.acts ?? []).filter((a) => a.key === key);
+  const kindTitle = GAME_KINDS[P.game]?.label ?? "ゲーム";
+  add("タイトル", 4, () => h("div", { class: "rp-title-card" }, h("div", { class: "rp-kicker" }, "GAME"), h("h1", null, kindTitle), P.theme ? h("p", null, `お題：${P.theme}`) : null,
+    P.game === "wolf" ? h("p", { class: "rp-dim" }, Object.entries(P.opts?.roles ?? {}).filter(([, n]) => n > 0).map(([k, n]) => `${WOLF_ROLES[k]?.label ?? k}${n}`).join("・") + `・村人${Math.max(0, players.length - Object.values(P.opts?.roles ?? {}).reduce((a, b) => a + b, 0))}`) : null,
+    h("p", { class: "rp-dim" }, `${players.length}人・${plWhen(P.startedAt)}`), grid(new Set())));
+  const dead = new Set();
+  for (const l of P.log ?? []) {
+    const ev = l.ev ?? {};
+    const snapDead = new Set(dead);
+    if (ev.type === "night") add(`${ev.day}日目の夜`, 4, () => h("div", { class: "rp-phase-card night" }, h("div", { class: "rp-big-icon" }, "☾"), h("h2", null, `${ev.day}日目の夜`), h("p", null, l.text), grid(snapDead)), "night");
+    else if (ev.type === "morning") {
+      const acts = votesOf(ev.night);
+      const line = (u, t, verb, cls = "", tail = null) => h("div", { class: `rp-act ${cls}` }, h("b", null, plName(P, u)), h("span", null, "が"), h("b", null, plName(P, t)), h("span", null, verb), tail);
+      const safe = P.opts?.firstNightSafe && ev.night === "n1";
+      const wolfActs = acts.filter((a) => isWolf(a.uid) && a.target);
+      const seer = acts.filter((a) => P.secrets?.[a.uid]?.role === "seer" && a.target);
+      const knight = acts.filter((a) => P.secrets?.[a.uid]?.role === "knight" && a.target);
+      if (ev.dead) dead.add(ev.dead);
+      const deadNow = new Set(dead);
+      add(`${ev.day}日目の朝`, 6, () => h("div", { class: "rp-phase-card day" }, h("div", { class: "rp-big-icon" }, "☀"), h("h2", null, `${ev.day}日目の朝`),
+        spoil() && acts.length ? h("div", { class: "rp-acts" }, h("div", { class: "rp-dim" }, "昨夜の行動"),
+          wolfActs.map((a) => line(a.uid, a.target, safe ? "を選んだ（1日目の夜は襲撃なし）" : "を襲撃", "wolf")),
+          seer.map((a) => line(a.uid, a.target, "を占った →", "seer", h("b", { class: isWolf(a.target) ? "is-wolf" : "" }, isWolf(a.target) ? "人狼" : "人間"))),
+          knight.map((a) => line(a.uid, a.target, "を護衛", "knight"))) : null,
+        h("div", { class: "rp-news" }, ev.dead ? `${plName(P, ev.dead)}さんが犠牲になりました` : "犠牲者はいませんでした"), grid(deadNow, new Set(ev.dead ? [ev.dead] : []))), "day");
+    } else if (ev.type === "day" || ev.type === "talk") add("話し合い", 3, () => h("div", { class: "rp-phase-card day" }, h("div", { class: "rp-big-icon" }, "💬"), h("h2", null, "話し合い"), h("p", null, l.text), grid(snapDead)));
+    else if (ev.type === "vote") add("投票", 3, () => h("div", { class: "rp-phase-card vote" }, h("div", { class: "rp-big-icon" }, "✋"), h("h2", null, "投票"), h("p", null, l.text)));
+    else if (ev.type === "tally") {
+      const vs = votesOf(ev.key);
+      const cnt = new Map();
+      for (const v of vs) if (v.target && v.target !== v.uid) cnt.set(v.target, (cnt.get(v.target) ?? 0) + 1);
+      const cands = ev.cands?.length ? ev.cands : [...cnt.keys()];
+      const rows = cands.map((u) => ({ name: plName(P, u), v: cnt.get(u) ?? 0 })).sort((a, b) => b.v - a.v);
+      const max = Math.max(1, ...rows.map((r) => r.v));
+      rows.forEach((r) => { r.hl = r.v === max; });
+      add("開票", 7, () => h("div", { class: "rp-q" }, h("div", { class: "rp-sub-title" }, ev.key?.endsWith("b") ? "決選投票の開票" : "開票"), bars(rows, max, { unit: "票" }),
+        h("div", { class: "rp-arrows" }, vs.map((v, k) => h("span", { style: `--d:${0.8 + k * 0.08}s` }, `${plName(P, v.uid)} → ${v.target ? plName(P, v.target) : "なし"}`)))), "rp-grow");
+    } else if (ev.type === "runoff") add("決選投票", 3, () => h("div", { class: "rp-phase-card vote" }, h("h2", null, "決選投票"), h("p", null, `候補：${plNames(P, ev.cands)}`)));
+    else if (ev.type === "lottery") add("くじ", 3, () => h("div", { class: "rp-phase-card vote" }, h("div", { class: "rp-big-icon" }, "🎲"), h("h2", null, "くじで決定"), h("p", null, l.text)));
+    else if (ev.type === "exec") {
+      dead.add(ev.uid);
+      const deadNow = new Set(dead);
+      add("処刑", 5, () => h("div", { class: "rp-phase-card vote" }, h("div", { class: "rp-news" }, `${plName(P, ev.uid)}さんが処刑されました`),
+        spoil() || P.opts?.revealOnDeath ? h("p", { class: `rp-reveal-role${isWolf(ev.uid) ? " wolf" : ""}` }, `正体：${plRole(P, ev.uid)}`) : null, grid(deadNow, new Set([ev.uid]))));
+    } else if (ev.type === "end") {
+      const win = P.result?.winner;
+      add("結果", 9, () => h("div", { class: `rp-final ${win ?? ""}` }, h("div", { class: "rp-kicker" }, "RESULT"),
+        h("div", { class: "rp-win" }, win === "village" ? "村人陣営の勝ち" : win === "wolf" ? "人狼陣営の勝ち" : win === "major" ? "多数派の勝ち" : win === "minor" ? "少数派の勝ち" : P.game === "num" ? "答え合わせ" : "ゲーム終了"),
+        h("p", null, P.result?.text ?? ""),
+        P.game === "word" ? h("p", { class: "rp-dim" }, `多数派のお題「${players.filter((u) => !(P.minors ?? []).includes(u)).map((u) => P.secrets?.[u]?.word)[0] ?? "?"}」／少数派のお題「${(P.minors ?? []).map((u) => P.secrets?.[u]?.word)[0] ?? "?"}」（${plNames(P, P.minors)}）`) : null,
+        P.game === "num" ? numLine() : h("div", { class: "rp-chips grid" }, players.map((u, k) => h("span", { class: `rp-chip${isWolf(u) || (P.minors ?? []).includes(u) ? " wolf" : ""}${P.outs?.[u] ? " dead" : ""}`, style: `--d:${0.6 + k * 0.08}s` },
+          h("b", null, plName(P, u)), h("small", null, secretOf(u)), P.game === "ng" ? h("em", null, P.outs?.[u] ? "アウト" : "セーフ") : null)))));
+    } else add("進行", 4, () => h("div", { class: "rp-phase-card" }, h("p", { class: "rp-news" }, l.text)));
+  }
+  function numLine() {
+    const nums = players.map((u) => [u, Number(P.secrets?.[u]?.number ?? P.reveal?.[u] ?? 0)]).sort((a, b) => a[1] - b[1]);
+    return h("div", { class: "rp-numline" }, h("div", { class: "rp-numaxis" }, h("span", null, "1"), h("span", null, "100")),
+      nums.map(([u, n], k) => h("div", { class: "rp-num", style: `--x:${n}%;--d:${0.5 + k * 0.25}s;--row:${k % 3}` }, h("b", null, n), h("span", null, plName(P, u)))));
+  }
+  return sc;
+}
+function openReplay(P) {
+  closeReplay();
+  RP.P = P; RP.i = 0; RP.playing = false; RP.clean = false;
+  RP.el = h("div", { class: "rp", role: "dialog", "aria-label": "進行の再生" });
+  document.body.append(RP.el);
+  RP.keys = (e) => {
+    if (!RP.el) return;
+    if (e.key === "Escape") { if (RP.clean) { RP.clean = false; paintReplay(); } else closeReplay(); }
+    else if (e.key === "ArrowRight") replayGo(RP.i + 1);
+    else if (e.key === "ArrowLeft") replayGo(RP.i - 1);
+    else if (e.key === " ") { e.preventDefault(); replayToggle(); }
+    else if (e.key === "h" || e.key === "H") { RP.clean = !RP.clean; paintReplay(); }
+    else if (e.key === "f" || e.key === "F") replayFull();
+  };
+  document.addEventListener("keydown", RP.keys);
+  RP.scenes = replayScenes(P);
+  paintReplay();
+}
+function closeReplay() {
+  clearTimeout(RP.timer);
+  if (RP.keys) document.removeEventListener("keydown", RP.keys);
+  if (document.fullscreenElement && RP.el?.contains(document.fullscreenElement)) document.exitFullscreen?.().catch(() => {});
+  RP.el?.remove();
+  RP.el = null; RP.playing = false;
+}
+const replayFull = () => { if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); else RP.el?.requestFullscreen?.().catch(() => toast("この端末では全画面にできません", true)); };
+function replayGo(i, keepPlaying = false) {
+  const n = RP.scenes.length;
+  RP.i = Math.max(0, Math.min(n - 1, i));
+  if (!keepPlaying) { RP.playing = RP.playing && RP.i < n - 1; }
+  paintReplay();
+}
+function replayToggle() {
+  if (!RP.playing && RP.i >= RP.scenes.length - 1) RP.i = 0;
+  RP.playing = !RP.playing;
+  paintReplay();
+}
+function replaySchedule() {
+  clearTimeout(RP.timer);
+  if (!RP.playing) return;
+  const s = RP.scenes[RP.i];
+  RP.timer = setTimeout(() => {
+    if (RP.i >= RP.scenes.length - 1) { RP.playing = false; paintReplay(); return; }
+    replayGo(RP.i + 1, true);
+  }, ((s?.dur ?? 4) * 1000) / RP.speed);
+}
+function paintReplay() {
+  if (!RP.el) return;
+  const P = RP.P, s = RP.scenes[RP.i], n = RP.scenes.length;
+  RP.el.className = `rp${RP.clean ? " clean" : ""}${RP.aspect === "tall" ? " tall" : RP.aspect === "fill" ? " fill" : ""}`;
+  const ctl = (label, fn, ic, extra = {}) => h("button", { type: "button", class: "rp-btn", "aria-label": label, title: label, onclick: fn, ...extra }, ic);
+  const sel = (label, opts, val, onset) => {
+    const x = h("select", { class: "rp-sel", "aria-label": label }, opts.map(([v, t]) => h("option", { value: String(v), selected: String(v) === String(val) }, t)));
+    x.addEventListener("change", () => onset(x.value));
+    return x;
+  };
+  const frame = h("div", { class: `rp-frame ${s?.cls ?? ""}` },
+    h("div", { class: "rp-top" }, h("span", null, P.title === plKindLabel(P) ? P.title : `${plKindLabel(P)}「${P.title}」`), h("span", null, s?.label ?? "")),
+    h("div", { class: "rp-scene" }, s ? s.body() : null),
+    h("div", { class: "rp-progress" }, h("span", { style: `width:${n > 1 ? (RP.i / (n - 1)) * 100 : 100}%` })));
+  const controls = h("div", { class: "rp-ctrl" },
+    h("div", { class: "rp-ctrl-row" },
+      ctl("最初へ", () => replayGo(0), "⏮"), ctl("前へ", () => replayGo(RP.i - 1), "◀"),
+      ctl(RP.playing ? "一時停止" : "再生", replayToggle, RP.playing ? "❚❚" : "▶", { class: "rp-btn main" }),
+      ctl("次へ", () => replayGo(RP.i + 1), "▶▶"),
+      h("span", { class: "rp-count" }, `${RP.i + 1} / ${n}`)),
+    h("div", { class: "rp-ctrl-row" },
+      sel("速さ", RP_SPEEDS.map((x) => [x, `速さ ${x}倍`]), RP.speed, (v) => { RP.speed = Number(v); paintReplay(); }),
+      sel("画面の形", [["wide", "横長 16:9"], ["tall", "縦長 9:16"], ["fill", "画面いっぱい"]], RP.aspect, (v) => { RP.aspect = v; paintReplay(); }),
+      P.kind === "game" ? h("label", { class: "rp-check" }, (() => { const c = h("input", { type: "checkbox" }); c.checked = RP.spoil; c.addEventListener("change", () => { RP.spoil = c.checked; RP.scenes = replayScenes(P); paintReplay(); }); return c; })(), "役職・お題を最初から見せる") : null,
+      h("button", { type: "button", class: "rp-text", onclick: () => { RP.clean = true; paintReplay(); toast("ボタンを隠しました。画面をタップするか H キーで戻せます"); } }, "ボタンを隠す（録画用）"),
+      h("button", { type: "button", class: "rp-text", onclick: replayFull }, "全画面"),
+      h("button", { type: "button", class: "rp-text", onclick: closeReplay }, "閉じる")));
+  RP.el.onclick = (e) => { if (RP.clean && !e.target.closest(".rp-ctrl")) { RP.clean = false; paintReplay(); } };
+  setKids(RP.el, frame, controls);
+  // 帯グラフは、前の長さから新しい長さへ伸ばす
+  requestAnimationFrame(() => requestAnimationFrame(() => RP.el?.querySelectorAll(".rp-bar-fill").forEach((b) => b.classList.add("go"))));
+  replaySchedule();
+}
+
+// ---- みんなに見せる画面（自動の司会。プロジェクターやテレビに映す）
+const GSTAGE = { lock: null, newsKey: null };
+async function openGameStage(g) {
+  GV.stage = g.id;
+  GSPEAK.on = true;
+  gameSpeak("");
+  paintGameLive();
+  const el = document.querySelector(".game-live");
+  try { await el?.requestFullscreen?.(); } catch { /* 全画面にできない端末では、そのまま画面いっぱいに出す */ }
+  try { GSTAGE.lock = await navigator.wakeLock?.request("screen"); } catch { GSTAGE.lock = null; }
+}
+function closeGameStage() {
+  GV.stage = null;
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  GSTAGE.lock?.release?.().catch?.(() => {});
+  GSTAGE.lock = null;
+  paintGameLive();
+}
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && GV.stage && !GSTAGE.lock) { try { GSTAGE.lock = await navigator.wakeLock?.request("screen"); } catch { /* 画面を消さない設定ができない端末 */ } }
+});
+
+// ---- 管理者の画面（「クイズ・ゲーム」の中の「ゲーム」）
+function quizAndGames(opts = {}) {
+  const quiz = quizManager(opts);
+  const games = gamesAdmin();
+  const hist = historyAdmin();
+  const seg = segmented([{ value: "quiz", label: "クイズ" }, { value: "game", label: "ゲーム" }, { value: "log", label: "履歴" }], GA.tab);
+  const el = h("div", null, h("div", { class: "seg-wrap qg-seg" }, seg), quiz.el, games.el, hist.el);
+  const view = {
+    el,
+    update() {
+      quiz.el.hidden = seg.value !== "quiz";
+      games.el.hidden = seg.value !== "game";
+      hist.el.hidden = seg.value !== "log";
+      if (seg.value === "quiz") quiz.update(); else if (seg.value === "game") games.update(); else hist.update();
+    },
+    destroy() { quiz.destroy?.(); games.destroy?.(); },
+  };
+  seg.addEventListener("change", () => { GA.tab = seg.value; view.update(); });
+  return view;
+}
+
+function gamesAdmin() {
+  const kind = segmented(Object.entries(GAME_KINDS).map(([value, k]) => ({ value, label: k.label })), GA.kind);
+  const desc = h("p", { class: "game-desc" });
+  const players = memberChecks([]);
+  let inited = false;
+  // 人狼の設定
+  let roles = null; // null＝人数に合わせておまかせ
+  const roleBox = h("div", { class: "game-roles" });
+  const firstSafe = toggle(true), revealDeath = toggle(false), auto = toggle(true);
+  const mins = (n, sel, unit = "分") => h("select", { class: "inline-select" }, n.map((x) => h("option", { value: String(x), selected: x === sel }, `${x}${unit}`)));
+  const talk = mins([1, 2, 3, 4, 5, 7, 10, 15], 3);
+  const nightSec = mins([20, 30, 45, 60, 90, 120], 60, "秒"), voteSec = mins([20, 30, 45, 60, 90, 120], 60, "秒");
+  const autoNote = h("div", { class: "group-footer" }, "オンにすると、全員が選び終わるか時間切れになったときに、朝・投票・開票へ自動で進みます。この画面を開いている管理者の端末が司会を務めます（閉じると止まり、開き直すと続きから進みます）。オフの場合は、管理者がボタンを押して進めます。");
+  const wolfOpts = h("div", null,
+    group("役職（人数に合わせて自動で決まります。変更もできます）", [h("div", { class: "cell" }, roleBox)]),
+    group("ルール", [field("司会を自動で進行する", auto), field("1日目の夜は襲撃しない", firstSafe), field("死亡した人の役職を公開する", revealDeath),
+      field("話し合いの時間", talk), field("夜の時間", nightSec), field("投票の時間", voteSec)]), autoNote);
+  // ワード人狼
+  const minority = mins([1, 2, 3], 1, "人");
+  const wordA = h("input", { type: "text", class: "plain", maxlength: "30", placeholder: "お題1（空欄の場合は自動で選びます）" });
+  const wordB = h("input", { type: "text", class: "plain", maxlength: "30", placeholder: "お題2（例：そば）" });
+  const wordTalk = mins([1, 2, 3, 4, 5, 7, 10], 3);
+  const wordOpts = group("設定", [field("少数派の人数", minority), field("話し合いの時間", wordTalk), h("div", { class: "cell" }, wordA), h("div", { class: "cell" }, wordB)],
+    "お題は似ている2つの言葉です。どちらが少数派になるかはくじで決まります。空欄の場合は、用意した40組の中から自動で選びます。");
+  // NGワード
+  const ngList = h("textarea", { class: "plain", rows: "3", maxlength: "2000", placeholder: "使いたいNGワード（1行に1つ。空欄や足りない分は自動で選びます）" });
+  const ngOpts = group("設定", [h("div", { class: "cell" }, ngList)], "NGワードには、ふだんの会話でうっかり言いそうな言葉がおすすめです（例：すごい、なんで、えー）。");
+  // 数字ならべ
+  const theme = h("input", { type: "text", class: "plain", maxlength: "80", placeholder: "お題（空欄の場合は自動で選びます。例：人気の食べ物）" });
+  const numOpts = group("設定", [h("div", { class: "cell" }, theme)], "1〜100の数字を、重ならないように1人に1つずつ配ります。");
+  const err = h("p", { class: "game-err" });
+  const start = h("button", { class: "btn-filled" }, icon("play"), "配って始める");
+  const setup = h("div", { class: "game-setup" },
+    h("div", { class: "group-header standalone" }, "新しいゲーム"), h("div", { class: "seg-wrap" }, kind), desc,
+    group("遊ぶ人", [h("div", { class: "cell" }, players.el)]),
+    wolfOpts, wordOpts, ngOpts, numOpts, err, start);
+  const list = h("div");
+  const panel = h("div");
+  const el = h("div", { class: "games-admin" }, panel, list, setup);
+
+  const chosen = () => players.value().filter((u) => S.members.has(u));
+  function paintOpts() {
+    const k = kind.value;
+    GA.kind = k;
+    desc.textContent = GAME_KINDS[k].desc;
+    wolfOpts.hidden = k !== "wolf"; wordOpts.hidden = k !== "word"; ngOpts.hidden = k !== "ng"; numOpts.hidden = k !== "num";
+    nightSec.closest(".cell").hidden = voteSec.closest(".cell").hidden = !auto.checked;
+    const n = chosen().length;
+    const r = roles ?? wolfPreset(n);
+    setKids(roleBox, [...WOLF_SPECIAL.map((rk) => h("div", { class: "role-row" }, h("span", null, WOLF_ROLES[rk].label),
+      h("span", { class: "role-step" },
+        h("button", { type: "button", class: "step-btn", "aria-label": `${WOLF_ROLES[rk].label}を減らす`, onclick: () => { roles = { ...r, [rk]: Math.max(0, (r[rk] ?? 0) - 1) }; paintOpts(); } }, "−"),
+        h("b", null, String(r[rk] ?? 0)),
+        h("button", { type: "button", class: "step-btn", "aria-label": `${WOLF_ROLES[rk].label}を増やす`, onclick: () => { roles = { ...r, [rk]: (r[rk] ?? 0) + 1 }; paintOpts(); } }, "＋")))),
+      h("div", { class: "role-row" }, h("span", null, "村人"), h("b", { class: "role-vill" }, String(Math.max(0, wolfVillagers(n, r))))),
+      roles ? h("button", { type: "button", class: "text-btn", onclick: () => { roles = null; paintOpts(); } }, "人数に合わせた数に戻す") : null]);
+    const e = k === "wolf" ? wolfRolesError(n, r) : n < GAME_KINDS[k].min ? `${GAME_KINDS[k].label}は${GAME_KINDS[k].min}人以上で遊べます（いま ${n}人）`
+      : k === "word" && Number(minority.value) * 2 >= n ? "少数派は、遊ぶ人の半分より少なくしてください"
+        : k === "word" && (!!wordA.value.trim() !== !!wordB.value.trim() || (wordA.value.trim() && wordA.value.trim() === wordB.value.trim())) ? "お題は2つとも（違う言葉で）入れるか、2つとも空欄にしてください" : null;
+    err.textContent = e ?? `${n}人で遊びます。`;
+    err.classList.toggle("bad", !!e);
+    start.disabled = !!e;
+  }
+  kind.addEventListener("change", paintOpts);
+  for (const x of [auto, minority, wordA, wordB]) x.addEventListener("input", paintOpts);
+  auto.addEventListener("change", paintOpts);
+  players.el.addEventListener("change", paintOpts);
+  players.el.addEventListener("click", () => setTimeout(paintOpts, 0));
+  start.addEventListener("click", () => guard(start, async () => {
+    const k = kind.value, ps = chosen();
+    const n = ps.length;
+    let o;
+    if (k === "wolf") o = { roles: roles ?? wolfPreset(n), auto: auto.checked, firstNightSafe: firstSafe.checked, revealOnDeath: revealDeath.checked, talkMin: Number(talk.value), nightSec: auto.checked ? Number(nightSec.value) : 600, voteSec: auto.checked ? Number(voteSec.value) : 600 };
+    else if (k === "word") o = { minority: Number(minority.value), talkMin: Number(wordTalk.value), pair: wordA.value.trim() ? [wordA.value.trim(), wordB.value.trim()] : null };
+    else if (k === "ng") o = { words: [...new Set(ngList.value.split(/\r?\n/).map((x) => x.trim().slice(0, 30)).filter(Boolean))] };
+    else o = { theme: theme.value.trim() };
+    if (!confirm(`${GAME_KINDS[k].label}を ${n}人で始めます。遊ぶ人のスマホに${k === "wolf" ? "役職" : k === "num" ? "数字" : k === "ng" ? "NGワード" : "お題"}が届きます。よろしいですか？`)) return;
+    // 読み上げは、ボタンを押した流れで一度鳴らしておかないと、iPhone などでは鳴らない
+    if (k === "wolf" && o.auto) { GSPEAK.on = true; }
+    const gid = await startGame(k, ps, o);
+    if (k === "wolf" && o.auto) { GSPEAK.said.set(gid, 0); gameSpeak("ゲームを始めます。"); }
+    GA.open = gid;
+    roles = null; wordA.value = wordB.value = ""; ngList.value = ""; theme.value = "";
+    toast("配りました");
+    scheduleRender();
+  }));
+
+  function gamePanel(g) {
+    const acted = g.actKey ? g.actors.filter((u) => gAct(g, g.actKey, u)) : [];
+    const waiting = g.actKey ? g.actors.filter((u) => !gAct(g, g.actKey, u)) : [];
+    const btn = (label, fn, cls = "btn-filled") => { const b = h("button", { class: cls }, label); b.addEventListener("click", () => gameGo(g, fn, b)); return b; };
+    let next = null;
+    if (g.kind === "wolf") next = g.phase === "night" ? btn("朝にする（夜の結果を出す）", wolfMorning) : g.phase === "day" ? btn("話し合いを終えて投票へ", wolfToVote) : g.phase === "vote" ? btn("開票する", wolfTally) : null;
+    else if (g.kind === "word") next = g.phase === "talk" ? btn("話し合いを終えて投票へ", wordToVote) : g.phase === "vote" ? btn("開票する", wordTally) : null;
+    else if (gLive(g)) next = btn("終了して答え合わせ", g.kind === "ng" ? ngEnd : numEnd);
+    const ans = (u) => {
+      const s = gSecret(g, u);
+      if (!s) return "…";
+      if (g.kind === "wolf") return WOLF_ROLES[s.role]?.label ?? "?";
+      if (g.kind === "word") return s.word;
+      if (g.kind === "num") return String(s.number);
+      const other = g.players.find((x) => x !== u);
+      return (other && gSecret(g, other)?.others?.[u]) ?? "…";
+    };
+    const dead = (u) => (g.kind === "wolf" && !(g.alive ?? g.players).includes(u)) || (g.kind === "ng" && !!g.outs?.[u]);
+    if (gLive(g)) gameNarrate(g);
+    return h("div", { class: "game-panel" },
+      h("button", { class: "text-btn", onclick: () => { GA.open = null; scheduleRender(); } }, "‹ ゲームの一覧へ"),
+      h("div", { class: "gp-head" }, h("h2", null, g.title), h("span", { class: `gp-phase${gLive(g) ? " live" : ""}` }, gPhaseText(g)), gTimer(g)),
+      h("p", { class: "gl-prompt" }, gPrompt(g)),
+      g.kind === "wolf" && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。この画面を開いたままにしてください（閉じると進行が止まります）。") : null,
+      g.actKey ? h("div", { class: "gp-progress" }, `選び終わった人 ${acted.length} / ${g.actors.length}人`, waiting.length ? h("small", null, `まだ：${gNames(waiting)}`) : null) : null,
+      h("div", { class: "gp-actions" }, next,
+        h("button", { class: "btn-small", onclick: () => openGameStage(g) }, icon("arrows"), "みんなに見せる画面（全画面）"),
+        h("button", { class: `btn-small${GSPEAK.on ? " on" : ""}`, onclick: () => { GSPEAK.on = !GSPEAK.on; if (GSPEAK.on) gameSpeak("読み上げをオンにしました"); else window.speechSynthesis?.cancel(); scheduleRender(); } }, GSPEAK.on ? "読み上げ：オン" : "読み上げ：オフ")),
+      gRevealList(g),
+      group(null, [
+        h("button", { class: "cell cell-button", onclick: () => { GA.showAns = !GA.showAns; scheduleRender(); } }, icon("lock"), GA.showAns ? "答えを隠す" : `答えを見る（${g.kind === "wolf" ? "役職" : g.kind === "num" ? "数字" : g.kind === "ng" ? "NGワード" : "お題"}を表示。司会用）`),
+        GA.showAns ? h("div", { class: "cell gp-answers" }, g.players.map((u) => h("div", { class: `gp-ans${dead(u) ? " dead" : ""}` }, h("span", null, memberName(u)), h("b", null, ans(u)),
+          g.actKey && gAct(g, g.actKey, u) ? h("small", null, `→ ${memberName(gAct(g, g.actKey, u))}`) : null))) : null,
+      ], "画面をほかの人に見られないように注意してください。"),
+      h("div", { class: "group-header standalone" }, "進行"), h("div", { class: "gl-card" }, gLogList(g)),
+      h("div", { class: "gp-actions" },
+        gLive(g) ? (() => { const b = h("button", { class: "text-btn destructive" }, "ゲームを終える（答えを公開）"); b.addEventListener("click", () => { if (confirm("ゲームを終えて、全員に答えを公開しますか？")) gameGo(g, gameForceEnd, b); }); return b; })() : null,
+        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${g.title}」を削除しますか？（記録も消えます）`)) guard(null, async () => { await deleteGame(g); GA.open = null; toast("削除しました"); }); } }, "削除")));
+  }
+
+  return {
+    el,
+    update() {
+      const ms = sortedMembers();
+      if (!inited && ms.length) { players.set(ms.map((m) => m.id)); inited = true; }
+      if (!el.contains(document.activeElement) || !setup.contains(document.activeElement)) players.refresh();
+      paintOpts();
+      const open = GA.open ? S.games.get(GA.open) : null;
+      if (GA.open && !open && !S.meta.games?.pending) GA.open = null;
+      setKids(panel, open ? gamePanel(open) : null);
+      list.hidden = setup.hidden = !!open;
+      if (open) return;
+      const gs = sortedGames();
+      const live = gs.filter(gLive), done = gs.filter((g) => !gLive(g));
+      const card = (g) => h("button", { class: "cell cell-button game-row", onclick: () => { GA.open = g.id; GA.showAns = false; scheduleRender(); } },
+        h("div", { class: "cell-main" }, h("b", null, g.title), h("div", { class: "cell-sub" }, `${gPhaseText(g)} ・ ${g.players.length}人${g.opts?.auto && gLive(g) ? " ・ 自動の司会" : ""}`)), icon("chevron"));
+      setKids(list,
+        live.length ? group("進行中のゲーム", live.map(card)) : null,
+        done.length ? h("details", { class: "fold" }, h("summary", null, h("span", null, `終わったゲーム（${done.length}）`), icon("chevron")), group(null, done.map(card))) : null);
+    },
+  };
+}
+
+// ---------------------------------------------------------------- 開発者向けページ（admin1 だけ）
+// ルールテストの結果（tests/rules-result.json。テストを実行すると書き出される）、アプリの構成、データとアクセス権を見る
+const DEV_ACCESS = [
+  // [コレクション, 内容, 参加者が読めるもの, 参加者が書けるもの]
+  ["config", "旅行の設定（表示する機能・日程など）", "全員", "—"],
+  ["members", "参加者の名前・ログインID", "全員", "—"],
+  ["announcements / annPrivate", "お知らせ／人ごとに送った内容（暗証番号など）", "全員／本人の分だけ", "—"],
+  ["acks", "お知らせの「見ました」", "本人の分だけ", "本人の分（時刻はサーバーの時刻だけ）"],
+  ["teamSets / teams / memberships", "チーム表", "発表したものだけ", "—"],
+  ["allocs", "部屋割り・車割り", "発表したものだけ", "—"],
+  ["pointLogs / stats / ptQrs / ptClaims", "ポイントの履歴・合計・QR", "履歴と合計は全員／QR は1件ずつ", "QR の読み取り（本人の分）"],
+  ["polls / votes / pollRequests", "アンケート・回答・選択肢の追加申請", "全員／申請は本人の分", "自分の回答・申請"],
+  ["payments / payReports / expenses", "集金・送金の報告・立て替え", "全員／報告は本人の分", "自分の報告・自分が払った立て替え"],
+  ["checklists / checks", "チェックリスト", "全員／チェックは本人と共有の分", "自分のチェック・共有の項目"],
+  ["messages / dms / chatImages", "チャット・DM・画像", "全体と自分のチーム／DM は当人だけ／画像は1件ずつ", "投稿（自分が入っている場所だけ）"],
+  ["locGroups / locations / mapPins", "地図の位置共有", "全員", "自分の位置"],
+  ["files / fileChunks", "資料", "全員", "—"],
+  ["videos / archives / notes", "動画・アーカイブ・メモ", "公開・共有したものだけ", "—"],
+  ["quizzes", "クイズの問題と正解", "読めない", "—"],
+  ["live / quizAnswers / quizSabo / quizBets", "進行中のクイズ・解答・妨害・賭け", "全員", "自分の解答（受付中だけ）・妨害と賭けの申し込み"],
+  ["games", "ゲーム（人狼など）の進行", "全員", "NGワードの「アウト」だけ（遊んでいる人）"],
+  ["gameSecrets / gameActs", "配った役職・お題／夜の行動・投票", "本人の分だけ", "自分の行動・投票（受付中の回だけ）"],
+  ["playLogs", "終わったクイズ・ゲームの記録（役職や全員の回答を含む）", "読めない", "—"],
+  ["boards / matches", "作戦ボード・試合の記録（フットサル）", "公開したものだけ", "許可・指名されたときだけ"],
+  ["personFields / personInfo", "参加者の情報（住所・大学など）", "読めない（本人の分も）", "—"],
+  ["pushSubs / pwChanged", "通知の宛先・パスワード変更の記録", "本人の分だけ", "自分の分"],
+  ["accounts", "アカウントの一覧（旅行をまたいで使う）", "読めない", "—"],
+];
+const DEV_FILES = [
+  ["index.html", "入口のページ。app.js と style.css を読み込みます。"],
+  ["app.js", "アプリの本体（画面・データの読み書き・クイズ・ゲームなど）。1つのファイルにまとめています。"],
+  ["style.css", "見た目（黒基調・薄紫のデザイン、スマホと PC のレイアウト、印刷）。"],
+  ["config.js", "Firebase の接続先、管理者のID、アプリ名などの設定。"],
+  ["sw.js", "Service Worker。オフラインでも開けるように保存し、プッシュ通知を受け取ります。"],
+  ["firestore.rules", "データベースのアクセスのルール。Firebase のコンソールに貼り付けて使います。"],
+  ["tests/rules.test.mjs", "ルールのテスト。エミュレーターで実行し、結果を tests/rules-result.json に書き出します。"],
+  ["push-worker/worker.js", "プッシュ通知を送る Cloudflare Worker。秘密鍵は Worker のシークレットにだけ置きます。"],
+];
+const DEV = { tab: "tests", result: null, sections: null, loading: false };
+function devDiagram() {
+  const box = (x, y, w, hh, title, sub, cls = "") => `<g class="dv-box ${cls}"><rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="12"/><text x="${x + w / 2}" y="${y + 26}" class="dv-t">${title}</text>${sub.map((s, i) => `<text x="${x + w / 2}" y="${y + 48 + i * 18}" class="dv-s">${s}</text>`).join("")}</g>`;
+  const arrow = (x1, y1, x2, y2, label, lx, ly) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="dv-line" marker-end="url(#dv-arrow)"/>${label ? `<text x="${lx}" y="${ly}" class="dv-l">${label}</text>` : ""}`;
+  const svg = `<svg viewBox="0 0 720 400" role="img" aria-label="アプリの構成図" class="dv-svg">
+    <defs><marker id="dv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="dv-head"/></marker></defs>
+    ${box(20, 20, 200, 110, "GitHub Pages", ["index.html・app.js", "style.css・sw.js"])}
+    ${box(20, 250, 200, 120, "参加者・管理者の端末", ["ブラウザ／ホーム画面の", "アプリ（PWA）"], "accent")}
+    ${box(260, 250, 200, 120, "Firebase", ["Authentication（ログイン）", "Firestore（データ）", "firestore.rules で制限"])}
+    ${box(500, 20, 200, 110, "Cloudflare Worker", ["push-worker", "通知を送る（秘密鍵は", "シークレットに保管）"])}
+    ${box(500, 250, 200, 120, "Web Push", ["Apple・Google の", "通知サービス"])}
+    ${arrow(120, 130, 120, 246, "ページを読み込む", 128, 195)}
+    ${arrow(224, 300, 256, 300, "", 0, 0)}${arrow(256, 320, 224, 320, "", 0, 0)}
+    <text x="240" y="290" class="dv-l c">読み書き</text>
+    ${arrow(220, 75, 496, 75, "管理者の端末から通知を依頼", 358, 66)}
+    ${arrow(600, 130, 600, 246, "通知", 610, 195)}
+    ${arrow(496, 340, 224, 362, "", 0, 0)}<text x="360" y="392" class="dv-l c">端末に通知が届く</text>
+  </svg>`;
+  const wrap = h("div", { class: "dv-diagram" });
+  wrap.innerHTML = svg;
+  return wrap;
+}
+async function devLoad() {
+  if (DEV.loading) return;
+  DEV.loading = true;
+  const [r, src] = await Promise.all([
+    fetch(`tests/rules-result.json?t=${Date.now()}`, { cache: "no-store" }).then((x) => (x.ok ? x.json() : null)).catch(() => null),
+    fetch("app.js", { cache: "no-store" }).then((x) => (x.ok ? x.text() : "")).catch(() => ""),
+  ]);
+  DEV.result = r ?? { missing: true };
+  const lines = src.split("\n");
+  DEV.sections = [];
+  lines.forEach((l, i) => { const m = l.match(/^\/\/ -{8,} (.+)$/); if (m) DEV.sections.push({ name: m[1].trim(), line: i + 1 }); });
+  DEV.lines = lines.length;
+  DEV.loading = false;
+  paintDev();
+}
+function openDevPage() {
+  document.querySelector(".dev-page")?.remove();
+  const el = h("div", { class: "dev-page", role: "dialog", "aria-label": "開発者向け" });
+  document.body.append(el);
+  DEV.keys = (e) => { if (e.key === "Escape") closeDevPage(); };
+  document.addEventListener("keydown", DEV.keys);
+  paintDev();
+  devLoad();
+}
+function closeDevPage() {
+  document.querySelector(".dev-page")?.remove();
+  if (DEV.keys) document.removeEventListener("keydown", DEV.keys);
+}
+function paintDev() {
+  const el = document.querySelector(".dev-page");
+  if (!el) return;
+  const seg = segmented([{ value: "tests", label: "ルールテスト" }, { value: "app", label: "アプリの構成" }, { value: "data", label: "アクセス権" }], DEV.tab);
+  seg.addEventListener("change", () => { DEV.tab = seg.value; paintDev(); });
+  let body;
+  if (DEV.tab === "tests") {
+    const R = DEV.result;
+    if (!R) body = h("p", { class: "cell-sub" }, "読み込んでいます…");
+    else if (R.missing) body = h("p", { class: "cell-sub" }, "テストの結果がまだありません。下の手順でテストを実行すると表示されます。");
+    else {
+      const groups = new Map();
+      for (const t of R.tests ?? []) { const g = t.name.includes("：") ? t.name.split("：")[0] : "その他"; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(t); }
+      const ng = (R.tests ?? []).filter((t) => !t.ok).length;
+      body = [
+        h("div", { class: `dv-summary${ng ? " bad" : ""}` }, h("b", null, `${(R.tests ?? []).length - ng} / ${(R.tests ?? []).length} 合格`),
+          h("span", null, `最後に実行した日時：${R.at ? new Date(R.at).toLocaleString("ja-JP") : "不明"}`)),
+        ...[...groups].map(([g, ts]) => group(`${g}（${ts.filter((t) => t.ok).length} / ${ts.length}）`, ts.map((t) => h("div", { class: `cell dv-test${t.ok ? "" : " bad"}` },
+          h("span", { class: "dv-mark" }, t.ok ? "✓" : "✗"), h("div", { class: "cell-main" }, h("div", null, t.name.includes("：") ? t.name.split("：").slice(1).join("：") : t.name), t.error ? h("div", { class: "cell-sub" }, t.error) : null))))),
+      ];
+    }
+    body = [body, group("テストの実行方法", [h("div", { class: "cell" }, h("pre", { class: "dv-pre" }, "cd tests\nnpm install\nnpx firebase emulators:exec --project demo-island \\\n  --config ../firebase.json --only firestore \"node rules.test.mjs\""))],
+      "Firebase のエミュレーター（手元の模擬環境）で、参加者・管理者・部外者になりすまして読み書きを試し、許可と拒否が意図どおりかを確かめます。本番のデータには触れません。")];
+  } else if (DEV.tab === "app") {
+    body = [
+      group("全体の構成", [h("div", { class: "cell" }, devDiagram())], "ページは GitHub Pages から配信し、データは Firebase に保存します。プッシュ通知だけは Cloudflare Worker を経由して送ります。"),
+      group("ファイル", DEV_FILES.map(([f, d]) => h("div", { class: "cell" }, h("div", { class: "cell-main" }, h("div", { class: "dv-file" }, f), h("div", { class: "cell-sub" }, d))))),
+      group(`app.js の中身（${DEV.lines ? `${DEV.lines.toLocaleString()}行・` : ""}区切りごと）`, DEV.sections?.length
+        ? [h("div", { class: "cell dv-sections" }, DEV.sections.map((s) => h("div", null, h("span", null, s.name), h("small", null, `${s.line}行目〜`))))]
+        : [h("div", { class: "cell" }, h("span", { class: "cell-sub" }, "読み込んでいます…"))]),
+    ];
+  } else {
+    body = [group("データの置き場所と、参加者ができること", [h("div", { class: "cell dv-table-wrap" }, h("table", { class: "dv-table" },
+      h("thead", null, h("tr", null, h("th", null, "コレクション"), h("th", null, "内容"), h("th", null, "参加者が読めるもの"), h("th", null, "参加者が書けるもの"))),
+      h("tbody", null, DEV_ACCESS.map((r) => h("tr", null, r.map((c, i) => (i === 0 ? h("td", null, h("code", null, c)) : h("td", null, c))))))))],
+    "管理者はすべて読み書きできます。ログインしていない人と、旅行に入っていない人は何もできません。1つ目の旅行のデータはルート直下に、2つ目以降は profiles/{旅行のID} の下に置きます。")];
+  }
+  setKids(el, h("div", { class: "dev-inner" },
+    h("div", { class: "gl-head" }, h("div", { class: "gl-title" }, "開発者向け（admin1 だけに表示）"), h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: closeDevPage }, icon("xmark"))),
+    h("h1", { class: "dv-h1" }, "ルールテストとアプリの構成"),
+    h("div", { class: "seg-wrap" }, seg),
+    body));
 }
 
 // ---------------------------------------------------------------- 画面の組み立て
@@ -10477,7 +11714,7 @@ const ADMIN_TABS = [
   { key: "side", icon: "note", label: "表・メモ", backLabel: "表・メモ・参加者", view: adminSide, desktopOnly: true },
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
-  { key: "quiz", icon: "quiz", label: "クイズ", view: quizManager, sheet: true },
+  { key: "quiz", icon: "quiz", label: "クイズ・ゲーム", view: quizAndGames, sheet: true },
   { key: "allocs", icon: "bed", label: "部屋・車", view: adminAllocs, sheet: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
   { key: "checklist", icon: "list", label: "チェック", view: checklistAdmin, sheet: true },
@@ -10588,12 +11825,21 @@ function buildMobileShell(allTabs) {
     }, icon(t.icon), h("span", null, t.label))));
   const chip = S.isAdmin ? null : meChip();
   const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
-  const header = h("header", { class: "navbar" }, gears, navTitle, S.isAdmin ? h("span", { class: "badge" }, adminName(S.user.email)) : chip);
+  // 管理者の「管理者1」は、上のボタンの列ではなく旅行名の行の右端に出す（上の列に置くと、ボタンが7個並ぶ幅のスマホでは更新ボタンに重なって押せなかった）
+  const header = h("header", { class: "navbar" }, gears, navTitle, chip);
+  const nameRow = S.isAdmin ? h("div", { class: "app-name-row" }, appName, h("span", { class: "badge static" }, adminName(S.user.email))) : appName;
   const ask = pushBanner();
-  const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, appName, status, ask.el, main), nav);
+  const root = h("div", { class: "shell" }, header, h("div", { class: "page" }, nameRow, status, ask.el, main), nav);
+  // 小さい見出しは、左のボタンの列より右の空いている所にだけ出す（ボタンが並ぶ幅のスマホでは重なるので出さない）
+  const fitTitle = () => {
+    const left = gears.getBoundingClientRect().right - header.getBoundingClientRect().left;
+    header.style.setProperty("--nav-l", `${Math.ceil(left + 8)}px`);
+    header.classList.toggle("title-no-room", header.clientWidth - left - 24 < 80);
+  };
   // 大きな見出しが隠れたら、ナビゲーションバーに小さい見出しを出す（iOS の Large Title と同じ動き）
-  const onScroll = () => header.classList.toggle("scrolled", window.scrollY > 44);
+  const onScroll = () => { const on = window.scrollY > 44; if (on && !header.classList.contains("scrolled")) fitTitle(); header.classList.toggle("scrolled", on); };
   window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", fitTitle, { passive: true });
   return {
     root,
     update() {
@@ -10614,6 +11860,7 @@ function buildMobileShell(allTabs) {
       }
       this.view.update();
       paintSheet();
+      requestAnimationFrame(fitTitle); // 地図のボタンの表示・非表示で左の列の幅が変わる
     },
   };
 }
@@ -10814,8 +12061,9 @@ function render(kinds) {
   // 位置・クイズだけが変わったときは、開いている小窓とクイズの画面だけ描き直す
   if (kinds && !kinds.has("all") && shell && S.user) {
     for (const open of [S.sheet, deskSideCurrent]) { // 小窓と、PC の右の欄
-      if (open && ((kinds.has("loc") && open.key === "map") || (kinds.has("quiz") && open.key === "quiz") || (kinds.has("chat") && open.key === "chat"))) open.view.update();
+      if (open && ((kinds.has("loc") && open.key === "map") || ((kinds.has("quiz") || kinds.has("game")) && open.key === "quiz") || (kinds.has("chat") && open.key === "chat"))) open.view.update();
     }
+    if (kinds.has("game")) paintGameLive();
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
     if (kinds.has("status")) document.querySelectorAll(".status").forEach(paintStatus);
@@ -10867,6 +12115,7 @@ function render(kinds) {
   paintMapButtons();
   paintChatBadges();
   paintQuizLive();
+  paintGameLive();
 }
 
 const $app = document.getElementById("app");

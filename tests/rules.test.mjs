@@ -2,6 +2,7 @@
 //   cd tests && npm install && npm test
 import fs from "node:fs";
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
 import { doc, getDoc, setDoc, addDoc, updateDoc, deleteDoc, collection, getDocs, query, where, serverTimestamp, runTransaction, increment } from "firebase/firestore";
 
@@ -390,8 +391,65 @@ await test("人ごとの内容：本人だけ読める・参加者は書けな�
   await assertSucceeds(getDocs(query(collection(admin(), "annPrivate"), where("annId", "==", "e1"))));
   await assertSucceeds(setDoc(doc(admin(), "annPrivate/e2_alice"), { annId: "e2", uid: "alice", body: "x" }));
 });
+// ----- ゲーム（人狼など）
+await test("ゲーム：配られた役職・行動は本人と管理者だけが読める", async () => {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, "games/g1"), { kind: "wolf", players: ["alice", "bob"], phase: "night", actKey: "n1", actors: ["alice", "bob"], alive: ["alice", "bob"] });
+    await setDoc(doc(db, "gameSecrets/g1_alice"), { gameId: "g1", uid: "alice", role: "wolf", mates: [] });
+    await setDoc(doc(db, "gameSecrets/g1_bob"), { gameId: "g1", uid: "bob", role: "seer", results: [] });
+    await setDoc(doc(db, "gameActs/g1_n1_bob"), { gameId: "g1", key: "n1", uid: "bob", target: "alice" });
+  });
+  await assertSucceeds(getDoc(doc(bob(), "games/g1")));                          // 進行は全員が読める
+  await assertSucceeds(getDoc(doc(alice(), "gameSecrets/g1_alice")));
+  await assertFails(getDoc(doc(bob(), "gameSecrets/g1_alice")));                 // ほかの人の役職
+  await assertFails(getDocs(collection(bob(), "gameSecrets")));                  // 全員分の一覧
+  await assertSucceeds(getDocs(query(collection(bob(), "gameSecrets"), where("uid", "==", "bob"))));
+  await assertFails(getDoc(doc(alice(), "gameActs/g1_n1_bob")));                 // ほかの人の行動・投票
+  await assertSucceeds(getDocs(query(collection(bob(), "gameActs"), where("uid", "==", "bob"))));
+  await assertFails(getDoc(doc(carol(), "games/g1")));                           // 入っていない旅行
+  await assertSucceeds(getDocs(collection(admin(), "gameSecrets")));
+});
+await test("ゲーム：行動・投票は、受付中の回の対象者だけが書ける", async () => {
+  const act = (uid, key, target) => ({ gameId: "g1", key, uid, target, at: serverTimestamp() });
+  await assertSucceeds(setDoc(doc(alice(), "gameActs/g1_n1_alice"), act("alice", "n1", "bob")));
+  await assertSucceeds(setDoc(doc(alice(), "gameActs/g1_n1_alice"), act("alice", "n1", "alice")));  // 締め切りまでは選び直せる
+  await assertFails(setDoc(doc(alice(), "gameActs/g1_v1_alice"), act("alice", "v1", "bob")));      // 受付中でない回
+  await assertFails(setDoc(doc(alice(), "gameActs/g1_n1_bob"), act("bob", "n1", "bob")));          // ほかの人になりすまし
+  await assertFails(setDoc(doc(alice(), "gameActs/g1_n1_alice"), { ...act("alice", "n1", "bob"), role: "seer" })); // 余計な項目
+  await assertFails(setDoc(doc(alice(), "gameActs/g1_n1_alice"), { ...act("alice", "n1", "bob"), at: new Date(0) })); // 端末の時刻
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), "games/g1"), { actors: ["bob"] }));
+  await assertFails(setDoc(doc(alice(), "gameActs/g1_n1_alice"), act("alice", "n1", "bob")));      // 対象者から外れた（死亡など）
+  await assertFails(setDoc(doc(alice(), "gameSecrets/g1_alice"), { gameId: "g1", uid: "alice", role: "seer" })); // 役職の書き換え
+  await assertFails(updateDoc(doc(alice(), "games/g1"), { phase: "ended", uid: "alice", at: serverTimestamp() })); // 進行は管理者だけ
+  await assertFails(setDoc(doc(alice(), "games/g2"), { kind: "wolf", uid: "alice", at: serverTimestamp() }));
+  await assertFails(deleteDoc(doc(alice(), "gameActs/g1_n1_alice")));
+});
+await test("ゲーム：NGワードの「アウト」だけは遊んでいる人が付け外しできる", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "games/g3"), { kind: "ng", players: ["alice", "bob"], phase: "play", outs: {} }));
+  await assertSucceeds(updateDoc(doc(alice(), "games/g3"), { outs: { bob: "alice" }, uid: "alice", at: serverTimestamp() }));
+  await assertFails(updateDoc(doc(alice(), "games/g3"), { outs: {}, phase: "ended", uid: "alice", at: serverTimestamp() })); // ほかの項目
+  await assertFails(updateDoc(doc(carol(), "games/g3"), { outs: {}, uid: "carol", at: serverTimestamp() }));              // 入っていない旅行
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), "games/g3"), { players: ["bob"] }));
+  await assertFails(updateDoc(doc(alice(), "games/g3"), { outs: {}, uid: "alice", at: serverTimestamp() }));              // 遊んでいない人
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), "games/g3"), { players: ["alice", "bob"], phase: "ended" }));
+  await assertFails(updateDoc(doc(alice(), "games/g3"), { outs: {}, uid: "alice", at: serverTimestamp() }));              // 終わったあと
+});
+await test("クイズ・ゲームの記録（playLogs）は管理者だけが読み書きできる", async () => {
+  await assertSucceeds(setDoc(doc(admin(), "playLogs/game_g1"), { kind: "game", title: "人狼", secrets: { alice: { role: "wolf" } } }));
+  await assertSucceeds(getDocs(collection(admin(), "playLogs")));
+  await assertFails(getDoc(doc(alice(), "playLogs/game_g1")));       // 役職などが入っているので参加者は読めない
+  await assertFails(getDocs(collection(bob(), "playLogs")));
+  await assertFails(setDoc(doc(alice(), "playLogs/quiz_1"), { kind: "quiz", uid: "alice", at: serverTimestamp() }));
+  await assertFails(deleteDoc(doc(bob(), "playLogs/game_g1")));
+});
 await env.cleanup();
 for (const r of results) console.log(r[0] === "ok" ? "✅" : "❌", r[1], r[2] ?? "");
 const ng = results.filter((r) => r[0] !== "ok").length;
 console.log(`\n${results.length - ng} / ${results.length} 合格`);
+// 結果をファイルに書き出す（アプリの「設定 → 開発者向け」で表示する）
+writeFileSync(new URL("./rules-result.json", import.meta.url), JSON.stringify({
+  at: new Date().toISOString(),
+  tests: results.map(([st, name, err]) => ({ ok: st === "ok", name, ...(err ? { error: String(err).slice(0, 300) } : {}) })),
+}, null, 1) + "\n");
 process.exit(ng ? 1 : 0);

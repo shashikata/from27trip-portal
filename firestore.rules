@@ -13,6 +13,8 @@ rules_version = '2';
 //                 - 試合の記録（フットサル）は、公開した試合だけ読める。記録できるのは管理者と、管理者が指名した記録係（指名されている間・担当の分だけ）
 //                 - 参加者の情報（住所・大学など。/personFields, /personInfo）は読めない（本人の分も）。管理者だけ
 //                 - 人ごとに送ったお知らせの内容（暗証番号など。annPrivate）は、本人の分だけ読める
+//                 - ゲーム（人狼など）で配られた役職・お題・数字（gameSecrets）と、夜の行動・投票（gameActs）は、本人の分だけ読める
+//                 - 終わったクイズ・ゲームの記録（playLogs。役職や全員の回答が入る）は読めない。管理者だけ
 //               書けるのは、下の「参加者が書けるもの」に決めた形のデータだけ（それ以外はすべて管理者だけ）
 //   未登録の人: 何もできない
 //
@@ -60,7 +62,7 @@ service cloud.firestore {
     function readAll(coll) {
       return coll in ['config', 'members', 'announcements', 'pointLogs', 'stats', 'quizAnswers', 'live',
         'quizSabo', 'quizBets', 'polls', 'votes', 'payments', 'expenses', 'checklists', 'locGroups', 'locations',
-        'mapPins', 'messages', 'files', 'fileChunks', 'assignments'];
+        'mapPins', 'messages', 'files', 'fileChunks', 'assignments', 'games'];
     }
     // 1件ずつなら読めるもの（一覧は読めない）
     function getOnly(coll) {
@@ -81,7 +83,9 @@ service cloud.firestore {
         // DM・管理者との連絡は当人だけ
         || (coll == 'dms' && me() in resource.data.parties)
         // 人ごとに送ったお知らせの内容（暗証番号など）は本人の分だけ
-        || (coll == 'annPrivate' && resource.data.uid == me());
+        || (coll == 'annPrivate' && resource.data.uid == me())
+        // ゲームで配られた内容（役職・お題など）と、夜の行動・投票は本人の分だけ
+        || (coll in ['gameSecrets', 'gameActs'] && resource.data.uid == me());
     }
 
     // ---- 参加者が書けるもの
@@ -189,6 +193,13 @@ service cloud.firestore {
             && d().get('so', {}) is map && d().get('so', {}).size() <= 80
             && (!changed().hasAny(['soFirst']) || d().soFirst in [null, 'home', 'away'])
             && (!changed().hasAny(['soN']) || d().soN == null || (d().soN is int && d().soN >= 1 && d().soN <= 10)))
+        // ゲームの夜の行動・投票：いま受け付けている回（actKey）の対象者（actors）だけ。選び直しは締め切りまで
+        || (coll == 'gameActs' && only(['uid', 'gameId', 'key', 'target', 'at']) && str(d().gameId, 64) && str(d().key, 20) && str(d().target, 128)
+            && id == d().gameId + '_' + d().key + '_' + me() && serverTime('at') && gameActOk(pid))
+        // NGワード：遊んでいる人は「アウト」を付け外しできる（ほかの項目は管理者だけ）
+        || (coll == 'games' && request.method == 'update' && resource.data.get('kind', '') == 'ng' && resource.data.get('phase', '') == 'play'
+            && me() in resource.data.get('players', []) && changed().hasOnly(['outs', 'uid', 'at']) && serverTime('at')
+            && d().get('outs', {}) is map && d().get('outs', {}).size() <= 100)
         // 通知の宛先
         || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200) && d().sub is map && serverTime('at'))
         // パスワードを変えた記録
@@ -209,7 +220,7 @@ service cloud.firestore {
     }
     // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats・作戦ボードは除く）
     function ownsBefore(coll) {
-      return request.method == 'create' || coll == 'stats' || coll == 'boards' || coll == 'matches' || wasMine() || (coll == 'checks' && resource.data.shared == true);
+      return request.method == 'create' || coll == 'stats' || coll == 'boards' || coll == 'matches' || coll == 'games' || wasMine() || (coll == 'checks' && resource.data.shared == true);
     }
 
     // 最初に答えた時刻：はじめて（＝今）か、前の回答のまま（あとから早い時刻にすり替えられない）
@@ -224,6 +235,11 @@ service cloud.firestore {
     function quizOpen(pid) {
       let L = get(at(pid, 'live', 'quiz')).data;
       return L.get('phase', '') == 'question' && L.get('quizId', '') == d().quizId && L.get('index', -1) == d().index;
+    }
+    // ゲーム：いま受け付けている回で、自分が対象者に入っているか
+    function gameActOk(pid) {
+      let g = get(at(pid, 'games', d().gameId)).data;
+      return g.get('actKey', null) == d().key && me() in g.get('actors', []);
     }
     function canVote(pid, pollId) {
       let p = get(at(pid, 'polls', pollId)).data;
