@@ -2322,7 +2322,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v86"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v87"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5670,6 +5670,7 @@ async function quizStart(quizId, mode = "operator") {
     ...liveBase(qz), run: Date.now(),
     index: 0, phase: "lobby", seq: Date.now(), q: null, answer: null, scores: null, effects: {}, saboWin: null, betWin: null, slide: null,
   }));
+  QZ.startedAt = Date.now(); // 新しい進行状態が届くまでの間に、前の「終了」を見て画面を閉じないように
   openPresenter(mode);
 }
 
@@ -5997,7 +5998,7 @@ function quizManager({ withTitle = true } = {}) {
 function openPresenter(mode = "operator") {
   if (QZ.presenter && QZ.mode !== mode) closePresenter();
   if (!QZ.presenter) {
-    closeSheet();
+    // クイズの小窓は閉じずに、その上に重ねて開く（閉じたら元のクイズの画面に戻る）
     const el = h("div", { class: `present mode-${mode}`, role: "dialog", "aria-label": mode === "display" ? "クイズの表示用画面" : "クイズの操作用画面" });
     document.body.append(el);
     QZ.presenter = el;
@@ -6043,7 +6044,9 @@ function remainingSec(L, local) {
 
 function paintPresenter(full = true) {
   const P = QZ.presenter;
-  const L = S.live;
+  // 開始を押した直後（数秒）は、前のクイズの「終了」がまだ残っていても閉じずに待つ
+  const starting = S.live?.phase === "off" && Date.now() - (QZ.startedAt ?? 0) < 8000;
+  const L = starting ? null : S.live;
   if (!P) return;
   const qz = L && S.quizzes.get(L.quizId);
   if (L?.phase === "off") { closePresenter(); return; }
@@ -11887,7 +11890,7 @@ function closeSheet() {
   scheduleRender();
 }
 
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet) closeSheet(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet && !QZ.presenter) closeSheet(); });
 
 // 小窓（PC の参加者・設定、スマホ参加者の設定）を描く
 let sheetKey = null;
