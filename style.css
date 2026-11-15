@@ -1093,6 +1093,20 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
 .ql-turn-count { min-width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; font-family: var(--font-rounded); font-size: 28px; font-weight: 900; color: #1c1c1e; background: #FF9F0A; }
 .ql-turn-count:empty { display: none; }
 .ql-turn-count.hurry { background: var(--qz-ng); color: #fff; animation: livePulse .5s infinite; }
+/* v95 みんはや式：文字のマスと候補のボタン */
+.kana-slots { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.kana-slot { display: grid; place-items: center; border-radius: 10px; background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px var(--qz-line); font-weight: 900; color: #fff; }
+.kana-slot.on { background: rgba(255, 214, 10, .16); box-shadow: inset 0 0 0 2px var(--qz-gold); color: var(--qz-gold); animation: riseIn .2s; }
+.kana-slot.cur { box-shadow: inset 0 0 0 2px #FF9F0A; }
+.kana-slots.sm .kana-slot { width: 36px; height: 40px; font-size: 22px; }
+.kana-slots.lg { margin: .2em 0; gap: clamp(6px, .6vw, 12px); }
+.kana-slots.lg .kana-slot { width: clamp(40px, 4.6vw, 88px); height: clamp(46px, 5.2vw, 100px); font-size: clamp(26px, 3.4vw, 64px); border-radius: clamp(10px, 1vw, 18px); }
+.ql-kana-keys { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 8px; }
+.ql-kana-keys[hidden] { display: none; }
+.ql-kana-key { min-height: 58px; border: 0; border-radius: 16px; background: rgba(255, 255, 255, .92); color: #1c1c1e; font-size: 28px; font-weight: 900; touch-action: manipulation; }
+.ql-kana-key:active { transform: scale(.94); background: #FFD60A; }
+.ql-turnbox.kana .ql-input[hidden], .ql-turnbox.kana .ql-send[hidden] { display: none; }
+@media (max-width: 380px) { .kana-slots.sm .kana-slot { width: 32px; height: 36px; font-size: 20px; } .ql-kana-key { min-height: 54px; font-size: 26px; } }
 .q-hint { padding: 8px 4px 0; line-height: 1.5; }
 .ql-buzzwrap.is-pressed .ql-buzz { width: min(36vw, 150px); font-size: 20px; letter-spacing: .02em; transition: width .25s, font-size .25s; }
 
@@ -3638,3 +3652,104 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 /* v94 クイズの自動進行：操作用の画面の下に、次の動きを出す */
 .op-auto { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; color: var(--label-2, #c9c9cf); background: rgba(201, 184, 255, .1); border-top: 1px solid rgba(201, 184, 255, .25); }
 .op-auto .live-dot { flex: none; }
+
+/* v95 人狼の死亡を分かりやすく
+   1) 場面の帯が消えかけたら、画面の真ん中に大きなアイコン＋✕のハンコ＋「EXECUTED／KILLED」を約2.4秒
+   2) そのあと、席のアイコンも約1.8倍にふくらんで赤く光り、✕の印が押されてから元に戻る（どこの席の人かを見せる） */
+.cx-death { position: fixed; inset: 0; z-index: 410; display: grid; place-items: center; pointer-events: none;
+  background: radial-gradient(circle at 50% 46%, rgba(120, 10, 18, .7), rgba(6, 4, 6, .9) 62%), rgba(6, 4, 6, .55);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); animation: deathBg 2.4s ease both; }
+.cx-death-in { display: flex; flex-wrap: wrap; justify-content: center; gap: 24px 32px; padding: 0 16px; max-width: 100%; }
+.cx-death-one { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; min-width: 0; animation: deathPop 2.4s cubic-bezier(.2, .9, .25, 1) both; }
+.cx-death-av { position: relative; width: 116px; height: 116px; border-radius: 50%; display: grid; place-items: center; margin-bottom: 14px;
+  background: radial-gradient(circle at 35% 30%, #4B4B54, #1B1B20); box-shadow: 0 0 0 4px #E5484D, 0 0 44px rgba(229, 72, 77, .85); }
+.cx-death-ch { font-size: 52px; font-weight: 800; line-height: 1; color: #fff; animation: deathCh 2.4s ease both; }
+.cx-death-x { position: absolute; inset: 0; display: grid; place-items: center; font-size: 112px; font-weight: 300; line-height: 1; color: #FF4D55;
+  text-shadow: 0 0 20px rgba(229, 72, 77, .95), 0 2px 0 rgba(0, 0, 0, .5); animation: deathX 2.4s cubic-bezier(.2, 1.3, .4, 1) both; }
+.cx-death-en { font-size: 28px; font-weight: 800; letter-spacing: .24em; padding-left: .24em; line-height: 1.1; color: #FF5A62; text-shadow: 0 0 18px rgba(229, 72, 77, .8); }
+.cx-death-nm { font-size: 22px; font-weight: 800; line-height: 1.3; color: #fff; overflow-wrap: anywhere; }
+.cx-death-why { font-size: 14px; line-height: 1.4; color: rgba(255, 255, 255, .82); }
+.cx-death-one.self .cx-death-nm { color: #FFB3B6; }
+@keyframes deathBg { 0% { opacity: 0; } 8%, 84% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes deathPop {
+  0% { opacity: 0; transform: scale(.35); }
+  12% { opacity: 1; transform: scale(1.12); }
+  20% { transform: scale(1); }
+  28% { transform: translateX(-9px); }
+  32% { transform: translateX(9px); }
+  36% { transform: translateX(-6px); }
+  40% { transform: translateX(3px); }
+  44% { transform: none; }
+  84% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: scale(.92); } }
+@keyframes deathCh { 0%, 24% { opacity: 1; filter: none; } 34%, 100% { opacity: .45; filter: grayscale(1); } }
+@keyframes deathX { 0%, 18% { opacity: 0; transform: scale(2.8) rotate(-25deg); } 27% { opacity: 1; transform: scale(.9) rotate(0); } 33%, 100% { opacity: 1; transform: scale(1); } }
+.cx-death.calm, .cx-death.calm .cx-death-one { animation: deathBg 2.4s ease both; }
+.cx-death.calm .cx-death-ch, .cx-death.calm .cx-death-x { animation: none; }
+
+/* 席のアイコン（人狼）：大きくふくらむ */
+@keyframes fallRingBig {
+  0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); transform: scale(1); }
+  12% { box-shadow: 0 0 0 4px #E5484D, 0 0 30px rgba(229, 72, 77, .9); transform: translateY(-4px) scale(1.9); }
+  18% { transform: translateY(-4px) scale(1.8) rotate(-9deg); }
+  24% { transform: translateY(-4px) scale(1.8) rotate(9deg); }
+  30% { transform: translateY(-4px) scale(1.78) rotate(-5deg); }
+  36% { transform: translateY(-4px) scale(1.75) rotate(0); }
+  66% { box-shadow: 0 0 0 4px #E5484D, 0 0 24px rgba(229, 72, 77, .7); transform: translateY(-4px) scale(1.7); }
+  86% { box-shadow: 0 0 0 2px rgba(229, 72, 77, .6), 0 0 10px rgba(229, 72, 77, .3); transform: scale(1.05); }
+  100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); transform: scale(1); } }
+@keyframes fallStamp { 0% { opacity: 0; transform: translateX(-50%) scale(1); } 1%, 14% { opacity: 0; transform: translateX(-50%) scale(3.2); } 24% { opacity: 1; transform: translateX(-50%) scale(.9); } 30%, 100% { opacity: 1; transform: translateX(-50%) scale(1); } }
+@keyframes fallSeatOp { 0%, 82% { opacity: 1; } 100% { opacity: .45; } }
+.cx-spot:has(> .cx-seat.fallen) { z-index: 6; }
+.cx-seat.fallen:not(.g-ng-row) .cx-av { transform-origin: 50% 92%; animation: fallRingBig 2.2s cubic-bezier(.3, .7, .3, 1) var(--fd, 0ms) both; }
+.cx-seat.fallen:not(.g-ng-row) .cx-badge { color: #fff; background: #E5484D; animation: fallStamp 2.2s cubic-bezier(.2, 1.3, .4, 1) var(--fd, 0ms) both; }
+.cx-seat.fallen:not(.g-ng-row) .cx-nm { animation: fallText 2.2s ease var(--fd, 0ms) both; }
+.cx-seat.out.fallen:not(.g-ng-row) { animation: fallSeatOp 2.2s ease var(--fd, 0ms) both; }
+@media (prefers-reduced-motion: reduce) {
+  .cx-seat.fallen:not(.g-ng-row) .cx-av, .cx-seat.fallen:not(.g-ng-row) .cx-badge { animation: fallBox 2s ease var(--fd, 0ms) both; }
+  .cx-seat.out.fallen:not(.g-ng-row) { animation: none; }
+}
+.cx-meta.rv.wolf { color: #FF6B6F; }
+.q-warn { padding: 0 2px; }
+.q-warn.bad { color: #FF6B6F; font-weight: 700; }
+.gl-dead-acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.gl-dead-btn { min-height: 40px; padding: 0 16px; }
+.gl-dead-btn.on { box-shadow: inset 0 0 0 2px var(--accent); }
+/* v95 観戦（クイズ）：問題・選択肢・早押しの進み具合・回答人数 */
+.ql-watch-view { display: grid; gap: 12px; margin-top: 6px; text-align: left; }
+.ql-watch-ch { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ql-watch-ch li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; background: var(--qz-glass); box-shadow: inset 0 0 0 1px var(--qz-line); font-weight: 700; min-width: 0; }
+.ql-watch-ch li span { min-width: 0; overflow-wrap: anywhere; }
+.ql-watch-ch li b { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(255, 255, 255, .12); font-size: 13px; }
+.ql-watch-ch li.ok { background: rgba(48, 209, 88, .18); box-shadow: inset 0 0 0 2px #30D158; }
+.ql-watch-buzz { display: grid; gap: 8px; }
+.ql-watch-turn { display: grid; justify-items: center; gap: 6px; padding: 12px; border-radius: 16px; background: rgba(255, 159, 10, .14); box-shadow: inset 0 0 0 2px #FF9F0A; text-align: center; }
+.ql-watch-turn.idle { background: var(--qz-glass); box-shadow: inset 0 0 0 1px var(--qz-line); color: var(--qz-sub); font-weight: 700; }
+.ql-watch-turn small { color: #FFB340; font-weight: 800; letter-spacing: .2em; }
+.ql-watch-turn > b { font-size: 24px; font-weight: 900; }
+.ql-watch-a { color: var(--qz-gold); font-size: 20px; font-weight: 900; }
+.ql-watch-count { min-width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: #FF9F0A; color: #1c1c1e; font-size: 22px; font-weight: 900; }
+.ql-watch-count.hurry { background: var(--qz-ng); color: #fff; }
+.ql-watch-wrong { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ql-watch-wrong li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ql-watch-wrong li span { color: var(--qz-ng); font-weight: 900; }
+.ql-watch-wrong li b { min-width: 0; overflow-wrap: anywhere; }
+.ql-watch-wrong li small { margin-left: auto; color: var(--qz-sub); flex: none; }
+.ql-watch-stat { color: var(--qz-sub); font-weight: 700; font-size: 14px; }
+/* v95 観戦（ゲーム）のボタン */
+.watch-fab { background: rgba(100, 210, 255, .18); }
+.st-top .ql-watch { margin-left: 0; flex: none; }
+/* v95 クイズの画像 */
+.qimg-box { display: flex; justify-content: center; cursor: zoom-in; }
+.qimg-box .qimg { display: block; max-width: 100%; object-fit: contain; border-radius: 14px; background: rgba(255, 255, 255, .04); }
+.qimg-box .qimg:not([src]) { min-height: 80px; min-width: 120px; }
+.ql-qimg .qimg { max-height: 34vh; }
+.pr-qimg { margin: .6vh 0; }
+.pr-qimg .qimg { max-height: 26vh; max-width: 70vw; border-radius: clamp(10px, 1.2vw, 22px); }
+.op-qimg { justify-content: flex-start; margin: 6px 0; }
+.op-qimg .qimg { max-height: 160px; }
+.q-img-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; }
+.q-img-thumb { flex: none; justify-content: flex-start; }
+.q-img-thumb .qimg { width: 96px; height: 72px; object-fit: cover; border-radius: 10px; }
+.q-img-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 180px; }
+.q-img-acts .cell-sub { flex-basis: 100%; }

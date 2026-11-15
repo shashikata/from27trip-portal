@@ -2384,7 +2384,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v94"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v95"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5051,6 +5051,29 @@ const QZ = {
   buzzSeen: new Map(), turnWritten: null, timeoutSent: new Set(), buzzUI: null,
 };
 const BUZZ_ANSWER_SEC = 6;   // 解答権を得てから答えを送るまでの秒数
+// v95 みんはや式の早押し：解答権を得たら、答えのよみ（ひらがな）を前から1文字ずつ、候補のボタンから選んで入力する。
+// スマホには答えを送らず、各文字の候補（正解1つ＋まぎらわしい文字）だけを出題のときに配る。正誤は操作用の画面が1文字ごとに判定する
+const KANA_ROWS = ["あいうえお", "かきくけこ", "がぎぐげご", "さしすせそ", "ざじずぜぞ", "たちつてと", "だぢづでど", "なにぬねの", "はひふへほ", "ばびぶべぼ", "ぱぴぷぺぽ", "まみむめも", "やゆよ", "らりるれろ", "わをん", "ぁぃぅぇぉ", "っゃゅょ", "ー"];
+const KANA_ALL = KANA_ROWS.join("");
+const KANA_N = [4, 6, 8, 10], KANA_SEC = [2, 3, 4, 5, 6];
+const isKanaQ = (q) => q?.type === "buzz" && q.input === "kana";
+const toHira = (t) => String(t ?? "").normalize("NFKC").replace(/[\u30A1-\u30F6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60)).replace(/[\s　]+/g, "");
+const kanaOf = (q) => toHira(q?.kana);
+const kanaBad = (q) => [...new Set([...kanaOf(q)].filter((c) => !KANA_ALL.includes(c)))];
+const kanaNOf = (q) => (KANA_N.includes(Number(q?.kanaN)) ? Number(q.kanaN) : 6);
+const kanaSecOf = (q) => (KANA_SEC.includes(Number(q?.kanaSec)) ? Number(q.kanaSec) : 3);
+// 1文字分の候補：正解の文字＋同じ行・同じ段（「ふ」なら は行・う段）の文字を半分ほど＋ほかの文字。並びはバラバラ
+function kanaChoices(c, n) {
+  const shuf = (a) => shuffledIdx(a.length).map((i) => a[i]);
+  const five = KANA_ROWS.filter((r) => r.length === 5 && r !== "ぁぃぅぇぉ");
+  const row = KANA_ROWS.find((r) => r.includes(c)) ?? "";
+  const k = row.length === 5 ? row.indexOf(c) : -1;
+  const near = shuf([...new Set([...row, ...(k >= 0 ? five.map((r) => r[k]) : [])])].filter((x) => x !== c));
+  const out = near.slice(0, Math.ceil((n - 1) / 2));
+  const rest = shuf([...KANA_ALL].filter((x) => x !== c && !out.includes(x)));
+  while (out.length < n - 1 && rest.length) out.push(rest.pop());
+  return shuf([c, ...out]).join("");
+}
 const BUZZ_GRACE_MS = 400;   // 最初の早押しから解答権を決めるまで待つ時間（通信の遅い人の方が先に押していることがあるため）
 const READ_SPEED = 6;        // 問題読みの速さ（文字/秒）の初期値
 
@@ -5130,7 +5153,7 @@ const quizAutoCfg = (qz) => ({ on: false, closeAll: true, revealSec: 4, nextSec:
 function liveBase(qz) {
   const sessions = quizSessions(qz);
   return {
-    quizId: qz.id, title: qz.title, total: qz.questions.length, answerers: quizAnswerersAll(qz),
+    quizId: qz.id, title: qz.title, total: qz.questions.length, answerers: quizAnswerersAll(qz), watch: !!qz.watch,
     sabo: saboCfg(qz), bet: betCfg(qz), sessions: sessions.map((s) => ({ ...s, ans: sessAnswerers(qz, s) })),
     qMeta: qz.questions.map((q) => ({ s: sessions.some((s) => s.id === q.session) ? q.session : sessions[0].id, t: q.type, time: Number(q.time) || 0 })),
   };
@@ -5346,6 +5369,9 @@ function autoJudge(q, a) {
 // 早押しで時間切れ（6秒以内に送れなかった）は誤答扱い
 const judged = (q, a) => (typeof a.judge === "boolean" ? a.judge : q?.type === "buzz" && a.timeout ? false : autoJudge(q, a));
 const buzzText = (a) => (a.text ? a.text : a.timeout ? "時間切れ" : "");
+// みんはや式の文字のマス：入力した文字と、残りの空きマス（cls で大きさを変える）
+const kanaSlots = (typed, n, cls) => h("div", { class: `kana-slots ${cls}`, "aria-label": `${[...typed].length}/${n}文字` },
+  Array.from({ length: n }, (_, i) => h("span", { class: `kana-slot${i < [...typed].length ? " on" : ""}${i === [...typed].length ? " cur" : ""}` }, [...typed][i] ?? "")));
 function answerPoints(q, a) {
   const j = judged(q, a);
   if (j === true) return Number(q.points ?? 10) || 0;
@@ -5407,12 +5433,14 @@ function publicQuestion(q) {
   const base = {
     type: q.type, text: q.text ?? "", choices: q.type === "choice" ? q.choices ?? [] : [],
     time: Number(q.time) || 0, points: Number(q.points ?? 10) || 0, phone: q.phone !== false, speed: Number(q.speed) || READ_SPEED,
+    image: q.image ?? null,
   };
   if (q.type === "order") {
     const list = (q.choices ?? []).filter((c) => c !== undefined);
     const perm = shuffledIdx(list.length);
     Object.assign(base, { choices: perm.map((i) => list[i]), perm, partial: !!q.partial });
   }
+  if (isKanaQ(q)) { const t = [...kanaOf(q)]; Object.assign(base, { kana: { n: t.length, sec: kanaSecOf(q), opts: t.map((c) => kanaChoices(c, kanaNOf(q))) } }); }
   if (q.type === "vote") Object.assign(base, { choices: S.polls.get(q.pollId)?.options ?? [], voteMode: ["rank", "self"].includes(q.voteMode) ? q.voteMode : "top", selfKind: selfCountMode(q) ? "count" : "rank", rankN: seqLen(q), partial: !!q.partial,
     selfMax: (S.polls.get(q.pollId)?.options ?? []).length, uids: q.voteMode === "self" ? S.polls.get(q.pollId)?.optionUids ?? [] : null });
   return base;
@@ -5421,7 +5449,7 @@ function publicQuestion(q) {
 function revealAnswerOf(q) {
   if (q?.type === "order") return { order: (q.choices ?? []).map((_, i) => i), texts: q.choices ?? [] };
   if (q?.type === "vote") return voteResult(q);
-  return q?.answer ?? null;
+  return (isKanaQ(q) && !String(q.answer ?? "").trim() ? q.kana : q.answer) ?? null;
 }
 // 正解を文字にする（A は revealAnswerOf の形。スマホでは発表で届いたもの）
 function answerLabel(q, A) {
@@ -5481,6 +5509,16 @@ function readProgress(L) {
   return n;
 }
 
+// v95 クイズの画像：問題ごとに1枚。画像は chatImages（参加者は1件ずつなら読める）に置き、問題には id だけ持たせる
+const QIMG = new Map(); // id -> dataURL（読み込み済み）
+function quizImgEl(id, cls) {
+  if (!id) return null;
+  const img = h("img", { class: "qimg", alt: "問題の画像", decoding: "async" });
+  const box = h("div", { class: `qimg-box ${cls}`, role: "button", tabindex: "0", "aria-label": "画像を大きく見る", onclick: () => img.src && openLightbox(img.src) }, img);
+  if (QIMG.has(id)) img.src = QIMG.get(id);
+  else chatImage(id).then((src) => { if (src) { QIMG.set(id, src); img.src = src; } else box.remove(); });
+  return box;
+}
 // 問題文の欄。まだ読んでいない部分は透明な文字で置いておき、行の折り返しが途中で変わらないようにする
 function readTextEl(L, cls) {
   const el = h("div", { class: cls, "data-read": "" }, h("span", { class: "rd-on" }), h("span", { class: "rd-rest" }));
@@ -5501,7 +5539,10 @@ function paintRead(el, L) {
 // ---- 早押しの解答権
 
 // 解答権の残り秒数（「時間短縮」の妨害を受けている人は半分）
-const turnSecs = (uid) => (effectOn(S.live, uid) === "time" ? BUZZ_ANSWER_SEC / 2 : BUZZ_ANSWER_SEC);
+const turnSecs = (uid) => {
+  const k = S.live?.q?.kana, base = k ? Math.max(BUZZ_ANSWER_SEC, k.n * k.sec) : BUZZ_ANSWER_SEC;
+  return effectOn(S.live, uid) === "time" ? base / 2 : base;
+};
 const turnLeft = (uid) => Math.max(0, turnSecs(uid) - (performance.now() - QZ.turnT0) / 1000);
 // 「出遅れ」の残り秒数（自分のスマホだけ）
 const lateLeft = () => (myEffect() === "late" && S.live?.phase === "question" ? Math.max(0, LATE_SEC - (performance.now() - QZ.t0) / 1000) : 0);
@@ -5514,6 +5555,20 @@ function quizSyncTurn(L, qz) {
   const now = performance.now();
   const order = buzzOrder(L.index);
   for (const a of order) if (!QZ.buzzSeen.has(a.id)) QZ.buzzSeen.set(a.id, now);
+  // みんはや式：選んだ文字が答えのよみと食い違った時点で誤答、最後まで合っていれば正解
+  if (isKanaQ(q)) {
+    const target = kanaOf(q);
+    QZ.kanaSent ??= new Set();
+    for (const a of order) {
+      if (typeof a.judge === "boolean" || a.timeout) continue;
+      const t = toHira(a.kanaIn ?? a.text ?? "");
+      if (!t || (target.startsWith(t) && t !== target)) continue;
+      const k = `${a.id}:${t}`;
+      if (QZ.kanaSent.has(k)) continue;
+      QZ.kanaSent.add(k);
+      fire(updateDoc(D("quizAnswers", a.id), { judge: t === target, text: t }));
+    }
+  }
   const winner = order.find((a) => judged(q, a) === true);
   const next = winner ?? order.find((a) => judged(q, a) !== false);
   if (!L.turn && next && now - Math.min(...order.map((a) => QZ.buzzSeen.get(a.id))) < BUZZ_GRACE_MS) return;
@@ -5803,14 +5858,14 @@ function quizManager({ withTitle = true } = {}) {
   function tryLoad() {
     const qz = S.quizzes.get(editing);
     if (!qz || draft) return;
-    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [], sessions: quizSessions(qz), sabo: saboCfg(qz), bet: betCfg(qz), auto: quizAutoCfg(qz) }));
+    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [], sessions: quizSessions(qz), sabo: saboCfg(qz), bet: betCfg(qz), auto: quizAutoCfg(qz), watch: !!qz.watch }));
     // 区切りが無い問題は最初の区切りへ
     draft.questions.forEach((q) => { if (!draft.sessions.some((x) => x.id === q.session)) q.session = draft.sessions[0].id; });
     paintEditor();
   }
   const touch = () => { dirty = true; editor.classList.add("dirty"); };
   async function save() {
-    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions, sessions: draft.sessions, sabo: draft.sabo, bet: draft.bet, auto: draft.auto });
+    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions, sessions: draft.sessions, sabo: draft.sabo, bet: draft.bet, auto: draft.auto, watch: !!draft.watch });
     dirty = false; editor.classList.remove("dirty");
     toast("保存しました");
   }
@@ -5918,7 +5973,8 @@ function quizManager({ withTitle = true } = {}) {
         d.sabo.on ? h("div", { class: "cell-sub q-hint" }, "この区切りの中での回数です。0 にするとこの区切りでは使えません。") : null,
         qs.length ? qs.map(([q, i]) => questionEditor(q, i)) : h("div", { class: "cell-sub q-hint" }, "まだ問題がありません"),
         h("div", { class: "quiz-add" }, Object.entries(QTYPE).map(([type, label]) =>
-          h("button", { class: "pill", onclick: () => { d.questions.push({ ...newQuestion(type), session: sx.id }); normalize(); touch(); paintQuestions(); } }, icon("plus"), `${label}の問題`))));
+          h("button", { class: "pill", onclick: () => { d.questions.push({ ...newQuestion(type), session: sx.id }); normalize(); touch(); paintQuestions(); } }, icon("plus"), `${label}の問題`)),
+          h("button", { class: "pill", onclick: () => { d.questions.push({ ...newQuestion("buzz"), input: "kana", kana: "", kanaN: 6, kanaSec: 3, session: sx.id }); normalize(); touch(); paintQuestions(); } }, icon("plus"), "早押し（1文字ずつ）の問題")));
     }
     let sessWhoPainters = [];
     const paintSessWho = () => sessWhoPainters.forEach((f) => f());
@@ -5939,6 +5995,27 @@ function quizManager({ withTitle = true } = {}) {
       const text = h("textarea", { class: "plain", rows: "2", placeholder: "問題文" });
       text.value = q.text ?? "";
       text.addEventListener("input", () => { q.text = text.value; touch(); });
+      // 画像（1問に1枚）。選んだらすぐ縮小して保存し、問題には id だけ入れる（クイズの「保存」で確定）
+      const imgRow = (() => {
+        const file = h("input", { type: "file", accept: "image/*", hidden: true, "aria-label": "問題の画像を選ぶ" });
+        const add = h("button", { type: "button", class: "btn-small ghost q-img-add" }, q.image ? "画像を変える" : "＋ 画像を追加");
+        add.addEventListener("click", () => file.click());
+        file.addEventListener("change", () => guard(add, async () => {
+          const f = file.files?.[0];
+          if (!f) return;
+          add.textContent = "縮小して保存中…";
+          const data = await compressImage(f);
+          const ref = doc(C("chatImages"));
+          await setDoc(ref, { uid: S.user.uid, chat: "quiz", data });
+          QIMG.set(ref.id, data);
+          q.image = ref.id; touch(); paintQuestions();
+        }).finally(() => { file.value = ""; }));
+        return h("div", { class: "group-body q-img-row" },
+          q.image ? quizImgEl(q.image, "q-img-thumb") : null,
+          h("div", { class: "q-img-acts" }, add,
+            q.image ? h("button", { type: "button", class: "text-btn destructive", onclick: () => { q.image = null; touch(); paintQuestions(); } }, "画像を外す") : null,
+            h("span", { class: "cell-sub" }, "問題文の下に出ます（スマホ・表示用の画面）")), file);
+      })();
       const num = (val, onset, attrs = {}) => {
         const inp = h("input", { type: "number", value: String(val ?? 0), inputmode: "numeric", ...attrs });
         inp.addEventListener("input", () => { onset(Number(inp.value) || 0); touch(); });
@@ -6004,7 +6081,27 @@ function quizManager({ withTitle = true } = {}) {
       } else {
         const ans = h("input", { type: "text", value: q.answer ?? "", placeholder: q.type === "text" ? "正解（「/」で区切ると複数の正解を登録できます）" : "正解のメモ（自分用）" });
         ans.addEventListener("input", () => { q.answer = ans.value; touch(); });
-        body = h("div", { class: "group-body" }, field("正解", ans));
+        if (q.type === "buzz") {
+          // 早押しの解答のしかた：キーボードで入力 ／ ひらがなを1文字ずつ選ぶ（みんはや式）
+          const how = h("select", { class: "inline-select", "aria-label": "解答のしかた" },
+            h("option", { value: "text" }, "キーボード入力"), h("option", { value: "kana" }, "1文字ずつ選ぶ"));
+          how.value = isKanaQ(q) ? "kana" : "text";
+          how.addEventListener("change", () => { q.input = how.value; if (q.input === "kana") { q.kanaN ??= 6; q.kanaSec ??= 3; q.kana ??= ""; } touch(); paintQuestions(); });
+          const rows = [field("解答のしかた", how), field(isKanaQ(q) ? "正解の表記" : "正解", ans)];
+          if (isKanaQ(q)) {
+            ans.placeholder = "例：富士山";
+            const yomi = h("input", { type: "text", value: q.kana ?? "", placeholder: "例：ふじさん", "aria-label": "答えのよみ（ひらがな）" });
+            const warn = h("div", { class: "cell-sub q-warn" });
+            const check = () => { const bad = kanaBad(q); const n = [...kanaOf(q)].length; warn.textContent = !n ? "⚠ よみを入れてください" : bad.length ? `⚠ ひらがな以外の文字（${bad.join("")}）は使えません` : `${n}文字 ・ 解答の時間 ${Math.max(BUZZ_ANSWER_SEC, n * kanaSecOf(q))}秒 ・ 違う文字を選んだ時点で誤答`; warn.classList.toggle("bad", !n || bad.length > 0); };
+            yomi.addEventListener("input", () => { q.kana = yomi.value; touch(); check(); });
+            const sel = (vals, cur, unit, onset, label) => { const x = h("select", { class: "inline-select", "aria-label": label }, vals.map((v) => h("option", { value: String(v) }, `${v}${unit}`))); x.value = String(cur); x.addEventListener("change", () => { onset(Number(x.value)); touch(); check(); }); return x; };
+            rows.push(field("よみ（ひらがな）", yomi),
+              field("候補の数", sel(KANA_N, kanaNOf(q), "個", (v) => { q.kanaN = v; }, "1文字ごとの候補の数")),
+              field("1文字の時間", sel(KANA_SEC, kanaSecOf(q), "秒", (v) => { q.kanaSec = v; }, "1文字あたりの時間")), warn);
+            check();
+          }
+          body = h("div", { class: "group-body" }, rows);
+        } else body = h("div", { class: "group-body" }, field("正解", ans));
       }
       const move = (dir) => {
         const j = i + dir;
@@ -6019,7 +6116,7 @@ function quizManager({ withTitle = true } = {}) {
             h("button", { class: "icon-btn", title: "上へ", onclick: () => move(-1) }, "↑"),
             h("button", { class: "icon-btn", title: "下へ", onclick: () => move(1) }, "↓"),
             h("button", { class: "text-btn destructive", onclick: () => { d.questions.splice(i, 1); touch(); paintQuestions(); } }, "削除"))),
-        type, text, body,
+        type, text, imgRow, body,
         h("div", { class: "group-body q-nums" },
           d.sessions.length > 1 ? field("区切り", (() => {
             const sel = h("select", { class: "inline-select" }, d.sessions.map((x) => h("option", { value: x.id, selected: x.id === q.session }, x.name)));
@@ -6079,6 +6176,8 @@ function quizManager({ withTitle = true } = {}) {
           ] : []),
         ], au.on ? "「第1問を出題」だけ司会が押します（参加者がそろうのを待つため）。そのあとは、時間（または全員の回答）で締め切る → 正解を発表 → 次の問題 → 最後に結果発表 まで自動で進みます。早押しは、送られた答えが正解（「／」で区切った別解も）と同じ文字なら正解、違えば不正解に自動でします。操作用の画面のボタンで、いつでも手で進めたり判定を直したりできます。進めている間は、管理者の操作用か表示用の画面のどれか1つを開いたままにしてください。"
           : "オフのときは、これまでどおり司会が操作用の画面のボタンで進めます。"),
+        group("観戦", [field("解答者以外にも問題と進み具合を見せる", sw(!!d.watch, (v) => { d.watch = v; }))],
+          "オンにすると、解答者に選ばれていない参加者（観戦の人）のスマホにも、問題文・選択肢・残り時間・回答した人数・早押しの解答権と入力の進み具合・正解を出します。オフのときは、これまでどおり「前の画面を見てください」とだけ出ます。答えや正解は、発表するまで観戦の人にも出ません。"),
         group("妨害システム", [
           field("妨害を使う", sw(sb.on, (v) => { sb.on = v; }, true)),
           ...(sb.on ? [
@@ -6196,7 +6295,7 @@ function quizAutoTick(L, qz) {
     if (q?.type === "buzz") {
       // 早押しの答えは、正解（別解）と同じ文字なら正解、違えば不正解
       for (const a of buzzOrder(L.index)) {
-        if (!a.text || a.timeout || typeof a.judge === "boolean" || QA.judged.has(a.id)) continue;
+        if (!a.text || a.timeout || typeof a.judge === "boolean" || QA.judged.has(a.id) || isKanaQ(q)) continue;
         QA.judged.add(a.id);
         fire(updateDoc(D("quizAnswers", a.id), { judge: acceptedAnswers(q).includes(normAnswer(a.text)) }));
       }
@@ -6456,6 +6555,7 @@ function buzzStage(L, q) {
     turn = h("div", { class: `pr-turn${ok ? " ok" : ""}${firstTime(`turn:${L.seq}:${cur.uid}`) ? " enter" : ""}` },
       h("div", { class: "lbl" }, ok ? "正解" : "解答権"),
       h("div", { class: "who" }, memberName(cur.uid), h("small", null, fmtSec(cur.reactionMs))),
+      L.q?.kana && L.phase === "question" && !cur.text && !cur.timeout ? kanaSlots(String(cur.kanaIn ?? ""), L.q.kana.n, "lg") : null,
       text ? h("div", { class: "ans" }, `「${text}」`)
         : L.phase === "question" ? h("div", { class: "pr-turn-count", "data-turncount": "" }, Math.ceil(turnLeft(cur.uid))) : null,
       ok ? markSvg(true, firstTime(`bw:${L.seq}:${cur.uid}`), "mark-turn") : null);
@@ -6542,11 +6642,35 @@ function paintDisplay(P, L, qz, rem) {
     }
     body = h("div", { class: "pr-q" },
       readTextEl(L, `pr-text-q${firstTime(`dq:${L.seq}`) ? " enter" : ""}`),
+      quizImgEl(q.image, "pr-qimg"),
       detail,
-      revealed && q.type !== "choice" && q.answer ? h("div", { class: `pr-answer${firstTime(`da:${L.seq}`) ? " enter" : ""}` }, "正解：", q.answer) : null);
+      revealed && q.type !== "choice" && (q.answer || isKanaQ(q)) ? h("div", { class: `pr-answer${firstTime(`da:${L.seq}`) ? " enter" : ""}` }, "正解：", isKanaQ(q) && !String(q.answer ?? "").trim() ? q.kana : q.answer) : null);
   }
   const side = displaySide(L);
   setKids(P, head, effectRow(L), side ? h("div", { class: "pr-row" }, body, side) : body, L.phase === "lobby" || L.phase === "results" ? null : answerBar(L, qz));
+  fitPrImg(P, L);
+}
+// 表示用の画面：問題の画像で選択肢などが下の解答者のバーに隠れるときは、はみ出す分だけ画像を小さくする
+// （同じ問題・同じ画面の大きさのあいだは結果を覚えておき、2秒ごとの描き直しでちらつかないようにする）
+function fitPrImg(P, L) {
+  const img = P.querySelector(".pr-qimg .qimg");
+  if (!img) return;
+  const key = `${L.seq}:${L.phase}:${innerWidth}x${innerHeight}`;
+  if (QZ.prImgFit?.k === key) img.style.maxHeight = `${QZ.prImgFit.px}px`;
+  const run = () => {
+    if (!img.isConnected) return;
+    const q = img.closest(".pr-q");
+    const bar = P.querySelector(".pr-bar");
+    const limit = (bar ? bar.getBoundingClientRect().top : innerHeight) - 8;
+    const bottom = Math.max(...[q, ...q.children].map((x) => x.getBoundingClientRect().bottom));
+    const over = bottom - limit;
+    if (over > 1) {
+      const px = Math.max(innerHeight * 0.12, img.getBoundingClientRect().height - over);
+      img.style.maxHeight = `${px}px`;
+      QZ.prImgFit = { k: key, px };
+    } else if (QZ.prImgFit?.k !== key) QZ.prImgFit = { k: key, px: img.getBoundingClientRect().height || innerHeight * 0.26 };
+  };
+  if (img.complete && img.naturalWidth) requestAnimationFrame(run); else img.addEventListener("load", () => requestAnimationFrame(run), { once: true });
 }
 
 // 操作用（手元で進行と ○×判定をする）
@@ -6596,9 +6720,9 @@ function paintOperator(P, L, qz, rem) {
     const list = (order ?? answers.slice().sort((a, b) => (a.reactionMs ?? 0) - (b.reactionMs ?? 0))).map((a, i) => {
       const ok = judged(q, a);
       const hasTurn = isBuzz && L.phase === "question" && L.turn?.uid === a.uid && ok !== false;
-      const match = isBuzz && a.text && acceptedAnswers(q).includes(normAnswer(a.text));
+      const match = isBuzz && a.text && (isKanaQ(q) ? toHira(a.text) === kanaOf(q) : acceptedAnswers(q).includes(normAnswer(a.text)));
       const shown = q.type !== "buzz" ? answerTextOf(q, a) + (isSeqType(q) ? `（${seqHits(q, a)}/${seqLen(q)}）` : "")
-        : buzzText(a) ? `「${buzzText(a)}」` : hasTurn ? "入力中…" : "待機";
+        : buzzText(a) ? `「${buzzText(a)}」` : hasTurn ? (a.kanaIn ? `入力中「${a.kanaIn}…」` : "入力中…") : "待機";
       return h("div", { class: `cell op-ans${ok === true ? " ok" : ok === false ? " ng" : ""}${hasTurn ? " turn" : ""}` },
         order ? h("span", { class: "op-rank" }, i + 1) : null,
         h("div", { class: "cell-main" },
@@ -6621,6 +6745,7 @@ function paintOperator(P, L, qz, rem) {
       fxs.length ? h("div", { class: "op-fx" }, "妨害：", fxs.map((f) => `${memberName(f.by)}→${memberName(f.target)}「${SABO_TYPES[f.type]?.label}」`).join("　")) : null,
       h("div", { class: "card op-q" },
         h("div", { class: "op-qtext" }, q.text || "（問題文なし）"),
+        quizImgEl(q.image, "op-qimg"),
         reading ? h("div", { class: "op-readline" }, "画面の表示：", readTextEl(L, "op-readprog"),
           h("button", { class: "btn-small ghost", onclick: () => quizSetPhase(L.phase, { fullText: true }) }, "全文を表示")) : null,
         q.type === "choice" ? h("div", { class: "op-choices" }, (q.choices ?? []).map((c, k) =>
@@ -6725,6 +6850,38 @@ function seqBuilder(L, q, mine, locked, blind) {
       h("button", { class: "ql-send", disabled: locked || seq.length !== need || sent, onclick: () => quizAnswer({ order: seq.map(toVal) }) }, sent ? "送信済み" : mine ? "送り直す" : "送信")));
 }
 
+// v95 観戦の人の画面（クイズの「解答者以外にも問題と進み具合を見せる」がオンのとき）。答え・正解は発表まで出さない
+function quizWatchView(L, q) {
+  if (!q) return null;
+  const ansOn = answerVisible(L);
+  const A = ansOn ? L.answer : null;
+  const order = q.type === "buzz" ? buzzOrder(L.index) : [];
+  const answers = answersOf(L.index);
+  const who = answerersAt(L, L.index);
+  const total = who ? who.length : null;
+  let mid = null;
+  if (q.type === "choice" || q.type === "vote" || isSeqType(q)) {
+    mid = h("ol", { class: "ql-watch-ch" }, (q.choices ?? []).map((c, k) => h("li", { class: q.type === "choice" && A != null && A === k ? "ok" : null }, h("b", null, q.type === "choice" ? "ABCDEFGH"[k] ?? k + 1 : String(k + 1)), h("span", null, String(c)))));
+  } else if (q.type === "buzz") {
+    const cur = L.phase === "question" ? order.find((a) => a.uid === L.turn?.uid && judged(q, a) !== false) : null;
+    const wrong = order.filter((a) => judged(q, a) === false);
+    mid = h("div", { class: "ql-watch-buzz" },
+      cur ? h("div", { class: "ql-watch-turn" }, h("small", null, "解答権"), h("b", null, memberName(cur.uid)),
+        L.q?.kana && !cur.text && !cur.timeout ? kanaSlots(String(cur.kanaIn ?? ""), L.q.kana.n, "sm")
+          : cur.text ? h("div", { class: "ql-watch-a" }, `「${cur.text}」`) : h("span", { class: "ql-watch-count", "data-turncount": "" }, Math.ceil(turnLeft(cur.uid))))
+        : L.phase === "question" ? h("div", { class: "ql-watch-turn idle" }, order.length ? "解答権を確認中…" : "早押し待ち…") : null,
+      wrong.length ? h("ul", { class: "ql-watch-wrong" }, wrong.map((a) => h("li", null, h("span", null, "×"), h("b", null, buzzText(a) || "—"), h("small", null, memberName(a.uid))))) : null);
+  }
+  const got = q.type === "buzz" ? order.length : answers.length;
+  const okN = ansOn ? answers.filter((a) => judged({ ...q, answer: A ?? q.answer }, a) === true).length : 0;
+  return h("div", { class: "ql-watch-view" },
+    q.phone !== false ? readTextEl(L, "ql-qtext") : h("div", { class: "ql-qtext muted" }, "問題は前の画面を見てください"),
+    q.phone !== false ? quizImgEl(q.image, "ql-qimg") : null,
+    mid,
+    h("div", { class: "ql-watch-stat" }, q.type === "buzz" ? `早押し ${got}人` : `回答 ${got}${total != null ? ` / ${total}` : ""}人`, ansOn && q.type !== "buzz" ? ` ・ 正解 ${okN}人` : ""),
+    ansOn && answerLabel(q, A) ? h("div", { class: "ql-ans" }, `正解：${answerLabel(q, A)}`) : null);
+}
+
 // 早押しのボタンと解答欄（問題ごとに1回だけ作って使い回す）。
 // 作り直すと、押した直後に出る入力欄にキーボードを出せなかったり、入力中にキーボードが閉じたりするため
 function buzzPanel(L) {
@@ -6737,9 +6894,12 @@ function buzzPanel(L) {
   const count = h("div", { class: "ql-turn-count" });
   const input = h("input", { type: "text", class: "ql-input", placeholder: "答えを入力", enterkeyhint: "send", autocomplete: "off", autocapitalize: "off" });
   const send = h("button", { class: "ql-send" }, "解答する");
-  const box = h("div", { class: "ql-turnbox", hidden: true }, h("div", { class: "ql-turn-row" }, title, count), input, send);
+  // みんはや式：文字のマスと、今の位置の候補ボタン（キーボードは使わない）
+  const kana = L.q?.kana ? { slots: h("div", { class: "ql-kana-slots" }), keys: h("div", { class: "ql-kana-keys" }), typed: "", keyState: "" } : null;
+  if (kana) { input.hidden = true; send.hidden = true; }
+  const box = h("div", { class: `ql-turnbox${kana ? " kana" : ""}`, hidden: true }, h("div", { class: "ql-turn-row" }, title, count), kana?.slots, kana?.keys, input, send);
   const root = h("div", { class: "ql-buzzwrap" }, btn, info, box);
-  const ui = QZ.buzzUI = { seq: L.seq, id, root, btn, info, title, count, input, send, box, pressed: false, sent: false };
+  const ui = QZ.buzzUI = { seq: L.seq, id, root, btn, info, title, count, input, send, box, kana, pressed: false, sent: false };
   // 押した瞬間に記録する（pointerdown）。キーボードは click のときに出す（スマホはこの順でないと出ない）
   btn.addEventListener("pointerdown", (e) => {
     e.preventDefault();
@@ -6751,7 +6911,7 @@ function buzzPanel(L) {
     updateBuzzPanel();
   });
   // スマホは「指を離したとき（pointerup）」か click の中でないとキーボードが出ないので、両方で入力欄にフォーカスする
-  const focusInput = () => { if (ui.pressed && !box.hidden && document.activeElement !== input) input.focus({ preventScroll: true }); };
+  const focusInput = () => { if (!kana && ui.pressed && !box.hidden && document.activeElement !== input) input.focus({ preventScroll: true }); };
   btn.addEventListener("pointerup", focusInput);
   btn.addEventListener("click", focusInput);
   const submit = () => {
@@ -6765,6 +6925,21 @@ function buzzPanel(L) {
   };
   send.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); } });
+  // みんはや式：1文字選ぶたびに送る。最後の文字で「解答」になる。正誤は操作用の画面が1文字ごとに判定する
+  if (kana) kana.keys.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-k]");
+    const L2 = S.live, k = L2?.q?.kana;
+    if (!b || b.disabled || !k || ui.sent || L2.turn?.uid !== uid || L2.phase !== "question" || turnLeft(uid) === 0) return;
+    const mine = S.quizAnswers.get(id);
+    if (mine && (typeof mine.judge === "boolean" || mine.timeout)) return;
+    if ([...kana.typed].length !== Number(b.dataset.pos)) return;
+    kana.typed += b.dataset.k;
+    sfx("tap");
+    const done = [...kana.typed].length >= k.n;
+    if (done) ui.sent = true;
+    fire(updateDoc(D("quizAnswers", id), done ? { kanaIn: kana.typed, text: kana.typed, textMs: Math.round(performance.now() - QZ.turnT0) } : { kanaIn: kana.typed }));
+    updateBuzzPanel();
+  });
   updateBuzzPanel();
   return root;
 }
@@ -6818,6 +6993,23 @@ function updateBuzzPanel() {
   ui.count.classList.toggle("hurry", myTurn && left <= 3);
   ui.send.disabled = !myTurn || left === 0 || !ui.input.value.trim();
   ui.input.oninput = () => { ui.send.disabled = !(S.live?.turn?.uid === uid && turnLeft(uid) > 0 && ui.input.value.trim()); };
+  const K = ui.kana, k = L.q?.kana;
+  if (K && k) {
+    if (!K.typed && mine?.kanaIn) K.typed = String(mine.kanaIn);
+    const pos = [...K.typed].length;
+    ui.title.textContent = myTurn ? "解答権獲得！" : "解答権を待っています";
+    K.slots.replaceChildren(kanaSlots(K.typed, k.n, "sm"));
+    // 候補は自分の番の間だけ出す（作り直すのは位置や押せる状態が変わったときだけ）
+    const can = !!myTurn && left > 0 && !sent && verdict == null && pos < k.n;
+    const state = `${pos}:${can}`;
+    if (K.keyState !== state) {
+      K.keyState = state;
+      const opts = can ? [...String(k.opts?.[pos] ?? "")] : [];
+      K.keys.replaceChildren(...opts.map((c) => h("button", { class: "ql-kana-key", "data-k": c, "data-pos": String(pos) }, c)));
+      K.keys.hidden = !opts.length;
+      K.keys.style.setProperty("--cols", String(opts.length > 6 ? Math.ceil(opts.length / 2) : Math.min(opts.length, 3) || 1));
+    }
+  }
 }
 
 // ---- ルール説明のスライド（表示用・スマホで同じ内容を出す）
@@ -7056,7 +7248,7 @@ function myBetResults() {
     h("small", null, { win: `的中 +${b.payout}pt`, lose: "はずれ", refund: `返金 +${b.payout}pt`, ok: "集計中…", pending: "集計中…" }[b.status] ?? ""))));
 }
 
-const quizActiveForMe = (L) => !!(L && L.phase !== "off" && ((!S.isAdmin && isAnswererIn(L, S.user?.uid)) || canSabotage(L) || canBet(L)));
+const quizActiveForMe = (L) => !!(L && L.phase !== "off" && ((!S.isAdmin && (isAnswererIn(L, S.user?.uid) || L.watch)) || canSabotage(L) || canBet(L)));
 
 // ---- 効果音（参加者のスマホで鳴らす。音のファイルは使わず、その場で合成する）
 // スマホは「画面を一度さわったあと」でないと音を出せないので、最初にさわったときに音の準備をする
@@ -7145,7 +7337,7 @@ function paintMemberQuiz(full = true) {
   const fx = answerer ? myEffect() : null;
   el.classList.toggle("flip", fx === "flip" && (L.phase === "question" || L.phase === "reading"));
   const mine = L.phase === "lobby" || L.phase === "results" ? null : S.quizAnswers.get(`${L.quizId}_${L.index}_${uid}`);
-  const rem = answerer && L.phase === "question" ? remainingSec(L, true) : null;
+  const rem = (answerer || L.watch) && L.phase === "question" ? remainingSec(L, true) : null;
   const late = lateLeft();
   const locked = L.phase !== "question" || rem === 0 || fx === "seal" || late > 0;
   const readingNow = L.phase === "reading";
@@ -7181,8 +7373,9 @@ function paintMemberQuiz(full = true) {
     // 観戦（解答者ではない人）
     const fxs = effectList(L);
     body = h("div", { class: "ql-q" },
-      h("div", { class: "ql-sub" }, readingNow ? "問題読み中" : L.phase === "question" ? "出題中 — 前の画面を見てください" : L.phase === "closed" ? "締切" : "正解発表"),
+      h("div", { class: "ql-sub" }, readingNow ? "問題読み中" : L.phase === "question" ? (L.watch ? "出題中" : "出題中 — 前の画面を見てください") : L.phase === "closed" ? "締切" : "正解発表"),
       isAnswererIn(L, uid) ? h("div", { class: "ql-sub" }, `${sessionAt(L, L.index)?.name ?? "この区切り"}は解答者ではないので観戦です`) : null,
+      L.watch ? quizWatchView(L, q) : null,
       fxs.length ? h("div", { class: "ql-fxlist" }, fxs.map((f) => h("div", null, `${memberName(f.by)} → ${memberName(f.target)}「${SABO_TYPES[f.type]?.label ?? f.type}」`))) : null);
   } else {
     const myShown = isShown(L, uid);
@@ -7259,6 +7452,7 @@ function paintMemberQuiz(full = true) {
       effectBanner(L),
       blind && L.phase !== "reveal" ? h("div", { class: "ql-qtext muted" }, "目隠し中：問題文は表示されません")
         : q.phone !== false ? readTextEl(L, `ql-qtext${firstTime(`mq:${L.seq}`) ? " enter" : ""}`) : h("div", { class: "ql-qtext muted" }, "問題は前の画面を見てください"),
+      !(blind && L.phase !== "reveal") && q.phone !== false ? quizImgEl(q.image, "ql-qimg") : null,
       late > 0 && q.type !== "buzz" ? h("div", { class: "ql-late", "data-late": "" }, `出遅れ中：あと ${Math.ceil(late)} 秒`) : null,
       input,
       status ? h("div", { class: "ql-status" }, status) : null,
@@ -10803,7 +10997,7 @@ const gLive = (g) => !!g && g.phase !== "ended";
 const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
 const gNames = (uids) => (uids ?? []).map(memberName).join("・");
 const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => (b.no ?? 0) - (a.no ?? 0));
-const GV = { hidden: new Set(), show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GV = { hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
 const GBUSY = new Set(); // 進めている最中のゲーム
@@ -10849,7 +11043,7 @@ async function startGame(kind, players, o, demo = false) {
   const sec = (uid, data) => b.set(D("gameSecrets", `${gid}_${uid}`), { gameId: gid, uid, ...data });
   const base = { kind, title: GAME_KINDS[kind].label, players, no: now, createdAt: demo ? null : serverTimestamp(), ...(demo ? { demo: true } : {}), step: 0, phase: "play", day: 1,
     actKey: null, actors: [], candidates: [], endsAt: null, log: [], result: null, reveal: null, opts: o,
-    logPub: o.logPub ?? { on: false, cats: logCatKeys(kind) } };
+    logPub: o.logPub ?? { on: false, cats: logCatKeys(kind) }, watch: !!o.watch };
   let g;
   if (kind === "wolf") {
     const roles = [];
@@ -11058,6 +11252,8 @@ function wolfEnd(g, alive, log, win) {
     reveal: Object.fromEntries(g.players.map((u) => [u, WOLF_ROLES[wolfRole(g, u)]?.label ?? "?"])),
     log: [...log, gLog(`ゲームが終了しました。${win.text}`, null, { type: "end" })] };
 }
+// v95 設定「死んだ人はみんなの役職を見られる」がオンなら、死んだ人の秘密データに全員の役職を書く（場面を戻すと一緒に消える）
+const wolfDeadSee = (g, uids) => (g.opts?.deadSeeRoles ? uids.filter(Boolean).map((u) => [u, { allRoles: Object.fromEntries(g.players.map((x) => [x, wolfRole(g, x)])) }]) : []);
 const wolfDeath = (g, u) => (g.opts?.revealOnDeath ? `（${WOLF_ROLES[wolfRole(g, u)]?.label ?? "?"}）` : "");
 // 夜 → 朝
 function wolfMorning(g) {
@@ -11081,10 +11277,11 @@ function wolfMorning(g) {
     if (wolfRole(g, u) === "seer" && t !== u) secrets.push([u, { results: [...(gSecret(g, u)?.results ?? []), { day: d, target: t, wolf: wolfIsWolf(g, t), kind: "seer" }] }]);
   }
   if (g.lastExec) for (const u of alive) if (wolfRole(g, u) === "medium") secrets.push([u, { results: [...(gSecret(g, u)?.results ?? []), { day: d, target: g.lastExec, wolf: wolfIsWolf(g, g.lastExec), kind: "medium" }] }]);
+  secrets.push(...wolfDeadSee(g, [dead]));
   const next = alive.filter((u) => u !== dead);
   const log = [...(g.log ?? []), gLog(dead ? `${d + 1}日目の朝になりました。${memberName(dead)}さんが無残な姿で見つかりました${wolfDeath(g, dead)}。` : `${d + 1}日目の朝になりました。昨夜の犠牲者はいませんでした。`, null, { type: "morning", day: d + 1, night: key, dead })];
   const win = wolfWin(g, next);
-  if (win) return { update: wolfEnd(g, next, log, win), secrets };
+  if (win) return { update: { ...wolfEnd(g, next, log, win), lastExec: null, lastDeath: dead }, secrets };
   log.push(gLog(`話し合いの時間です（${g.opts.talkMin}分）。生き残っているのは ${next.length}人です。`, null, { type: "day", day: d + 1 }));
   return { update: { phase: "day", day: d + 1, alive: next, actKey: null, actors: [], candidates: [], endsAt: Date.now() + g.opts.talkMin * 60000, lastExec: null, lastDeath: dead, log }, secrets };
 }
@@ -11122,9 +11319,9 @@ function wolfTally(g) {
   const next = g.alive.filter((u) => u !== x);
   log.push(gLog(`${memberName(x)}さんが処刑されました${wolfDeath(g, x)}。`, null, { type: "exec", uid: x }));
   const win = wolfWin(g, next);
-  if (win) return { update: wolfEnd(g, next, log, win) };
+  if (win) return { update: { ...wolfEnd(g, next, log, win), lastExec: x }, secrets: wolfDeadSee(g, [x]) };
   log.push(gLog(`${g.day}日目の夜になりました。全員、自分のスマホで1人を選んでください。`, null, { type: "night", day: g.day }));
-  return { update: { phase: "night", alive: next, actKey: `n${g.day}`, actors: next, candidates: [], endsAt: Date.now() + g.opts.nightSec * 1000, lastExec: x, log } };
+  return { update: { phase: "night", alive: next, actKey: `n${g.day}`, actors: next, candidates: [], endsAt: Date.now() + g.opts.nightSec * 1000, lastExec: x, log }, secrets: wolfDeadSee(g, [x]) };
 }
 
 // ---- ワード人狼の進行
@@ -11915,7 +12112,7 @@ const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック�
 const CX_DEAL_MS = 820, CX_FLIP_MS = 900;
 // v94 脱落・その回にやられた人・バーストを、その瞬間に約2秒のモーションで目立たせる。
 // 始まった時刻を覚えておき、途中で画面が描き直されても続きから動かす（遅れた分だけ animation-delay を負にする）。delay は始めるまでの待ち時間（カードがめくれ終わってから など）
-const FALL_MS = 2000;
+const FALL_MS = 2300; // 光らせる長さ（人狼の席は2.2秒の動き）
 function fallFx(key, isNew, delay = 0) {
   const now = Date.now();
   if (isNew && !GV.fall.has(key)) GV.fall.set(key, now + delay);
@@ -11928,11 +12125,40 @@ function gFallFx(g, u, ns = "") {
   if (!gDead(g, u)) return { cls: "", style: "" };
   const prev = GV.outPrev.get(`${ns}${g.id}`);
   const isNew = prev ? !prev.has(u) : u === g.lastDeath || u === g.lastExec;
-  // 人狼などの脱落は場面の切り替わりと同時に起きるので、真ん中の帯（約1.6秒）が消えかけてから光らせる。NGワードのアウトは場面が変わらないのですぐ
-  const wait = g.kind === "ng" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1300;
+  // 人狼の脱落は場面の切り替わりと同時に起きるので、真ん中の帯（約1.6秒）→ 真ん中の大きな死亡の表示（約2.4秒）のあとに、席でも光らせて「どこの人か」を見せる
+  // NGワードのアウトは場面が変わらないのですぐ
+  const wait = g.kind === "ng" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : g.kind === "wolf" ? DEATH_AT + DEATH_MS - 500 : 1300;
   return fallFx(`fall:${ns}${g.id}:${u}`, isNew, wait);
 }
-const gFallSeen = (g, ns = "") => GV.outPrev.set(`${ns}${g.id}`, new Set(g.players.filter((u) => gDead(g, u))));
+// この端末で前に見たときから新しく死んだ人がいれば、人狼では真ん中に大きく出してから、今の死者を覚えておく
+function gFallSeen(g, ns = "") {
+  const key = `${ns}${g.id}`, prev = GV.outPrev.get(key), now = g.players.filter((u) => gDead(g, u));
+  if (g.kind === "wolf" && prev) {
+    const fresh = now.filter((u) => !prev.has(u) && !GV.cut.has(`${g.id}:${u}`));
+    if (fresh.length) { fresh.forEach((u) => GV.cut.add(`${g.id}:${u}`)); deathCutin(g, fresh); }
+  }
+  GV.outPrev.set(key, new Set(now));
+}
+// v95 人狼で人が死んだとき：場面の帯が消えかけたら、画面の真ん中に大きなアイコン＋✕のハンコ＋「処刑」「夜に襲われた」を約2.4秒出す
+const DEATH_AT = 1300, DEATH_MS = 2400;
+function deathCutin(g, uids) {
+  const me = S.user?.uid, calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  setTimeout(() => {
+    document.querySelectorAll(".cx-death").forEach((x) => x.remove());
+    const el = h("div", { class: `cx-death${calm ? " calm" : ""}`, role: "status" },
+      h("div", { class: "cx-death-in" }, uids.map((u) => {
+        // 設定で「分けない」にしたときは、処刑も襲撃も同じ「DEAD・脱落しました」にする
+        const ex = u !== g.lastDeath, self = u === me, cause = g.opts?.showCause !== false;
+        return h("div", { class: `cx-death-one${self ? " self" : ""}` },
+          h("div", { class: "cx-death-av", "aria-hidden": "true" }, h("span", { class: "cx-death-ch" }, [...memberName(u)][0] ?? "?"), h("span", { class: "cx-death-x" }, "✕")),
+          h("b", { class: "cx-death-en" }, !cause ? "DEAD" : ex ? "EXECUTED" : "KILLED"),
+          h("div", { class: "cx-death-nm" }, self ? "あなた" : `${memberName(u)}さん`),
+          h("small", { class: "cx-death-why" }, !cause ? "脱落しました" : ex ? "投票で処刑されました" : "夜に人狼に襲われました"));
+      })));
+    document.body.append(el);
+    setTimeout(() => el.remove(), DEATH_MS + 100);
+  }, calm ? 0 : DEATH_AT);
+}
 const BJ_FLIP_MS = 1500; // v94 ブラックジャックは、配る・めくるを約1.5秒かけて（わくわく感を出す）。cls に " bj-slow" を付けたときに使う
 const BJ_RING_MAX = 7; // 丸テーブルに並べるのは、ほかの人が7人まで（8人まで）。それより多いときは上の帯に小さく並べる
 const cxFan = (cs, cls = "", zone = null, step = 300) => {
@@ -12237,12 +12463,13 @@ function cardMemberBody(g) {
   return out;
 }
 // みんなに見せる画面
-function cardStageBody(g) {
-  const last = [...(g.log ?? [])].reverse().find((l) => !l.ev?.quiet) ?? (g.log ?? []).at(-1);
+function cardStageBody(g, spect = false) {
+  const logs = spect ? gLogPublic(g) ?? [] : g.log ?? [];
+  const last = [...logs].reverse().find((l) => !l.ev?.quiet) ?? logs.at(-1);
   return [
     g.kind === "bj" ? bjTable(g) : dfgTable(g),
     last ? h("div", { class: "st-news" }, last.text) : null,
-    h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 8)),
+    spect && !logs.length ? null : h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 8, spect ? logs : undefined)),
   ];
 }
 
@@ -12685,6 +12912,16 @@ function myGame() {
   const uid = S.user.uid;
   return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || Date.now() - (g.no ?? 0) < 6 * 3600000)) ?? null;
 }
+// 観戦できるゲーム（遊ぶ人ではない参加者だけ）。進行中のもの。開いて見ている間は、終わってもそのまま出す
+const WATCH_NOTE = "オンにすると、遊ぶ人に選ばれていない参加者のスマホに「観戦する」ボタンが出て、いまの場面・残り時間・席（脱落した人）・ログを見られます。役職・お題・手札などの秘密は出ません。ログは「参加者へのログ」の設定に従います。ゲーム中に変えてもすぐ反映されます。";
+function watchGame() {
+  if (S.isAdmin || !S.user) return null;
+  const uid = S.user.uid;
+  const ok = (g) => g && g.watch && !g.demo && !g.players?.includes(uid);
+  const open = GV.watchOpen ? S.games.get(GV.watchOpen) : null;
+  if (ok(open)) return open;
+  return sortedGames().find((g) => ok(g) && gLive(g)) ?? null;
+}
 // 場面が変わったとき（夜→朝、投票、次の回など）に、画面の真ん中を横切る帯を一瞬出す
 function phaseKey(g) {
   if (isCardKind(g.kind)) return `${g.id}:${g.phase === "ended" ? "end" : g.kind === "bj" ? g.bj?.round : g.dfg?.round}`;
@@ -12722,10 +12959,25 @@ function bjFlashCheck(g) {
     setTimeout(() => el.remove(), 2300);
   }, 1300);
 }
+// ゲームの画面を閉じてホームへ（ゲームは続く。右下の「〜に戻る」でいつでも戻れる）。デモも終わらせずに閉じる
+function gameGoHome(g) {
+  GV.hidden.add(`${g.id}:${g.phase === "ended"}`);
+  paintGameLive();
+}
 function paintGameLive() {
   let el = document.querySelector(".game-live");
   let fab = document.querySelector(".game-fab");
-  const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : null) : myGame();
+  const mine0 = S.isAdmin ? null : myGame(), w0 = S.isAdmin ? null : watchGame();
+  const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : null) : mine0 && (gLive(mine0) || !w0) ? mine0 : w0;
+  // 観戦：遊ぶ人ではないので、「観戦する」ボタンを押したときだけ表示用の画面（秘密なし）を開く
+  const spect = !!g && !S.isAdmin && !g.players?.includes(S.user.uid);
+  if (!spect && GV.watchOpen) GV.watchOpen = null;
+  if (spect && GV.watchOpen !== g.id) {
+    el?.remove();
+    if (fab && !(fab.classList.contains("watch-fab") && fab.dataset.g === g.id && gLive(g))) { fab.remove(); fab = null; }
+    if (gLive(g) && !fab) document.body.append(h("button", { class: "game-fab watch-fab", "data-g": g.id, onclick: () => { GV.watchOpen = g.id; GV.pk = null; paintGameLive(); } }, icon("people"), `観戦する ▸ ${g.title}`));
+    return;
+  }
   if (!g && GV.demo) GV.demo = null;
   if (!g) GV.demoAdmin = false;
   // デモを「管理者の画面」で見ている間：参加者の画面は閉じて、戻るボタンだけ出す
@@ -12738,7 +12990,7 @@ function paintGameLive() {
   document.querySelector(".demo-fab")?.remove();
   if (!g) { el?.remove(); fab?.remove(); if (S.isAdmin && GV.stage) { GV.stage = null; if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); } return; }
   if (S.isAdmin) gameNarrate(g);
-  if (!S.isAdmin && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
+  if ((!S.isAdmin || (g.demo && GV.stage !== g.id)) && !spect && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
     el?.remove();
     if (gLive(g) && !fab) document.body.append(h("button", { class: "game-fab", onclick: () => { GV.hidden.delete(`${g.id}:false`); paintGameLive(); } }, icon("people"), `${g.title}に戻る`));
     if (!gLive(g)) fab?.remove();
@@ -12754,18 +13006,18 @@ function paintGameLive() {
   GV.pk = pk;
   if (turned && (gLive(g) || !opened)) setTimeout(() => phaseBanner(g), opened ? 260 : 0);
   const enter = (inner) => { if (opened) vtIn(el, "gl-open"); else if (turned) vtIn(inner, isCardKind(g.kind) ? "vt-soft" : "vt-phase"); return inner; };
-  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (S.isAdmin && GV.stage) return closeGameStage(); if (g.demo) return demoEnd(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
-  if (S.isAdmin && (!g.demo || GV.stage === g.id)) {
+  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (spect) { GV.watchOpen = null; return paintGameLive(); } if (S.isAdmin && GV.stage) return closeGameStage(); if (g.demo) return demoEnd(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
+  if (spect || (S.isAdmin && (!g.demo || GV.stage === g.id))) {
     // みんなに見せる画面（秘密の内容は出さない）。デモのゲームも、管理者の画面から開ける
     el.className = `game-live stage ph-${g.phase === "vote" ? "vote" : g.phase === "night" ? "night" : g.phase === "ended" ? "ended" : "day"}`;
     const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : isCardKind(g.kind) ? "♠" : "💬";
     setKids(el, enter(h("div", { class: "gl-inner st-inner" },
-      h("div", { class: "st-top" }, h("span", { class: "st-title" }, g.title), (g.opts?.auto || isCardKind(g.kind)) && gLive(g) ? h("span", { class: "st-auto" }, h("span", { class: "live-dot" }), "自動で進行中") : null, close),
+      h("div", { class: "st-top" }, h("span", { class: "st-title" }, g.title), spect ? h("span", { class: "ql-watch" }, "観戦") : null, (g.opts?.auto || isCardKind(g.kind)) && gLive(g) ? h("span", { class: "st-auto" }, h("span", { class: "live-dot" }), "自動で進行中") : null, close),
       h("div", { class: "st-phase" }, h("span", { class: "st-icon" }, ic), h("span", null, gPhaseText(g))),
       g.endsAt && gLive(g) ? h("div", { class: `st-timer${gUrgent(g.endsAt) ? " urgent" : ""}`, "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt))
         : g.paused != null && gLive(g) ? h("div", { class: "st-timer paused" }, gPausedText(g.paused)) : null,
       h("p", { class: "st-prompt" }, gPrompt(g)),
-      gameStageBody(g))));
+      gameStageBody(g, spect))));
     el.scrollTop = scroll;
     return;
   }
@@ -12810,10 +13062,11 @@ function gMemberLog(g, n) {
   if (!pub?.length) return null;
   return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "LOG"), gLogList(g, n, pub));
 }
-function gameStageBody(g) {
-  if (isCardKind(g.kind)) return cardStageBody(g);
+function gameStageBody(g, spect = false) {
+  if (isCardKind(g.kind)) return cardStageBody(g, spect);
   const acted = g.actKey ? g.actors.filter((u) => gAct(g, g.actKey, u)).length : null;
-  const last = (g.log ?? []).at(-1);
+  const logs = spect ? gLogPublic(g) ?? [] : g.log ?? [];
+  const last = logs.at(-1);
   const fresh = last && GSTAGE.newsKey !== `${g.id}:${last.t}`;
   if (last) GSTAGE.newsKey = `${g.id}:${last.t}`;
   const out = g.kind === "ng" ? (u) => !!g.outs?.[u] : g.kind === "wolf" ? (u) => !(g.alive ?? g.players).includes(u) : () => false;
@@ -12824,7 +13077,7 @@ function gameStageBody(g) {
     h("div", { class: "st-players" }, g.players.map((u) => { const fx = gFallFx(g, u, "st:"); return h("span", { class: `st-player${out(u) ? " out" : ""}${fx.cls}`, style: fx.style }, out(u) ? h("i", null, g.kind === "ng" ? "OUT" : "✝") : null, memberName(u)); })),
     (gFallSeen(g, "st:"), null),
     gRevealList(g),
-    h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 6)),
+    spect && !logs.length ? null : h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 6, spect ? logs : undefined)),
   ];
 }
 // 参加者の画面：テーブルと操作ボタン（cx-stage）は1画面に収め、ずらして見るのは下のログなど（cx-scroll）だけ
@@ -12946,11 +13199,16 @@ function partyMemberBody(g) {
   }
   const candSet = new Set(cands);
   const minors = new Set(g.minors ?? []);
+  // 死んだ人で、設定により全員の役職を受け取っているときは、席に役職を出す（ゲーム中だけ。終了後はもともと全員に出る）
+  const canSee = g.kind === "wolf" && live && gDead(g, uid) && !!sec?.allRoles;
+  // 役職は「表示する」を押したときだけ出す（そばの人にのぞかれないように、もう一度押すと隠せる）
+  const seeAll = canSee && GV.roleShow.has(g.id);
   const others = sec?.others ?? {};
   // テーブルの席
   const seats = cxAfter(g.players, uid).map((u) => {
     const out = gDead(g, u), fx = gFallFx(g, u), fa = fx.style ? { style: fx.style } : {};
-    const rv = g.phase === "ended" && g.reveal?.[u] != null ? h("div", { class: "cx-meta rv" }, String(g.reveal[u]), minors.has(u) ? h("em", null, " ★") : null) : null;
+    const rv = g.phase === "ended" && g.reveal?.[u] != null ? h("div", { class: "cx-meta rv" }, String(g.reveal[u]), minors.has(u) ? h("em", null, " ★") : null)
+      : seeAll && sec.allRoles[u] ? h("div", { class: `cx-meta rv${sec.allRoles[u] === "wolf" ? " wolf" : ""}` }, WOLF_ROLES[sec.allRoles[u]]?.label ?? "?") : null;
     if (g.kind === "ng") {
       return gSeat("div", u, ` g-ng-row${out ? " out" : ""}${fx.cls}`, fa, out ? "OUT" : null,
         h("div", { class: "g-word cx-word" }, g.phase === "ended" ? g.reveal?.[u] ?? others[u] ?? "?" : others[u] ?? "…"),
@@ -13003,7 +13261,10 @@ function partyMemberBody(g) {
     } else me.push(h("p", { class: "cx-note" }, "少数派がお題を当てています…"));
   }
   if (canPick) me.push(h("div", { class: `cx-label${mine ? "" : " need"}` }, title), h("p", { class: `cx-note${mine ? "" : " need"}` }, mine ? `✓ ${memberName(mine)} ・ 締切まで変更可` : "▲ 薄紫の人をタップ"));
-  else if (g.kind === "wolf" && live && gDead(g, uid)) me.push(h("div", { class: `gl-dead cx-note${meFx.cls}`, style: meFx.style }, "✕ 死亡 ・ 話さずに見守る"));
+  else if (g.kind === "wolf" && live && gDead(g, uid)) me.push(h("div", { class: `gl-dead cx-note${meFx.cls}`, style: meFx.style }, seeAll ? "✕ 死亡 ・ みんなの役職を表示中（話さずに見守る）" : "✕ 死亡 ・ 話さずに見守る",
+    h("div", { class: "gl-dead-acts" },
+      canSee ? h("button", { type: "button", class: `btn-small gl-dead-btn${seeAll ? " on" : ""}`, "aria-pressed": String(seeAll), onclick: () => { if (GV.roleShow.has(g.id)) GV.roleShow.delete(g.id); else GV.roleShow.add(g.id); paintGameLive(); } }, seeAll ? "役職を隠す" : "役職を表示する") : null,
+      h("button", { type: "button", class: "btn-small ghost gl-dead-btn", onclick: () => gameGoHome(g) }, "ホームに戻る"))));
   else if (g.kind === "ng" && live) me.push(h("p", { class: "cx-note" }, "言った人の OUT をタップ"));
   const k = seats.length;
   return [h("section", { class: `cx-table gx gx-${g.kind}${canPick && !mine ? " need" : ""}` },
@@ -13480,7 +13741,7 @@ function gamesAdmin() {
   // 人狼の設定
   let roles = null; // null＝人数に合わせておまかせ
   const roleBox = h("div", { class: "game-roles" });
-  const firstSafe = toggle(true), revealDeath = toggle(false), auto = toggle(true);
+  const firstSafe = toggle(true), revealDeath = toggle(false), deathCause = toggle(true), deadSee = toggle(false), auto = toggle(true);
   const mins = (n, sel, unit = "分") => h("select", { class: "inline-select" }, n.map((x) => h("option", { value: String(x), selected: x === sel }, `${x}${unit}`)));
   // 選択肢に名前をつけたセレクト：[[値, 表示], …]
   const pick = (list, sel) => h("select", { class: "inline-select" }, list.map(([v, t]) => h("option", { value: String(v), selected: String(v) === String(sel) }, t)));
@@ -13491,7 +13752,7 @@ function gamesAdmin() {
   const autoNote = h("div", { class: "group-footer" }, "オンにすると、全員が選び終わるか時間切れになったときに、朝・投票・開票へ自動で進みます。この画面を開いている管理者の端末が司会を務めます（閉じると止まり、開き直すと続きから進みます）。オフの場合は、管理者がボタンを押して進めます。");
   const wolfOpts = h("div", null,
     group("役職（人数に合わせて自動で決まります。変更もできます）", [h("div", { class: "cell" }, roleBox)]),
-    group("ルール", [field("司会を自動で進行する", auto), field("1日目の夜は襲撃しない", firstSafe), field("死亡した人の役職を公開する", revealDeath),
+    group("ルール", [field("司会を自動で進行する", auto), field("1日目の夜は襲撃しない", firstSafe), field("死亡した人の役職を公開する", revealDeath), field("死んだときの表示で「処刑」と「夜の襲撃」を分ける", deathCause), field("死んだ人はみんなの役職を見られる", deadSee),
       field("騎士が同じ人を続けて守れる", knightRepeat), field("だれがだれに投票したかを公開する", votePublic), field("投票が同じ数のとき", wolfTie),
       field("話し合いの時間", talk), field("夜の時間", nightSec), field("投票の時間", voteSec)]), autoNote);
   // ワード人狼
@@ -13649,6 +13910,8 @@ function gamesAdmin() {
   const logBox = h("div");
   let logKind = null;
   const paintLog = (k) => { if (logKind === k) return; logKind = k; setKids(logBox, logPubEditor(k, () => logSet[k], (v) => { logSet[k] = v; })); };
+  // v95 観戦：遊ぶ人に選ばれていない参加者も、進み具合（秘密を出さない表示用の画面）を見られる
+  const watchT = toggle(false);
   const err = h("p", { class: "game-err" });
   const start = h("button", { class: "btn-filled" }, icon("play"), "配って始める");
   const demoBtn = h("button", { class: "btn-small game-demo-btn" }, icon("play"), "デモプレイ（自分＋CPU）");
@@ -13658,6 +13921,7 @@ function gamesAdmin() {
     group("テーブルの席順", [h("div", { class: "cell seat-cell" }, seatMode, seatList)], "参加者の画面の丸テーブルに、この順で時計回りに座ります（大富豪は出す順番も同じ）。↑↓で入れ替えられます。"),
     wolfOpts, wordOpts, ngOpts, numOpts, bjOpts, dfgOpts, ptOpts,
     group("参加者へのログ（これまでの出来事）", [logBox], "ログ（LOG）は「〜さんが処刑されました」など、これまでに起きたことの記録です。はじめは管理者だけに表示され、「全員に表示」にすると選んだ項目だけが参加者のスマホの「ログを見る」から見られます。いまの場面・やること・残り時間は、この設定に関係なく全員のスマホに出ます。"),
+    group("観戦", [field("遊ばない人も観戦できる", watchT)], WATCH_NOTE),
     err, start,
     h("div", { class: "game-demo" }, demoBtn, h("p", { class: "cell-sub" }, "いま選んでいるゲームを、自分と CPU だけでためせます。この端末の中だけで動き、参加者の画面・記録・ポイントには出ません。")));
   const list = h("div");
@@ -13742,7 +14006,7 @@ function gamesAdmin() {
   const buildOpts = (k, n, plan) => {
     const N = (x) => Number(x.value);
     let o;
-    if (k === "wolf") o = { roles: roles ?? wolfPreset(n), auto: auto.checked, firstNightSafe: firstSafe.checked, revealOnDeath: revealDeath.checked, knightRepeat: knightRepeat.checked, votePublic: votePublic.checked, tie: wolfTie.value,
+    if (k === "wolf") o = { roles: roles ?? wolfPreset(n), auto: auto.checked, firstNightSafe: firstSafe.checked, revealOnDeath: revealDeath.checked, showCause: deathCause.checked, deadSeeRoles: deadSee.checked, knightRepeat: knightRepeat.checked, votePublic: votePublic.checked, tie: wolfTie.value,
       talkMin: N(talk), nightSec: auto.checked ? N(nightSec) : 600, voteSec: auto.checked ? N(voteSec) : 600 };
     else if (k === "word") o = { auto: wordAuto.checked, minority: N(minority), talkMin: N(wordTalk), voteSec: N(wordVote), runoff: wordRunoff.checked, tie: wordTie.value, guess: wordGuess.checked, guessSec: N(wordGuessSec),
       pair: wordA.value.trim() ? [wordA.value.trim(), wordB.value.trim()] : null };
@@ -13757,6 +14021,7 @@ function gamesAdmin() {
     else o = { auto: numAuto.checked, limitMin: N(numLimit), max: N(numMax), theme: theme.value.trim() };
     if (plan.pt) o.pt = plan.pt;
     o.logPub = logSet[k] ?? { on: false, cats: logCatKeys(k) };
+    o.watch = watchT.checked;
     return o;
   };
   // デモプレイ：自分＋CPU で、この端末の中だけで遊ぶ（記録・ポイントには残らない）
@@ -13839,6 +14104,7 @@ function gamesAdmin() {
           g.actKey && gAct(g, g.actKey, u) && !isCardKind(g.kind) ? h("small", null, g.phase === "guess" ? `答え「${gAct(g, g.actKey, u)}」` : `→ ${memberName(gAct(g, g.actKey, u))}`) : null))) : null,
       ], "画面をほかの人に見られないように注意してください。"),
       group("参加者へのログ（これまでの出来事）", [logPubEditor(g.kind, () => S.games.get(g.id)?.logPub, (v) => setLogPub(g, v))], "「〜さんが処刑されました」など、これまでに起きたことを参加者が見られるかどうかです。選んだ分だけ参加者のスマホの「ログを見る」に出て、ゲーム中に変えてもすぐ反映されます。いまの場面・やること・残り時間は、この設定に関係なく全員のスマホに出ます。管理者には下の「進行」に全部出ます。"),
+      g.demo ? null : group("観戦", [field("遊ばない人も観戦できる", (() => { const t = toggle(!!g.watch); t.addEventListener("change", () => guard(null, () => updateDoc(D("games", g.id), { watch: t.checked }))); return t; })())], WATCH_NOTE),
       h("div", { class: "group-header standalone" }, "進行"), h("div", { class: "gl-card" }, gLogList(g)),
       h("div", { class: "gp-actions" },
         gLive(g) ? (() => { const b = h("button", { class: "text-btn destructive" }, "ゲームを終える（答えを公開）"); b.addEventListener("click", () => { if (confirm("ゲームを終えて、全員に答えを公開しますか？")) gameGo(g, gameForceEnd, b); }); return b; })() : null,
