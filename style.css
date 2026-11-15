@@ -2937,3 +2937,144 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
   .game-setup .field > .field-label { flex: 1 1 9em; }
   .game-setup .field > select { flex: 1 0 auto; max-width: 100%; }
 }
+
+/* ================= トランプ（v90）：黒いテーブル・ガラスのカード・丸いボタン ================= */
+/* カード：半透明のガラス。数字は左上、マークは左下（白一色） */
+.pc { align-items: flex-start; justify-content: space-between; padding: 6px 0 6px 7px; border-radius: 10px; color: #fff;
+  background: linear-gradient(160deg, rgba(74, 74, 80, .82), rgba(34, 34, 38, .86));
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .15), inset 0 1px 0 rgba(255, 255, 255, .12), 0 10px 24px rgba(0, 0, 0, .55); }
+.pc b { font-size: 18px; font-weight: 500; letter-spacing: -.02em; }
+.pc i { font-size: 17px; margin: 0; line-height: 1; }
+.pc.red { color: #fff; }
+.pc.joker { background: linear-gradient(160deg, rgba(120, 112, 220, .55), rgba(40, 36, 70, .9)); color: #DCD8FF; }
+.pc.back { padding: 6px; background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .88) 0 2.5px, transparent 2.5px 8px) content-box, linear-gradient(160deg, #2E2E33, #1A1A1D);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .15), 0 10px 24px rgba(0, 0, 0, .55); }
+.pc.sm { padding: 4px 0 4px 5px; border-radius: 7px; }
+.pc.sm.back { padding: 4px; }
+.pc.lg { width: 74px; height: 104px; border-radius: 15px; padding: 11px 0 12px 12px; }
+.pc.lg b { font-size: 31px; font-weight: 400; }
+.pc.lg i { font-size: 30px; }
+.pc.lg.joker b { font-size: 12px; font-weight: 700; }
+.pc.lg.back { padding: 9px; background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .9) 0 3.5px, transparent 3.5px 11px) content-box, linear-gradient(160deg, #2E2E33, #1A1A1D); }
+.game-live.stage .pc:not(.sm) { padding: 8px 0 8px 9px; }
+.game-live.stage .pc.back:not(.sm) { padding: 7px; }
+.rp .pc { padding: .7cqw 0 .7cqw .8cqw; }
+.rp .pc.back { padding: .7cqw; }
+.rp .pc i { margin: 0; }
+.dfg-card .pc { transition: box-shadow .15s; }
+.dfg-card.on .pc { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 2px rgba(162, 158, 255, .55), 0 10px 22px rgba(0, 0, 0, .55); }
+.dfg-field { background: rgba(255, 255, 255, .04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+
+/* 参加者の画面 */
+.game-live.cx-live { background: radial-gradient(130% 70% at 50% -10%, #1B1B1F 0%, #050505 55%, #000 100%); }
+.cx-inner { padding-top: 12px; }
+.cx-top { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 8px; }
+.cx-top .gl-close { justify-self: end; background: rgba(255, 255, 255, .08); }
+.cx-ring { position: relative; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(#fff calc(var(--p, 0) * 1turn), rgba(255, 255, 255, .14) 0); }
+.cx-ring::before { content: ""; position: absolute; inset: 2.5px; border-radius: 50%; background: #18181B; }
+.cx-ring span { position: relative; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cx-bal { display: flex; flex-direction: column; align-items: center; min-width: 0; font-size: 21px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.cx-bal small { font-size: 11px; font-weight: 500; color: var(--label-3); letter-spacing: .02em; }
+.cx-inner .cx-phase { justify-content: center; margin: 12px 0 0; font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--label-2); text-align: center; }
+.cx-inner .cx-phase .g-timer { font-size: 12px; padding: 2px 10px; background: rgba(255, 255, 255, .08); color: var(--label); }
+.cx-prompt { margin: 6px 0 0; text-align: center; font-size: 13px; line-height: 1.55; color: var(--label-3); }
+.cx-table { display: flex; flex-direction: column; align-items: stretch; margin-top: 10px; }
+.cx-dealer { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 0 6px; }
+.cx-total { font-size: 13px; color: rgba(255, 255, 255, .62); font-variant-numeric: tabular-nums; text-align: center; letter-spacing: .02em; }
+.cx-fan { display: flex; justify-content: center; align-items: flex-end; min-height: 104px; padding: 0 8px; }
+.cx-fan > .pc + .pc { margin-left: -24px; }
+.cx-fan.ghost .pc { opacity: .18; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .25); }
+.cx-fan.blank { min-height: 104px; width: 74px; margin: 0 auto; border-radius: 15px; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .1); }
+.cx-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 92px; padding: 18px 0; }
+.cx-chip { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-size: 15px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums;
+  background: radial-gradient(circle at 35% 30%, #B9B6FF, #8B86F0 60%, #7670E0); box-shadow: 0 0 0 5px rgba(162, 158, 255, .12), 0 8px 22px rgba(118, 112, 224, .45); }
+.cx-chip.blank { background: transparent; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .16); color: var(--label-3); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+.cx-sum { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cx-sum.plus { color: #7EE2A8; }
+.cx-sum.minus { color: #FF8A8A; }
+.cx-turn { padding: 7px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--label-2); background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); }
+.cx-turn.me { color: var(--on-accent); background: var(--accent); box-shadow: 0 8px 22px rgba(118, 112, 224, .4); }
+/* 自分の手：下の丸い台 */
+.cx-me { position: relative; margin: 34px -16px 0; padding: 0 16px 22px; border-radius: 50% 50% 0 0 / 64px 64px 0 0;
+  background: linear-gradient(180deg, #2B2B2F 0%, #1E1E21 60%, #18181B 100%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
+.cx-me.turn { box-shadow: inset 0 1px 0 rgba(162, 158, 255, .5); }
+.cx-hands { display: flex; justify-content: center; gap: 18px; margin-top: -40px; }
+.cx-hand { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; padding: 0 4px; border-radius: 16px; }
+.cx-hand.cur .cx-total { color: var(--accent); font-weight: 700; }
+.cx-hands.multi .pc.lg { width: 54px; height: 76px; border-radius: 12px; padding: 8px 0 9px 9px; }
+.cx-hands.multi .pc.lg b { font-size: 22px; }
+.cx-hands.multi .pc.lg i { font-size: 21px; }
+.cx-hands.multi .cx-fan { min-height: 76px; }
+.cx-hands.multi .cx-fan > .pc + .pc { margin-left: -20px; }
+.cx-res { font-size: 14px; font-weight: 700; }
+.cx-hand.r-win .cx-res, .cx-hand.r-bj .cx-res, .cx-hand.r-charlie .cx-res { color: #7EE2A8; }
+.cx-hand.r-lose .cx-res, .cx-hand.r-bust .cx-res, .cx-hand.r-surr .cx-res { color: #FF8A8A; }
+.cx-label { margin: 20px 0 10px; text-align: center; font-size: 13px; font-weight: 600; color: var(--label-2); }
+.cx-note { margin: 12px 0 0; text-align: center; font-size: 12.5px; line-height: 1.6; color: var(--label-3); }
+.cx-acts { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; margin-top: 22px; }
+.cx-acts.sub { margin-top: 12px; }
+.cx-btn { width: 76px; height: 76px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 0 4px; margin: 0;
+  border: none; border-radius: 50%; background: rgba(255, 255, 255, .09); color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), inset 0 1px 0 rgba(255, 255, 255, .08);
+  font: inherit; transition: transform .12s, background .15s, opacity .15s; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.cx-btn .icon { width: 22px; height: 22px; }
+.cx-btn .icon svg { stroke-width: 1.8; }
+.cx-lb { font-size: 11.5px; font-weight: 500; line-height: 1.2; text-align: center; overflow-wrap: anywhere; }
+.cx-btn:active:not(:disabled) { transform: scale(.94); background: rgba(255, 255, 255, .16); }
+.cx-btn:disabled { opacity: .32; }
+.cx-btn.on { background: var(--accent); color: var(--on-accent); }
+.cx-acts.sub .cx-btn { width: 64px; height: 64px; }
+.cx-acts.sub .cx-btn .icon { width: 19px; height: 19px; }
+.cx-acts.sub .cx-lb { font-size: 10.5px; }
+.cx-redo { flex-basis: 100%; text-align: center; color: var(--label-2); }
+/* 賭けのチップ */
+.cx-bets { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+.cx-betchip.gl-choice { width: 58px; height: 58px; min-height: 0; padding: 0; flex-direction: column; gap: 0; border-radius: 50%; color: #fff;
+  background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .16), inset 0 0 0 5px rgba(0, 0, 0, .25); }
+.cx-betchip b { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cx-betchip small { font-size: 0; }
+.cx-betchip.on { color: #fff; background: radial-gradient(circle at 35% 30%, #B9B6FF, #8B86F0 60%, #7670E0); box-shadow: 0 0 0 4px rgba(162, 158, 255, .15), 0 8px 20px rgba(118, 112, 224, .45); }
+.cx-me .bj-custom { max-width: 320px; margin: 14px auto 0; }
+.cx-me .bj-custom .bj-amount { background: rgba(255, 255, 255, .07); color: var(--label); text-align: center; }
+/* 大富豪：手札も台の上に */
+.dfg-x .cx-me { padding-top: 22px; }
+.dfg-x .cx-me > .gl-label { text-align: center; }
+.dfg-x .dfg-cards { justify-content: center; gap: 6px; }
+.cx-live .dfg-seats { margin-top: 14px; }
+.cx-live .dfg-rev { margin-top: 12px; }
+.cx-points { margin-top: 10px; text-align: center; }
+.cx-others { margin-top: 18px; }
+@media (max-width: 380px) {
+  .pc.lg { width: 66px; height: 92px; padding: 10px 0 10px 10px; }
+  .pc.lg b { font-size: 27px; }
+  .pc.lg i { font-size: 26px; }
+  .cx-fan { min-height: 92px; }
+  .cx-btn { width: 70px; height: 70px; }
+  .cx-acts { gap: 12px; }
+}
+/* v90：短い表記（CH・PT・BET など）と細部 */
+.cx-chip, .cx-chip.blank { flex: none; aspect-ratio: 1; }
+.cx-mid { min-height: 100px; }
+.cx-ring span { display: flex; align-items: baseline; }
+.cx-ring small { font-size: 9px; font-weight: 500; color: var(--label-3); }
+.cx-bal small { font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.cx-inner .cx-phase > span { font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--label-2); }
+.cx-total small { display: block; margin-bottom: 4px; font-size: 10px; font-weight: 700; letter-spacing: .18em; color: var(--label-3); }
+.cx-label { letter-spacing: .14em; font-size: 12px; font-weight: 700; color: var(--label-2); }
+.cx-label small { margin-left: 4px; font-size: 12px; font-weight: 500; letter-spacing: .02em; color: var(--label-3); }
+.cx-sum small, .bj-chips small { font-size: .62em; font-weight: 700; letter-spacing: .1em; opacity: .7; }
+.cx-res { letter-spacing: .08em; }
+.cx-hand.r-push .cx-res { color: var(--label-2); }
+.cx-fan.ghost .pc.back { background: rgba(255, 255, 255, .03); box-shadow: none; border: 1.5px dashed rgba(255, 255, 255, .7); }
+.cx-fan.ghost .pc { opacity: .3; }
+.cx-acts .cx-redo { flex-basis: 100%; margin-top: -4px; }
+.cx-others .gl-label, .gl-pt > .gl-label { letter-spacing: .16em; }
+.bj-seat-sub { font-variant-numeric: tabular-nums; }
+.dfg-points b { letter-spacing: .12em; }
+.pt-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.pt-tags span { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--label); background: rgba(255, 255, 255, .07); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1); }
+.pt-tags span:first-child { color: var(--on-accent); background: var(--accent); box-shadow: none; }
+/* みんなに見せる画面：ディーラーと席を中央にそろえる */
+.game-live.stage .bj-dealer { align-items: center; }
+.game-live.stage .bj-seats { grid-template-columns: repeat(auto-fit, minmax(170px, 220px)); justify-content: center; }

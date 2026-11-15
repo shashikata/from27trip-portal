@@ -1022,6 +1022,12 @@ const ICONS = {
   xmark: '<path d="M7 7l10 10M17 7 7 17"/>',
   copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  dup: '<path d="m7 12.5 5-5 5 5"/><path d="m7 18 5-5 5 5"/>',
+  hand: '<path d="M8.5 12.5V6.8a1.4 1.4 0 0 1 2.8 0v4.7M11.3 11.2V5.4a1.4 1.4 0 0 1 2.8 0v5.8M14.1 11.2V6.8a1.4 1.4 0 0 1 2.8 0v6.7a6.3 6.3 0 0 1-6.3 6.3h-.4a6 6 0 0 1-4.7-2.3l-2.2-2.9a1.4 1.4 0 0 1 2.2-1.7l1.7 2V9.2a1.4 1.4 0 0 1 2.8 0"/>',
+  split: '<path d="M12 20v-6.5M12 13.5 6.5 7M12 13.5 17.5 7M6.5 7v3.6M6.5 7h3.6M17.5 7v3.6M17.5 7h-3.6"/>',
+  up: '<path d="M12 19V5.5M6.5 11 12 5.5 17.5 11"/>',
+  skip: '<path d="m6.5 6.5 6.5 5.5-6.5 5.5M16.5 6.5v11"/>',
+  wflag: '<path d="M6 21V4.5M6 4.5h10.5l-2 3.8 2 3.7H6"/>',
   spy: '<path d="M3 11h18M6 11l1.5-5.5h9L18 11"/><circle cx="7.5" cy="16" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/><path d="M10 16h4"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   note: '<rect x="5" y="3.5" width="14" height="17" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/>',
@@ -2322,7 +2328,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v89"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v90"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -10712,6 +10718,16 @@ function gPtRows(g) {
   return rows;
 }
 // 参加者に見せる「このゲームのポイント」の説明
+// ポイントの決まりを短い札にする（例：個人PT ・ 1位 +10 ・ 最下位 −5）
+function gPtTags(g) {
+  const pt = g.opts?.pt;
+  if (!pt?.pay) return [];
+  const out = [pt.pay === "team" ? "チームPT" : "個人PT"];
+  if (g.kind === "bj" && pt.chips === "real") out.push("CH＝PT");
+  if (isCardKind(g.kind)) (pt.rank ?? []).forEach((x, i) => { if (Number(x)) out.push(`${i === pt.rank.length - 1 && i > 0 ? "最下位" : `${i + 1}位`} ${sgn(Number(x))}`); });
+  else { if (Number(pt.win)) out.push(`WIN ${sgn(Number(pt.win))}`); if (Number(pt.lose)) out.push(`LOSE −${Math.abs(Number(pt.lose))}`); }
+  return out;
+}
 function gPtText(g) {
   const pt = g.opts?.pt;
   if (!pt?.pay) return null;
@@ -10956,10 +10972,11 @@ function newDeck(jokers = 0, decks = 1) {
 const sortHand = (cs) => [...cs].sort((a, b) => cardSv(a) - cardSv(b) || SUIT_ORDER.indexOf(a[0]) - SUIT_ORDER.indexOf(b[0]) || a.localeCompare(b));
 // カード1枚の見た目
 function cardEl(c, opt = {}) {
-  if (!c) return h("span", { class: `pc back${opt.small ? " sm" : ""}`, "aria-label": "伏せたカード" });
+  const sz = opt.small ? " sm" : opt.big ? " lg" : "";
+  if (!c) return h("span", { class: `pc back${sz}`, "aria-label": "伏せたカード" });
   const red = c[0] === "H" || c[0] === "D";
-  if (isJoker(c)) return h("span", { class: `pc joker${opt.small ? " sm" : ""}`, "aria-label": "ジョーカー" }, h("b", null, "JOKER"), h("i", null, "★"));
-  return h("span", { class: `pc${red ? " red" : ""}${opt.small ? " sm" : ""}`, "aria-label": cardText(c) }, h("b", null, cardRankText(c)), h("i", null, CARD_SUITS[c[0]]));
+  if (isJoker(c)) return h("span", { class: `pc joker${sz}`, "aria-label": "ジョーカー" }, h("b", null, "JOKER"), h("i", null, "★"));
+  return h("span", { class: `pc${red ? " red" : ""}${sz}`, "aria-label": cardText(c) }, h("b", null, cardRankText(c)), h("i", null, CARD_SUITS[c[0]]));
 }
 const cardRow = (cs, opt = {}) => h("span", { class: `pc-row${opt.small ? " sm" : ""}` }, (cs ?? []).map((c) => cardEl(c, opt)));
 // gameActs の中身「前置き:内容」を読む
@@ -10999,6 +11016,11 @@ const bjCardVal = (c) => (c[1] === "A" ? 11 : "TJQK".includes(c[1]) ? 10 : Numbe
 const bjIsBJ = (cs, split = false) => !split && (cs ?? []).length === 2 && bjValue(cs).total === 21;
 const bjTotalText = (cs, split = false) => { const v = bjValue(cs); return bjIsBJ(cs, split) ? "ブラックジャック" : v.total > 21 ? `${v.total}（バースト）` : v.soft && v.total < 21 ? `${v.total - 10} / ${v.total}` : String(v.total); };
 const BJ_RES = { bj: "ブラックジャック！", win: "勝ち", push: "引き分け", lose: "負け", bust: "バースト（負け）", surr: "降りた（半分戻る）", charlie: "チャーリー（勝ち）" };
+// 画面に出す短い表記（ログ・読み上げは今までどおりの日本語）
+const BJ_RES_S = { bj: "BJ", win: "WIN", push: "PUSH", lose: "LOSE", bust: "BUST", surr: "SURR", charlie: "CHARLIE" };
+// チップの単位：仮想チップは CH、旅行のポイントをそのまま賭けるときは PT
+const chU = (g) => (g?.opts?.pt?.chips === "real" ? "PT" : "CH");
+const sgn = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : "±0");
 function bjDraw(shoe, decks) { if (!shoe.length) shoe.push(...gShuffle(newDeck(0, decks))); return shoe.pop(); }
 // 手の名前：最初の手は uid、スプリットした手は uid~2・uid~3…
 const bjOwn = (key) => key.split("~")[0];
@@ -11525,6 +11547,13 @@ function cardPhaseText(g) {
   if (g.kind === "bj") return `第${g.bj.round}回${g.phase === "bet" ? "・賭け" : g.phase === "insure" ? "・保険" : g.phase === "play" ? "・勝負中" : "・結果"}（全${o.rounds}回）`;
   return `第${g.dfg.round}回${g.phase === "exchange" ? "・カード交換" : g.phase === "result" ? "・結果" : ""}（全${o.rounds}回）${dfgRevNow(g.dfg) ? "・強さが逆" : ""}`;
 }
+// 参加者のトランプ画面の上に出す短い表記（例：BJ · R1/3 · BET）
+function cardPhaseShort(g) {
+  const bj = g.kind === "bj", o = bj ? bjO(g.opts) : dfgO(g.opts);
+  const r = bj ? g.bj?.round : g.dfg?.round;
+  const ph = g.phase === "ended" ? "END" : g.phase === "bet" ? "BET" : g.phase === "insure" ? "INS" : g.phase === "exchange" ? "TRADE" : g.phase === "result" ? "RESULT" : "PLAY";
+  return [bj ? "BJ" : "大富豪", g.phase === "ended" ? null : `R${r}/${o.rounds}`, ph, !bj && dfgRevNow(g.dfg) ? "REV" : null].filter(Boolean).join(" · ");
+}
 function cardPrompt(g) {
   if (g.phase === "ended") return g.result?.text ?? "";
   const auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext;
@@ -11540,44 +11569,72 @@ function bjTable(g, me = null) {
   const st = g.bj;
   const hide = g.phase === "play" || g.phase === "insure";
   const hole = hide ? [st.dealer[0], null] : st.dealer;
-  const rows = g.players.map((u) => {
+  return h("div", { class: "card-table" },
+    st.dealer?.length ? h("div", { class: "bj-dealer" }, h("div", { class: "gl-label" }, "ディーラー"), cardRow(hole), !hide ? h("div", { class: "bj-seat-sub" }, bjTotalText(st.dealer)) : null) : null,
+    h("div", { class: "bj-seats" }, bjSeatRows(g, me)));
+}
+// 遊ぶ人ごとの席（skip の人は出さない）
+function bjSeatRows(g, me = null, skip = null) {
+  const st = g.bj;
+  return g.players.filter((u) => u !== skip).map((u) => {
     const keys = bjHandsOf(st, u);
     const cur = g.phase === "play" ? bjCur(st, u) : null;
     const ins = st.ins?.[u], insRes = st.insRes?.[u];
     return h("div", { class: `bj-seat${u === me ? " me" : ""}${keys.length === 1 && st.hands[keys[0]].res ? ` r-${st.hands[keys[0]].res}` : ""}` },
-      h("div", { class: "bj-seat-head" }, h("b", null, memberName(u), pcYou(u, me)), h("span", { class: "bj-chips" }, `${st.chips[u] ?? 0}枚`)),
+      h("div", { class: "bj-seat-head" }, h("b", null, memberName(u), pcYou(u, me)), h("span", { class: "bj-chips" }, `${st.chips[u] ?? 0} `, h("small", null, chU(g)))),
       keys.length ? keys.map((k) => {
         const hd = st.hands[k];
         return h("div", { class: `bj-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}` },
           cardRow(hd.cards, { small: u !== me }),
-          h("div", { class: "bj-seat-sub" }, `${keys.length > 1 ? `${bjNo(k)}つ目・` : ""}${bjTotalText(hd.cards, hd.split)}・賭け ${hd.bet}枚${hd.doubled ? "（ダブル）" : ""}`,
-            hd.res ? h("b", { class: "bj-res" }, ` ${BJ_RES[hd.res]} ${signed(hd.delta)}`) : hd.done && g.phase === "play" ? (hd.surr ? " ・降りた" : " ・決定") : null));
-      }) : h("div", { class: "bj-seat-sub" }, g.phase === "bet" ? (cardAct(g, "b", u, `r${st.round}`) != null ? "賭けました" : g.actors.includes(u) ? "選んでいます…" : "チップが足りません")
-        : (st.chips[u] ?? 0) <= 0 ? "チップがなくなりました" : g.phase !== "ended" ? "この回は見送り" : ""),
-      ins ? h("div", { class: "bj-seat-sub" }, `保険 ${ins}枚${insRes != null ? `（${signed(insRes)}）` : ""}`) : null,
-      g.phase === "insure" && g.actors.includes(u) ? h("div", { class: "bj-seat-sub" }, cardAct(g, "i", u, `r${st.round}`) != null ? "保険：選びました" : "保険：選んでいます…") : null);
+          h("div", { class: "bj-seat-sub" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${bjTotalText(hd.cards, hd.split)} · BET ${hd.bet}${hd.doubled ? " · DBL" : ""}`,
+            hd.res ? h("b", { class: "bj-res" }, ` ${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.done && g.phase === "play" ? (hd.surr ? " · SURR" : " · STAND") : null));
+      }) : h("div", { class: "bj-seat-sub" }, g.phase === "bet" ? (cardAct(g, "b", u, `r${st.round}`) != null ? `BET ${cardAct(g, "b", u, `r${st.round}`)}` : g.actors.includes(u) ? "BET 選択中…" : `${chU(g)} 不足`)
+        : (st.chips[u] ?? 0) <= 0 ? `${chU(g)} 0` : g.phase !== "ended" ? "見送り" : ""),
+      ins ? h("div", { class: "bj-seat-sub" }, `INS ${ins}${insRes != null ? ` · ${sgn(insRes)}` : ""}`) : null,
+      g.phase === "insure" && g.actors.includes(u) ? h("div", { class: "bj-seat-sub" }, cardAct(g, "i", u, `r${st.round}`) != null ? "INS 選択済" : "INS 選択中…") : null);
   });
-  return h("div", { class: "card-table" },
-    st.dealer?.length ? h("div", { class: "bj-dealer" }, h("div", { class: "gl-label" }, "ディーラー"), cardRow(hole), !hide ? h("div", { class: "bj-seat-sub" }, bjTotalText(st.dealer)) : null) : null,
-    h("div", { class: "bj-seats" }, rows));
+}
+// 大富豪の席（みんなの残り枚数・あがり・パス）
+const dfgSeatsEl = (g, me = null) => {
+  const st = g.dfg;
+  return h("div", { class: "dfg-seats" }, st.seats.map((u) => {
+    const place = st.done.indexOf(u), down = (st.down ?? []).includes(u);
+    return h("div", { class: `dfg-seat${u === st.turn && g.phase === "play" ? " turn" : ""}${place >= 0 || down ? " out" : ""}${u === me ? " me" : ""}` },
+      h("b", null, memberName(u), pcYou(u, me)),
+      h("span", null, down ? (st.fallen === u ? "都落ち" : "反則上がり") : place >= 0 ? `${place + 1}番であがり` : `${st.counts?.[u] ?? 0}枚`),
+      st.passes?.includes(u) && g.phase === "play" ? h("em", null, "パス") : null,
+      st.titles?.[u] ? h("small", null, st.titles[u]) : null);
+  }));
+};
+const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック中" : null, st.lock && st.field ? `${[...st.lock].map((s) => CARD_SUITS[s]).join("")}縛り` : null, (st.dir ?? 1) < 0 ? "順番が逆回り" : null].filter(Boolean);
+
+// ---- トランプの参加者の画面（黒いテーブル・ガラスのカード・丸いボタン）
+// カードを少し重ねて並べる
+const cxFan = (cs, cls = "") => h("div", { class: `cx-fan${cls}` }, cs.map((c) => cardEl(c, { big: true })));
+// 丸いボタン（アイコン＋名前）。cls に btn-filled などを足すと、今までの押し方の目印も残る
+const cxBtn = (ic, label, cls, attrs = {}) => h("button", { class: `cx-btn ${cls}`, ...attrs }, icon(ic), h("span", { class: "cx-lb" }, label));
+// 上の段：今の回（輪）・自分のチップ（点）・閉じる
+function cxTop(g, close) {
+  const uid = S.user.uid, bj = g.kind === "bj";
+  const total = Math.max(1, Number(bj ? bjO(g.opts).rounds : dfgO(g.opts).rounds) || 1);
+  const round = Math.min(total, (bj ? g.bj?.round : g.dfg?.round) ?? 1);
+  const p = g.phase === "ended" ? 1 : round / total;
+  return h("div", { class: "cx-top" },
+    h("div", { class: "cx-ring", style: `--p:${p}`, "aria-label": `第${round}回 / 全${total}回` }, h("span", null, String(round), h("small", null, `/${total}`))),
+    h("div", { class: "cx-bal", title: bj ? (g.opts?.pt?.chips === "real" ? "チップ（旅行のポイント）" : "チップ") : "合計点" }, bj ? `${g.bj?.chips?.[uid] ?? 0}` : `${g.dfg?.points?.[uid] ?? 0}`,
+      h("small", null, bj ? chU(g) : "PT")),
+    close);
 }
 function dfgTable(g, me = null) {
   const st = g.dfg, rev = dfgRevNow(st);
   const f = st.field;
-  const flags = [st.rev ? "革命中" : null, st.jback ? "11バック中" : null, st.lock && f ? `${[...st.lock].map((s) => CARD_SUITS[s]).join("")}縛り` : null, (st.dir ?? 1) < 0 ? "順番が逆回り" : null].filter(Boolean);
+  const flags = dfgFlags(st);
   return h("div", { class: "card-table" },
     flags.length ? h("div", { class: "dfg-rev" }, `${flags.join("・")}${rev ? "：数字の強さが逆になっています" : ""}`) : null,
     g.phase === "play" ? h("div", { class: "dfg-field" }, h("div", { class: "gl-label" }, f ? `場のカード（${memberName(f.by)}）` : "場は空です"),
       f ? cardRow(f.cards) : h("p", { class: "cell-sub" }, `${memberName(st.turn)}さんが好きなカードを出せます。`)) : null,
-    h("div", { class: "dfg-seats" }, st.seats.map((u) => {
-      const place = st.done.indexOf(u), down = (st.down ?? []).includes(u);
-      return h("div", { class: `dfg-seat${u === st.turn && g.phase === "play" ? " turn" : ""}${place >= 0 || down ? " out" : ""}${u === me ? " me" : ""}` },
-        h("b", null, memberName(u), pcYou(u, me)),
-        h("span", null, down ? (st.fallen === u ? "都落ち" : "反則上がり") : place >= 0 ? `${place + 1}番であがり` : `${st.counts?.[u] ?? 0}枚`),
-        st.passes?.includes(u) && g.phase === "play" ? h("em", null, "パス") : null,
-        st.titles?.[u] ? h("small", null, st.titles[u]) : null);
-    })),
-    st.points && Object.keys(st.points).length ? h("div", { class: "cell-sub dfg-points" }, "合計点：", st.seats.map((u) => `${memberName(u)} ${st.points[u] ?? 0}点`).join("・")) : null);
+    dfgSeatsEl(g, me),
+    st.points && Object.keys(st.points).length ? h("div", { class: "cell-sub dfg-points" }, h("b", null, "PT"), " ", st.seats.map((u) => `${memberName(u)} ${st.points[u] ?? 0}`).join(" · ")) : null);
 }
 // 参加者の操作
 GC.step = new Map(); // 大富豪：7渡し・10捨てで、出すカードを決めたあとに選ぶ途中
@@ -11586,39 +11643,65 @@ function cardMemberBody(g) {
   const out = [];
   if (g.kind === "bj") {
     const st = g.bj, o = bjO(g.opts), chips = st.chips[uid] ?? 0, r = `r${st.round}`;
-    out.push(h("div", { class: "gl-card bj-mine" }, h("div", { class: "gl-label" }, g.opts?.pt?.chips === "real" ? "あなたのチップ（旅行のポイント）" : "あなたのチップ"), h("div", { class: "gl-big" }, `${chips}枚`)));
+    const hide = g.phase === "play" || g.phase === "insure";
+    const dealer = st.dealer?.length ? (hide ? [st.dealer[0], null] : st.dealer) : [];
+    const keys = bjHandsOf(st, uid);
+    const cur = g.phase === "play" ? bjCur(st, uid) : null;
+    const betNow = g.phase === "bet" ? Number(cardAct(g, "b", uid, r)) || 0 : keys.reduce((x, k) => x + (Number(st.hands[k].bet) || 0), 0);
+    const settled = keys.filter((k) => st.hands[k].res);
+    const sum = settled.reduce((x, k) => x + (Number(st.hands[k].delta) || 0), 0) + (Number(st.insRes?.[uid]) || 0);
+    // 自分の手
+    const U = chU(g);
+    const waitText = g.phase === "bet" ? (g.actors.includes(uid) ? "YOUR HAND" : chips <= 0 ? `${U} 0` : "ほかの人が BET 中")
+      : g.phase === "ended" ? "END" : chips <= 0 ? `${U} 0` : "この回は見送り";
+    const hands = keys.length
+      ? h("div", { class: `cx-hands${keys.length > 1 ? " multi" : ""}` }, keys.map((k) => {
+        const hd = st.hands[k];
+        return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}` },
+          cxFan(hd.cards),
+          h("div", { class: "cx-total" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${bjTotalText(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
+          hd.res ? h("div", { class: "cx-res", title: BJ_RES[hd.res] }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
+      }))
+      : h("div", { class: "cx-hands" }, h("div", { class: "cx-hand" }, cxFan([null, null], " ghost"), h("div", { class: "cx-total" }, waitText)));
+    // 操作
+    let ctl = null;
     if (g.phase === "bet" && g.actors.includes(uid)) {
-      const cur = Number(cardAct(g, "b", uid, r)) || null;
       const max = bjMaxBet(o, chips);
-      const input = h("input", { type: "number", class: "plain bj-amount", min: String(o.betMin), max: String(max), step: "1", inputmode: "numeric", placeholder: `${o.betMin}〜${max}`, "aria-label": "賭ける枚数" });
-      const send = h("button", { class: "btn-small", onclick: () => { const v = Math.floor(Number(input.value)); if (!(v >= o.betMin && v <= max)) return toast(`${o.betMin}〜${max}枚で入れてください`); cardSend(g, "b", r, String(v)); input.value = ""; } }, "この枚数を賭ける");
-      out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, `賭けるチップ（${o.betMin}〜${max}枚）`),
-        h("div", { class: "gl-choices" }, bjBetChoices(o, chips).map((x) => h("button", { class: `gl-choice${cur === x ? " on" : ""}`, onclick: () => cardSend(g, "b", r, String(x)) }, cur === x ? icon("check") : null, x === chips && !BJ_BETS.includes(x) ? `全部（${x}枚）` : `${x}枚`))),
+      const input = h("input", { type: "number", class: "plain bj-amount", min: String(o.betMin), max: String(max), step: "1", inputmode: "numeric", placeholder: `${o.betMin}〜${max} ${U}`, "aria-label": "賭ける枚数" });
+      const send = h("button", { class: "btn-small", onclick: () => { const v = Math.floor(Number(input.value)); if (!(v >= o.betMin && v <= max)) return toast(`${o.betMin}〜${max}枚で入れてください`); cardSend(g, "b", r, String(v)); input.value = ""; } }, "賭ける");
+      ctl = [h("div", { class: "cx-label" }, "BET ", h("small", null, `${o.betMin}–${max} ${U}`)),
+        h("div", { class: "cx-bets" }, bjBetChoices(o, chips).map((x) => h("button", { class: `gl-choice cx-betchip${betNow === x ? " on" : ""}`, "aria-pressed": String(betNow === x), onclick: () => cardSend(g, "b", r, String(x)) },
+          h("b", null, x === chips && !BJ_BETS.includes(x) ? "ALL" : String(x)), h("small", null, `${x}枚`)))),
         h("div", { class: "bj-custom" }, input, send),
-        h("p", { class: "cell-sub" }, cur ? `${cur}枚を賭けました。締め切りまでは選び直せます。` : o.noBet > 0 ? `選ばなかった場合は${Math.max(o.betMin, Math.min(o.noBet, max))}枚を賭けます。` : "選ばなかった場合、この回は見送りになります。")));
-    }
-    if (g.phase === "insure" && g.actors.includes(uid)) {
-      const cur = cardAct(g, "i", uid, r), amt = Math.floor((st.hands[uid]?.bet ?? 0) / 2);
-      out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "保険をかけますか"),
-        h("div", { class: "bj-acts" },
-          h("button", { class: `btn-filled${cur === "y" ? " alt" : ""}`, onclick: () => cardSend(g, "i", r, "y") }, cur === "y" ? icon("check") : null, `かける（${amt}枚）`),
-          h("button", { class: `btn-filled${cur === "n" ? " alt" : ""}`, onclick: () => cardSend(g, "i", r, "n") }, cur === "n" ? icon("check") : null, "かけない")),
-        h("p", { class: "cell-sub" }, "ディーラーがブラックジャックなら、保険の2倍が戻ります。違えば保険は没収です。選ばなかった場合は「かけない」になります。")));
-    }
-    const key = g.phase === "play" ? bjCur(st, uid) : null;
-    if (key) {
-      const hd = st.hands[key], n = hd.cards.length, can = bjCan(g, st, uid, key);
+        h("p", { class: "cx-note" }, betNow ? `BET ${betNow} ${U} ・ 締め切りまで変更できます` : o.noBet > 0 ? `未選択なら BET ${Math.max(o.betMin, Math.min(o.noBet, max))} ${U}` : "未選択ならこの回は見送り")];
+    } else if (g.phase === "insure" && g.actors.includes(uid)) {
+      const pick = cardAct(g, "i", uid, r), amt = Math.floor((st.hands[uid]?.bet ?? 0) / 2);
+      ctl = [h("div", { class: "cx-label" }, "INSURANCE ", h("small", null, "ディーラーの表が A")),
+        h("div", { class: "cx-acts" },
+          cxBtn("check", `かける ${amt}`, `btn-filled${pick === "y" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "y") }),
+          cxBtn("xmark", "かけない", `btn-filled${pick === "n" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "n") })),
+        h("p", { class: "cx-note" }, `INS ${amt} ${U} ・ ディーラーが BJ なら 2倍で戻る ・ 未選択は「かけない」`)];
+    } else if (cur) {
+      const hd = st.hands[cur], n = hd.cards.length, can = bjCan(g, st, uid, cur);
       const pend = bjPending(g, st, uid);
-      const b = (label, op, cls) => h("button", { class: cls, disabled: !!pend || !can[op], onclick: () => cardSend(g, "p", r, `${op}${bjNo(key)}.${n}`) }, label);
-      const many = bjHandsOf(st, uid).length > 1;
-      out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, many ? `あなたの番です（${bjNo(key)}つ目の手）` : "あなたの番です"), h("div", { class: "bj-total" }, bjTotalText(hd.cards, hd.split)),
-        h("div", { class: "bj-acts" }, b("ヒット", "h", "btn-filled"), b("スタンド", "s", "btn-filled alt"),
-          can.d ? b(`ダブル（賭けを${hd.bet * 2}枚にして1枚だけ引く）`, "d", "btn-small") : null,
-          can.p ? b(`スプリット（2つの手に分ける・${hd.bet}枚追加）`, "p", "btn-small") : null,
-          can.r ? b("降りる（賭けの半分が戻る）", "r", "btn-small") : null),
-        pend ? h("p", { class: "cell-sub" }, "送りました。ディーラーの反映を待っています…") : null));
-    } else if (g.phase === "play" && bjHandsOf(st, uid).length) out.push(h("div", { class: "gl-card" }, h("p", { class: "cell-sub" }, "あなたの手は決まりました。ほかの人を待っています。")));
-    out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "テーブル"), bjTable(g, uid)));
+      const b = (ic, label, op, cls) => cxBtn(ic, label, cls, { disabled: !!pend || !can[op], onclick: () => cardSend(g, "p", r, `${op}${bjNo(cur)}.${n}`) });
+      ctl = [h("div", { class: "cx-acts" }, b("dup", "ダブル", "d", "btn-small"), b("hand", "スタンド", "s", "btn-filled alt"), b("plus", "ヒット", "h", "btn-filled")),
+        can.p || can.r ? h("div", { class: "cx-acts sub" },
+          can.p ? b("split", "スプリット", "p", "btn-small") : null,
+          can.r ? b("wflag", "降りる", "r", "btn-small") : null) : null,
+        h("p", { class: "cx-note" }, pend ? "送信済み ・ 反映待ち…"
+          : [bjHandsOf(st, uid).length > 1 ? `#${bjNo(cur)} の手` : null, can.d ? `ダブル：BET ${hd.bet * 2} で1枚` : null, can.p ? `スプリット：+${hd.bet} ${U}` : null, can.r ? `降りる：${Math.floor(hd.bet / 2)} ${U} 戻る` : null].filter(Boolean).join(" ・ "))];
+    } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, "STAND ・ ほかの人を待っています");
+    out.push(h("section", { class: "cx-table" },
+      h("div", { class: "cx-dealer" },
+        h("div", { class: "cx-total" }, h("small", null, "DEALER"), dealer.length ? (hide ? bjTotalText([st.dealer[0]]) : bjTotalText(st.dealer)) : "—"),
+        dealer.length ? cxFan(dealer) : cxFan([null, null], " ghost")),
+      h("div", { class: "cx-mid" },
+        betNow ? h("div", { class: "cx-chip", "aria-label": `賭け ${betNow}枚` }, String(betNow)) : h("div", { class: "cx-chip blank" }, "BET"),
+        settled.length ? h("div", { class: `cx-sum ${sum > 0 ? "plus" : sum < 0 ? "minus" : ""}` }, `${sgn(sum)} `, h("small", null, U)) : null,
+        st.ins?.[uid] ? h("div", { class: "cx-note" }, `INS ${st.ins[uid]}${st.insRes?.[uid] != null ? ` · ${sgn(st.insRes[uid])}` : ""}`) : null),
+      h("div", { class: "cx-me" }, hands, ctl)));
+    if (g.players.length > 1) out.push(h("div", { class: "gl-card cx-others" }, h("div", { class: "gl-label" }, "PLAYERS"), h("div", { class: "bj-seats" }, bjSeatRows(g, uid, uid))));
     return out;
   }
   // 大富豪
@@ -11638,7 +11721,6 @@ function cardMemberBody(g) {
   for (const c of [...sel]) if (!shown.includes(c)) sel.delete(c);
   const picked = shown.filter((c) => sel.has(c));
   const err = myTurn && !step ? dfgCheck(g, hand, picked) : null;
-  out.push(dfgTable(g, uid));
   if (exTo) {
     const k = exTo.cards.length;
     out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, `${memberName(exTo.from)}さんからもらったカード`), cardRow(exTo.cards),
@@ -11652,31 +11734,40 @@ function cardMemberBody(g) {
     const others = dfgActive(st).filter((x) => x !== uid);
     const to = dfgNextAfter(st.seats, uid, others, st.dir ?? 1);
     const k = stage === "give" ? step.need.give : step.need.disc;
-    actions = h("div", { class: "gp-actions" },
-      h("button", { class: "btn-filled", disabled: picked.length !== k || sentT != null, onclick: () => {
+    actions = h("div", { class: "cx-acts" },
+      cxBtn(stage === "give" ? "chevron" : "xmark", stage === "give" ? `${picked.length}枚を渡す` : `${picked.length}枚を捨てる`, "btn-filled", { disabled: picked.length !== k || sentT != null, onclick: () => {
         if (stage === "give") { step.give = picked; sel.clear(); if (step.need.disc) return paintGameLive(); return send(`${step.play.join(".")}|${step.give.join(".")}|`); }
         send(`${step.play.join(".")}|${step.give.join(".")}|${picked.join(".")}`);
-      } }, stage === "give" ? `${picked.length}枚を渡す` : `${picked.length}枚を捨てる`),
-      h("button", { class: "text-btn", onclick: () => { GC.step.delete(g.id); sel.clear(); paintGameLive(); } }, "出すカードを選び直す"));
+      } }),
+      h("button", { class: "text-btn cx-redo", onclick: () => { GC.step.delete(g.id); sel.clear(); paintGameLive(); } }, "出すカードを選び直す"));
     note = h("p", { class: "cell-sub" }, stage === "give" ? `7渡し：${memberName(to)}さんに渡すカードを${k}枚選んでください。` : `10捨て：捨てるカードを${k}枚選んでください。`);
   } else if (myTurn) {
-    actions = h("div", { class: "gp-actions" },
-      h("button", { class: "btn-filled", disabled: !!err || sentT != null, onclick: () => {
+    actions = h("div", { class: "cx-acts" },
+      cxBtn("up", picked.length ? `${picked.length}枚を出す` : "出す", "btn-filled", { disabled: !!err || !picked.length || sentT != null, onclick: () => {
         const ex = dfgExtra(g, hand, picked);
         if (ex.give || ex.disc) { GC.step.set(g.id, { tseq: st.tseq, play: picked, give: [], need: ex }); sel.clear(); return paintGameLive(); }
         send(picked.join("."));
-      } }, picked.length ? `${picked.length}枚を出す` : "出す"),
-      h("button", { class: "btn-small", disabled: !st.field || sentT != null, onclick: () => send("pass") }, "パス"),
-      picked.length ? h("button", { class: "text-btn", onclick: () => { sel.clear(); paintGameLive(); } }, "選び直す") : null);
+      } }),
+      cxBtn("skip", "パス", "btn-small", { disabled: !st.field || sentT != null, onclick: () => send("pass") }),
+      picked.length ? h("button", { class: "text-btn cx-redo", onclick: () => { sel.clear(); paintGameLive(); } }, "選び直す") : null);
     note = h("p", { class: `cell-sub${err && picked.length ? " dfg-err" : ""}` }, sentT != null ? "送りました。反映を待っています…" : picked.length ? err ?? "このカードを出せます。" : st.field ? "出せるカードがなければ「パス」を押してください。" : "場が空なので、好きなカードを出せます。");
   }
-  out.push(h("div", { class: `gl-card dfg-hand${myTurn ? " turn" : ""}` },
+  const f = st.field, flags = dfgFlags(st), rev = dfgRevNow(st);
+  if (flags.length) out.unshift(h("div", { class: "dfg-rev" }, `${flags.join("・")}${rev ? "：数字の強さが逆になっています" : ""}`));
+  out.push(dfgSeatsEl(g, uid));
+  out.push(h("section", { class: "cx-table dfg-x" },
+    h("div", { class: "cx-dealer" },
+      h("div", { class: "cx-total" }, g.phase !== "play" ? "場" : f ? `場：${memberName(f.by)}さん` : "場は空です"),
+      g.phase === "play" && f ? cxFan(f.cards) : cxFan([], " ghost blank")),
+    h("div", { class: "cx-mid" }, g.phase === "play" ? h("div", { class: `cx-turn${myTurn ? " me" : ""}` }, myTurn ? "あなたの番" : `${memberName(st.turn)}さんの番`) : null),
+    h("div", { class: `cx-me dfg-hand${myTurn ? " turn" : ""}` },
     h("div", { class: "gl-label" }, step ? "出すカード" : myTurn ? "あなたの番です。出すカードを選んでください" : `あなたの手札（${hand.length}枚）`),
     step ? h("div", { class: "dfg-cards fixed" }, cardRow(step.play)) : null,
     step ? h("div", { class: "gl-label" }, stage === "give" ? "渡すカードを選ぶ" : "捨てるカードを選ぶ") : null,
     shown.length ? h("div", { class: "dfg-cards" }, shown.map((c) => h("button", { type: "button", class: `dfg-card${sel.has(c) ? " on" : ""}`, "aria-pressed": String(sel.has(c)), onclick: () => tap(c) }, cardEl(c))))
       : h("p", { class: "cell-sub" }, st.done.includes(uid) ? `あがりました（${st.done.indexOf(uid) + 1}番目）。` : (st.down ?? []).includes(uid) ? (st.fallen === uid ? "都落ちしました（この回は最下位）。" : "反則上がりのため、この回は最下位です。") : "手札を読み込んでいます…"),
-    actions, note));
+    actions, note)));
+  if (st.points && Object.keys(st.points).length) out.push(h("div", { class: "cell-sub dfg-points cx-points" }, h("b", null, "PT"), " ", st.seats.map((u) => `${memberName(u)} ${st.points[u] ?? 0}`).join(" · ")));
   return out;
 }
 // みんなに見せる画面
@@ -11767,8 +11858,8 @@ function gPtCard(g, me = null) {
   const t = gPtText(g);
   if (!t) return null;
   const rows = (g.settled ?? []).filter((x) => !me || x.uid === me);
-  return h("div", { class: "gl-card gl-pt" }, h("div", { class: "gl-label" }, "ポイント"), h("p", { class: "cell-sub" }, t),
-    g.phase === "ended" ? (rows.length ? h("div", { class: "gl-reveal" }, rows.map((x) => h("div", { class: "gl-reveal-row" }, h("span", null, me ? x.reason : `${memberName(x.uid)}：${x.reason}`), h("b", null, x.skip ? "反映なし" : `${signed(x.delta)}pt`))))
+  return h("div", { class: "gl-card gl-pt" }, h("div", { class: "gl-label" }, "PT"), h("div", { class: "pt-tags", title: t }, gPtTags(g).map((x) => h("span", null, x))), me ? null : h("p", { class: "cell-sub" }, t),
+    g.phase === "ended" ? (rows.length ? h("div", { class: "gl-reveal" }, rows.map((x) => h("div", { class: "gl-reveal-row" }, h("span", null, me ? x.reason : `${memberName(x.uid)}：${x.reason}`), h("b", null, x.skip ? "反映なし" : `${sgn(x.delta)} PT`))))
       : h("p", { class: "cell-sub" }, me ? "このゲームでのポイントの増減はありませんでした。" : "ポイントの増減はありませんでした。")) : null);
 }
 function gLogList(g, n = 50) {
@@ -11784,7 +11875,7 @@ function gRevealList(g) {
   if (!g.reveal) return null;
   const minors = new Set(g.minors ?? []);
   const order = g.kind === "num" ? [...g.players].sort((a, b) => (g.reveal[a] ?? 0) - (g.reveal[b] ?? 0)) : g.players;
-  if (isCardKind(g.kind)) return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "最終結果"), h("div", { class: "gl-reveal" }, (g.result?.ranking ?? []).map((x) => h("div", { class: `gl-reveal-row${cardPlace(g.result.ranking, x) === 1 ? " hl" : ""}` }, h("span", null, `${cardPlace(g.result.ranking, x)}位 ${memberName(x.uid)}`), h("b", null, String(g.reveal[x.uid] ?? "")))))) ;
+  if (isCardKind(g.kind)) return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "最終結果"), h("div", { class: "gl-reveal" }, (g.result?.ranking ?? []).map((x) => h("div", { class: `gl-reveal-row${cardPlace(g.result.ranking, x) === 1 ? " hl" : ""}` }, h("span", null, `${cardPlace(g.result.ranking, x)}位 ${memberName(x.uid)}`), h("b", null, String(g.reveal[x.uid] ?? "").replace(/^(-?\d+)枚$/, `$1 ${chU(g)}`).replace(/^(-?\d+)点$/, "$1 PT")))))) ;
   return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, g.kind === "wolf" ? "みんなの役職" : g.kind === "num" ? "みんなの数字（小さい順）" : g.kind === "ng" ? "みんなのNGワード" : "みんなのお題"),
     h("div", { class: "gl-reveal" }, order.map((u) => h("div", { class: `gl-reveal-row${minors.has(u) ? " hl" : ""}` }, h("span", null, memberName(u)), h("b", null, String(g.reveal[u] ?? "?"), minors.has(u) ? "（少数派）" : "")))));
 }
@@ -11824,6 +11915,18 @@ function paintGameLive() {
     el.scrollTop = scroll;
     return;
   }
+  if (isCardKind(g.kind)) {
+    // トランプは、黒いテーブルの画面（上に回数とチップ、真ん中にディーラー・場、下に自分の手札と丸いボタン）
+    el.className = "game-live cx-live";
+    setKids(el, h("div", { class: "gl-inner cx-inner" },
+      cxTop(g, close),
+      h("div", { class: "gl-phase cx-phase", title: `${g.title} ・ ${gPhaseText(g)}` }, h("span", null, cardPhaseShort(g)), gTimer(g)),
+      // 賭け・勝負中・大富豪の番は、下の台に操作と説明があるので、上の長い説明は出さない
+      ["bet", "play"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, gPrompt(g)),
+      gameMemberBody(g)));
+    el.scrollTop = scroll;
+    return;
+  }
   el.className = "game-live";
   setKids(el, h("div", { class: "gl-inner" },
     h("div", { class: "gl-head" }, h("div", { class: "gl-title" }, g.title), close),
@@ -11850,7 +11953,7 @@ function gameStageBody(g) {
   ];
 }
 function gameMemberBody(g) {
-  if (isCardKind(g.kind)) return [...cardMemberBody(g), gRevealList(g), h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "進行"), gLogList(g, 30))];
+  if (isCardKind(g.kind)) return [...cardMemberBody(g), gPtCard(g, S.user.uid), gRevealList(g), h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "進行"), gLogList(g, 30))];
   const uid = S.user.uid;
   const sec = gSecret(g, uid);
   const out = [];
