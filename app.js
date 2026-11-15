@@ -6189,6 +6189,7 @@ function paintPresenter(full = true) {
   QZ.lastFull = Date.now();
   P.dataset.state = "ok";
 
+  if (QZ.mode === "display" && L.phase === "question" && firstTime(`pr-open:${L.seq}`)) quizBanner(L);
   if (QZ.mode === "display") paintDisplay(P, L, qz, rem);
   else paintOperator(P, L, qz, rem);
 }
@@ -6655,6 +6656,8 @@ function buzzPanel(L) {
     e.preventDefault();
     if (btn.disabled || ui.pressed) return;
     ui.pressed = true;
+    sfx("buzz");
+    btn.classList.remove("ripple"); void btn.offsetWidth; btn.classList.add("ripple");
     quizAnswer({ buzz: true });
     updateBuzzPanel();
   });
@@ -6693,6 +6696,9 @@ function updateBuzzPanel() {
   const verdict = mine ? (typeof mine.judge === "boolean" ? mine.judge : mine.timeout ? false : null) : null;
   const sent = ui.sent || !!mine?.text;
   const left = myTurn ? turnLeft(uid) : null;
+  if (myTurn) { if (firstTime(`sfx:turn:${ui.id}:${L.turn?.seq ?? 0}`)) { sfx("turn"); ui.root.classList.add("got-turn"); } }
+  if (verdict === false && firstTime(`sfx:bz-ng:${ui.id}`)) { sfx("ng"); quizFlash(document.querySelector(".quiz-live"), "ng"); }
+  if (verdict === true && firstTime(`sfx:bz-ok:${ui.id}`)) { sfx("ok"); quizFlash(document.querySelector(".quiz-live"), "ok"); }
   // 時間切れ：自分で「時間切れ」を記録する（誤答扱い）
   if (myTurn && left === 0 && !sent && !mine?.timeout && !QZ.timeoutSent.has(`${ui.id}:${L.turn.seq}`)) {
     QZ.timeoutSent.add(`${ui.id}:${L.turn.seq}`);
@@ -6963,6 +6969,64 @@ function myBetResults() {
 
 const quizActiveForMe = (L) => !!(L && L.phase !== "off" && ((!S.isAdmin && isAnswererIn(L, S.user?.uid)) || canSabotage(L) || canBet(L)));
 
+// ---- 効果音（参加者のスマホで鳴らす。音のファイルは使わず、その場で合成する）
+// スマホは「画面を一度さわったあと」でないと音を出せないので、最初にさわったときに音の準備をする
+const SFX = { ctx: null, on: (() => { try { return localStorage.getItem("island-sfx") !== "off"; } catch { return true; } })(), last: new Map() };
+function sfxCtx() {
+  if (!SFX.ctx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; SFX.ctx = new C(); }
+  if (SFX.ctx.state === "suspended") SFX.ctx.resume().catch(() => {});
+  return SFX.ctx;
+}
+// iPhone では指を離したとき（touchend・click）でないと有効にならないことがあるので、どれでも準備する。無音を一度鳴らして確実に有効にする
+function sfxUnlock() {
+  if (!SFX.on || S.isAdmin || SFX.unlocked) return;
+  const c = sfxCtx();
+  if (!c) return;
+  try { const b = c.createBuffer(1, 1, 22050), src = c.createBufferSource(); src.buffer = b; src.connect(c.destination); src.start(0); } catch { /* 古い端末 */ }
+  if (c.state === "running") SFX.unlocked = true;
+}
+for (const ev of ["pointerdown", "touchend", "click", "keydown"]) document.addEventListener(ev, sfxUnlock, { capture: true, passive: true });
+function sfxSet(on) { SFX.on = on; SFX.unlocked = false; try { localStorage.setItem("island-sfx", on ? "on" : "off"); } catch { /* 保存できない端末でも、その場では切り替わる */ } if (on) { sfxCtx(); sfx("tap"); } }
+// 1音：周波数・長さ・波の形・音量（t は鳴らし始めるまでの秒）
+function sfxTone(c, t, f, dur, type = "sine", vol = 0.2, f2 = null) {
+  const o = c.createOscillator(), gn = c.createGain(), at = c.currentTime + t;
+  o.type = type; o.frequency.setValueAtTime(f, at);
+  if (f2) o.frequency.exponentialRampToValueAtTime(f2, at + dur);
+  gn.gain.setValueAtTime(0.0001, at); gn.gain.exponentialRampToValueAtTime(vol, at + 0.012); gn.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  o.connect(gn).connect(c.destination); o.start(at); o.stop(at + dur + 0.02);
+}
+// ok 正解（ピンポーン）／ng 不正解（ブッブー）／buzz 早押し（ピコーン）／turn 解答権が来た／open 出題／tick 残り3秒／result 結果発表／tap 確認
+function sfx(name) {
+  if (!SFX.on || S.isAdmin) return;
+  const c = sfxCtx();
+  if (!c || c.state !== "running") return;
+  const now = performance.now();
+  if (now - (SFX.last.get(name) ?? 0) < 120) return; // 同じ音が重ならないように
+  SFX.last.set(name, now);
+  if (name === "ok") { sfxTone(c, 0, 1318.5, 0.22, "sine", 0.28); sfxTone(c, 0.2, 1046.5, 0.6, "sine", 0.28); sfxTone(c, 0.2, 2093, 0.4, "sine", 0.05); }
+  else if (name === "ng") { sfxTone(c, 0, 155, 0.24, "sawtooth", 0.12); sfxTone(c, 0.3, 155, 0.42, "sawtooth", 0.12); sfxTone(c, 0, 158, 0.24, "square", 0.05); sfxTone(c, 0.3, 158, 0.42, "square", 0.05); }
+  else if (name === "buzz") { sfxTone(c, 0, 880, 0.09, "square", 0.08); sfxTone(c, 0.07, 1760, 0.3, "triangle", 0.22, 2350); }
+  else if (name === "turn") { sfxTone(c, 0, 784, 0.12, "triangle", 0.2); sfxTone(c, 0.11, 1175, 0.12, "triangle", 0.2); sfxTone(c, 0.22, 1568, 0.32, "triangle", 0.22); }
+  else if (name === "open") { sfxTone(c, 0, 523, 0.14, "sine", 0.12); sfxTone(c, 0.09, 784, 0.3, "sine", 0.12); }
+  else if (name === "tick") sfxTone(c, 0, 1200, 0.06, "square", 0.05);
+  else if (name === "result") [523, 659, 784, 1046].forEach((f, i) => sfxTone(c, i * 0.12, f, i === 3 ? 0.7 : 0.18, "triangle", 0.2));
+  else if (name === "tap") sfxTone(c, 0, 1046, 0.08, "sine", 0.12);
+}
+const sfxOnce = (key, name) => { if (firstTime(`sfx:${key}`)) sfx(name); };
+// 画面全体をふわっと光らせる・揺らす（正解は緑、不正解は赤）
+function quizFlash(el, kind) {
+  if (!el || matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  el.classList.remove("fx-ok", "fx-ng"); void el.offsetWidth; el.classList.add(`fx-${kind}`);
+  setTimeout(() => el.classList.remove(`fx-${kind}`), 900);
+}
+// 新しい問題が出たときの帯（「Q3 ・ 早押し」など）
+function quizBanner(L) {
+  if (matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  const el = h("div", { class: "cx-banner qz-banner" }, h("div", { class: "cx-banner-in" }, h("span", { class: "cx-banner-ic" }, sessionAt(L, L.index)?.name ?? "QUESTION"), h("b", null, `Q${L.index + 1}`), h("small", null, `${QTYPE[L.q?.type] ?? ""} ・ ${L.q?.points ?? 10}点`)));
+  document.body.append(el);
+  setTimeout(() => el.remove(), 1700);
+}
+
 function paintMemberQuiz(full = true) {
   if (!full) { updateQuizTicks(); return; }
   // 答えを入力している最中は、同じ問題・同じ段階のあいだ作り直さない（キーボードが閉じないように）
@@ -7000,6 +7064,7 @@ function paintMemberQuiz(full = true) {
   const head = h("div", { class: "ql-head" },
     h("div", { class: "ql-title" }, L.title, answerer ? null : h("span", { class: "ql-watch" }, "観戦")),
     L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "ql-meta" }, `${sessionAt(L, L.index)?.name ?? ""} 第${L.index + 1}問 / ${L.total} ・ ${QTYPE[q?.type] ?? ""} ・ ${q?.points ?? 10}点`),
+    h("button", { class: `ql-sfx${SFX.on ? " on" : ""}`, "aria-label": SFX.on ? "効果音をオフにする" : "効果音をオンにする", "aria-pressed": String(SFX.on), onclick: () => { sfxSet(!SFX.on); QZ.lastPaint = null; paintMemberQuiz(); } }, "♪", h("small", null, SFX.on ? "ON" : "OFF")),
     h("button", { class: "ql-close", "aria-label": "閉じる", onclick: () => { QZ.hidden = true; paintMemberQuiz(); } }, icon("xmark")));
   const qt = myQTime(L, true) || 1;
   const timer = rem != null ? h("div", { class: `ql-timer${rem <= 5 ? " urgent" : ""}` }, h("div", { class: "bar", style: `width:${(rem / qt) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
@@ -7044,9 +7109,9 @@ function paintMemberQuiz(full = true) {
       input = h("div", { class: "ql-sealed" }, h("div", { class: "mk2 big" }, "封"), "封印されています。この問題は解答できません");
     } else if (q.type === "choice") {
       const gray = fx === "shuffle";
-      input = h("div", { class: "ql-choices" }, choiceOrder(L).map((k) => h("button", {
+      input = h("div", { class: `ql-choices${firstTime(`mc:${L.seq}`) ? " enter" : ""}` }, choiceOrder(L).map((k, i) => h("button", {
         class: `ql-choice${mine?.choice === k ? " picked" : ""}${answerVisible(L) && L.answer === k ? " correct" : ""}`,
-        style: `--c:${gray ? "#8E8E93" : CHOICE_COLORS[k]}`, disabled: locked,
+        style: `--c:${gray ? "#8E8E93" : CHOICE_COLORS[k]};--d:${i * 70}ms`, disabled: locked,
         onpointerdown: (e) => { e.preventDefault(); quizAnswer({ choice: k }); },
       }, gray ? null : h("span", { class: "mark" }, CHOICE_MARKS[k]), q.phone !== false && !blind ? h("span", { class: "txt" }, q.choices?.[k] ?? "") : gray ? h("span", { class: "txt" }, "？") : null)));
     } else if (q.type === "text") {
@@ -7116,6 +7181,15 @@ function paintMemberQuiz(full = true) {
   }
   setKids(el, head, timer, body, panels);
   el.scrollTop = scroll;
+  // 効果音・モーション（同じ場面では1回だけ）
+  if (L.phase === "question" && answerer && firstTime(`qz-open:${L.seq}`)) { sfx("open"); quizBanner(L); }
+  if (L.phase === "results" && firstTime(`qz-res:${L.seq}`)) sfx("result");
+  if (L.phase === "reveal" && answerer && q?.type !== "buzz") {
+    const myShown = isShown(L, uid);
+    const v = myShown ? (typeof mine?.judge === "boolean" ? mine.judge : autoJudge({ ...q, answer: L.answer }, mine ?? {}) && !!mine) : null;
+    if (myShown && mine && typeof v === "boolean" && firstTime(`sfx:v:${L.seq}`)) { sfx(v ? "ok" : "ng"); quizFlash(el, v ? "ok" : "ng"); }
+  }
+  if (L.phase === "reveal" && answerer && q?.type === "buzz" && isShown(L, uid) && mine && typeof mine.judge === "boolean" && firstTime(`sfx:v:${L.seq}`) && firstTime(`sfx:bz-${mine.judge ? "ok" : "ng"}:${L.quizId}_${L.index}_${uid}`)) { sfx(mine.judge ? "ok" : "ng"); quizFlash(el, mine.judge ? "ok" : "ng"); }
 }
 
 // 全体の描画や Firestore の更新のたびに呼ぶ（full = false のときはタイマーの表示だけ更新する）
@@ -7155,6 +7229,8 @@ function updateQuizTicks() {
     const txt = document.querySelector(".ql-timer span");
     if (bar) bar.style.width = `${(rem / (myQTime(L, true) || 1)) * 100}%`;
     if (txt) txt.textContent = `${Math.ceil(rem)}秒`;
+    const sec = Math.ceil(rem);
+    if (sec > 0 && sec <= 3 && amAnswerer()) sfxOnce(`tick:${L.seq}:${sec}`, "tick");
     document.querySelector(".ql-timer")?.classList.toggle("urgent", rem <= 5);
   }
 }
@@ -11757,7 +11833,7 @@ function cxFelt(seats, center, top = null, sz = null) {
   });
   const spots = seats.map((el, j) => h("div", { class: "cx-spot", style: `left:calc(40px + (100% - 80px) * ${pos[j].x.toFixed(4)});top:calc(26px + (var(--rh) + 14px) * ${pos[j].f.toFixed(4)})` }, el));
   // 縮めてよい下限：横に近い席どうしが上下で重ならない高さと、真ん中（場・チップ）が入る高さ
-  const wd = Math.min(window.innerWidth || 390, 560) - 32 - 80, seatH = bj ? 104 : 92;
+  const wd = (cxWide() ? Math.min(window.innerWidth, 1280) - 64 - CX_ME_PC - 28 : Math.min(window.innerWidth || 390, 560) - 32) - 80, seatH = bj ? 104 : 92;
   let need = 0;
   for (let a = 0; a < k; a++) for (let b = a + 1; b < k; b++) {
     const dx = Math.abs(pos[a].x - pos[b].x) * wd, df = Math.abs(pos[a].f - pos[b].f);
@@ -11772,10 +11848,13 @@ function cxFelt(seats, center, top = null, sz = null) {
 }
 // 大富豪の手札：重ねて扇形に。枚数が多いときは、押したあたり（前後2枚）が開いて選べる。動きは前の位置からなめらかに
 GC.focus = new Map(); GC.fan = new Map();
+// PC（横長の画面）：左にテーブル、右に自分の札・操作を並べる（style.css の @media と同じ条件・同じ幅）
+const CX_WIDE_MQ = "(min-width: 960px) and (min-height: 560px) and (orientation: landscape)", CX_ME_PC = 440;
+const cxWide = () => !!window.matchMedia?.(CX_WIDE_MQ).matches;
 const cxSet = (el, t) => { el.style.marginLeft = t.ml; el.style.setProperty("--r", `${t.r}deg`); el.style.setProperty("--dy", `${t.dy}px`); el.style.setProperty("--lift", `${t.lift}px`); el.style.opacity = String(t.op); };
 function cxHandFan(g, cards, sel, tap) {
   const n = cards.length;
-  const W = Math.min(window.innerWidth || 390, 640) - 40 - 36;
+  const W = (cxWide() ? CX_ME_PC : Math.min(window.innerWidth || 390, 640)) - 40 - 36;
   const cw = (window.innerWidth || 390) <= 380 ? 50 : 54; // style.css の @media (max-width: 380px) のカードの幅と合わせる
   const need = n > 1 && (W - cw) / (n - 1) < 30;
   let f = GC.focus.get(g.id);
@@ -12267,7 +12346,7 @@ function gamePause(g) {
   if (!g.endsAt) return;
   return gameSetEnds(g, null, Math.max(0, g.endsAt - Date.now()));
 }
-const GAME_CTL_NOTE = "◀ 戻す：1つ前の場面に戻します（最大5回まで。戻した場面の投票・操作はやり直しになります。ポイントを反映したあとは戻せません）。進める ▶：時間が残っていても、いまの場面を締め切って強制的に次へ進めます。時間：⏸ で止めている間は時間切れで進みません（全員の画面にも「一時停止」と出ます）。+10秒などで残り時間を足せます。";
+const GAME_CTL_NOTE = "◀ 戻す：1つ前の場面に戻します（最大5回まで。戻した場面の投票・操作はやり直しになります。ポイントを反映したあとは戻せません）。進める ▶：時間が残っていても、いまの場面を締め切って強制的に次へ進めます。時間：「止める」で止めている間は時間切れで進みません（全員の画面にも「一時停止」と出ます）。+10秒などで残り時間を足せます。";
 function gameCtlBar(g, compact = false) {
   const b = (label, fn, cls = "btn-small", dis = false, aria = null) => { const x = h("button", { class: cls, disabled: dis, ...(aria ? { "aria-label": aria } : {}) }, label); x.addEventListener("click", () => guard(x, () => fn())); return x; };
   const live = gLive(g);
@@ -12276,7 +12355,7 @@ function gameCtlBar(g, compact = false) {
       b("◀ 戻す", () => gameUndo(S.games.get(g.id) ?? g), "btn-small gp-back", !gameCanUndo(g), "1つ前の場面に戻す"),
       b("進める ▶", () => gameForward(S.games.get(g.id) ?? g), "btn-small gp-fwd", !live, "次の場面へ進める")),
     (g.endsAt || g.paused != null) && live ? h("div", { class: "gp-ctl-row time" }, h("span", { class: "gp-ctl-lb" }, "時間"),
-      b(g.paused != null ? "▶ 再開" : "⏸ 止める", () => gamePause(S.games.get(g.id) ?? g), `btn-small gp-pause${g.paused != null ? " on" : ""}`, false, g.paused != null ? "タイマーを再開する" : "タイマーを止める"),
+      b(g.paused != null ? "▶ 再開" : "止める", () => gamePause(S.games.get(g.id) ?? g), `btn-small gp-pause${g.paused != null ? " on" : ""}`, false, g.paused != null ? "タイマーを再開する" : "タイマーを止める"),
       b("+10秒", () => gameAddTime(S.games.get(g.id) ?? g, 10), "btn-small", false, "残り時間を10秒増やす"),
       b("+30秒", () => gameAddTime(S.games.get(g.id) ?? g, 30), "btn-small", false, "残り時間を30秒増やす"),
       b("+1分", () => gameAddTime(S.games.get(g.id) ?? g, 60), "btn-small", false, "残り時間を1分増やす")) : null);
@@ -12299,7 +12378,7 @@ function gameNarrate(g) {
 // ---- 表示の部品
 const gTimer = (g) => (g.endsAt ? h("span", { class: `g-timer${gUrgent(g.endsAt) ? " urgent" : ""}`, "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt))
   : g.paused != null && gLive(g) ? h("span", { class: "g-timer paused" }, gPausedText(g.paused)) : null);
-const gPausedText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `⏸ 一時停止 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const gPausedText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `一時停止中 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 // 残り5秒からは赤く光らせる（0秒＝「時間です」の間も、進むまで赤のまま）
 const gUrgent = (endsAt) => endsAt - Date.now() <= 5000;
 function gTimeText(endsAt) {
@@ -12573,7 +12652,7 @@ function gameMemberBody(g) {
 function cxLogBar(g) {
   const n = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).length, last = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).at(-1);
   return h("button", { class: "cx-logbtn", "aria-haspopup": "dialog", onclick: () => { GV.log = g.id; GV.logAnim = true; paintGameLive(); } },
-    h("span", { class: "cx-logbtn-ic", "aria-hidden": "true" }, "≡"), h("b", null, "ログを見る"), h("small", null, last ? last.text : "まだありません"), h("i", null, `${n}件`));
+    h("span", { class: "cx-logbtn-ic", "aria-hidden": "true" }, "≡"), h("b", null, "ログを見る"), h("small", null, h("span", null, last ? last.text : "まだありません")), h("i", null, `${n}件`));
 }
 function cxLogSheet(g, log) {
   const close = () => { GV.log = null; paintGameLive(); };
@@ -13535,14 +13614,16 @@ function gamesAdmin() {
         : h("button", { class: "text-btn", onclick: () => { GA.open = null; scheduleRender(); } }, "‹ ゲームの一覧へ"),
       h("div", { class: "gp-head" }, h("h2", null, g.title), h("span", { class: `gp-phase${gLive(g) ? " live" : ""}${GA.pk !== phaseKey(g) ? " pop" : ""}` }, gPhaseText(g)), gTimer(g)),
       h("p", { class: "gl-prompt" }, gPrompt(g)),
-      !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。この画面を開いたままにしてください（閉じると進行が止まります）。") : null,
+      !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。管理者の端末（この操作用の画面か、表示用画面）のどれか1台でアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       gPtCard(g),
-      isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "この端末がディーラー（進行役）です。終わるまでアプリを開いたままにしてください（閉じると進行が止まります）。") : null,
+      isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "管理者の端末がディーラー（進行役）です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       isCardKind(g.kind) ? h("div", { class: "gl-card" }, g.kind === "bj" ? bjTable(g) : dfgTable(g)) : null,
       g.actKey && !isCardKind(g.kind) ? h("div", { class: "gp-progress" }, `選び終わった人 ${acted.length} / ${g.actors.length}人`, waiting.length ? h("small", null, `まだ：${gNames(waiting)}`) : null) : null,
       h("div", { class: "gp-actions" }, next,
-        h("button", { class: "btn-small", onclick: () => openGameStage(g) }, icon("arrows"), "みんなに見せる画面（全画面）"),
+        h("button", { class: "btn-small", onclick: () => openGameStage(g) }, icon("arrows"), "表示用画面を開く（PC・全画面）"),
         h("button", { class: `btn-small${GSPEAK.on ? " on" : ""}`, onclick: () => { GSPEAK.on = !GSPEAK.on; if (GSPEAK.on) gameSpeak("読み上げをオンにしました"); else window.speechSynthesis?.cancel(); scheduleRender(); } }, GSPEAK.on ? "読み上げ：オン" : "読み上げ：オフ")),
+      gLive(g) ? h("p", { class: "gp-two" }, icon("arrows"), g.demo ? "デモはこの端末の中だけで動くので、表示用画面もこの端末で開きます（閉じるとこの画面に戻ります）。"
+        : "表示用（みんなに見せる画面）と操作用（この画面）は別の画面です。PC で「表示用画面を開く」を押してプロジェクターやテレビに映し、進行はスマホのこの画面で操作できます（PC とスマホの両方に管理者でログイン）。表示用画面には操作ボタンは出ません。") : null,
       gLive(g) || gameCanUndo(g) ? group("場面の操作", [h("div", { class: "cell" }, gameCtlBar(g))], GAME_CTL_NOTE) : null,
       gRevealList(g),
       g.kind === "bj" ? null : group(null, [
