@@ -2834,7 +2834,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .bj-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0 4px; }
 .bj-acts .btn-filled { margin: 0; }
 .bj-acts .btn-filled.alt { background: var(--accent); color: var(--on-accent); }
-.bj-acts .btn-small { grid-column: 1 / -1; justify-self: start; }
+.bj-acts .btn-small { grid-column: 1 / -1; justify-self: start; text-align: left; white-space: normal; }
 .bj-seat-head { display: flex; justify-content: space-between; gap: 6px; font-size: 14px; }
 .bj-seat-head b { min-width: 0; overflow-wrap: anywhere; }
 .bj-chips { color: var(--label-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -2842,6 +2842,26 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .bj-res { color: var(--label); }
 .bj-seat.r-win .bj-res, .bj-seat.r-bj .bj-res { color: #5BD68A; }
 .bj-seat.r-lose .bj-res, .bj-seat.r-bust .bj-res { color: #FF6B6B; }
+.bj-hand.r-win .bj-res, .bj-hand.r-bj .bj-res, .bj-hand.r-charlie .bj-res { color: #5BD68A; }
+.bj-hand.r-lose .bj-res, .bj-hand.r-bust .bj-res, .bj-hand.r-surr .bj-res { color: #FF6B6B; }
+.bj-hand { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bj-hand + .bj-hand { padding-top: 6px; border-top: .5px solid var(--separator); }
+.bj-hand.cur { box-shadow: inset 3px 0 0 var(--accent); padding-left: 8px; }
+.bj-custom { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.bj-custom .bj-amount { flex: 1 1 auto; min-width: 0; width: 100%; padding: 10px 12px; border-radius: 10px; background: var(--cell-2); }
+.bj-custom .btn-small { flex: none; }
+.gl-card > input.plain { width: 100%; padding: 12px; border-radius: 10px; background: var(--cell-2); margin: 6px 0 10px; box-sizing: border-box; }
+.gl-card > .btn-filled { margin: 0 0 8px; }
+.pt-rank-cell { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.pt-rank { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px 12px; }
+.pt-rank-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pt-rank-row > span:first-child { flex: none; width: 3.6em; color: var(--label-2); font-size: 14px; }
+.pt-num { width: 5.5em; min-width: 0; padding: 8px 10px; border-radius: 10px; background: var(--cell-2); text-align: right; font-variant-numeric: tabular-nums; }
+.field .pt-num { flex: none; }
+.pt-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.games-admin .group-footer { white-space: pre-line; }
+.gl-pt .gl-reveal { margin-top: 8px; }
+.dfg-cards.fixed { pointer-events: none; }
 .bj-total { font-size: 28px; font-weight: 800; margin: 2px 0 10px; font-variant-numeric: tabular-nums; }
 .dfg-rev { padding: 8px 12px; border-radius: 12px; background: rgba(255, 90, 90, .16); color: #FF8A8A; font-weight: 700; font-size: 14px; text-align: center; }
 .dfg-field { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 14px; background: rgba(46, 125, 80, .22); box-shadow: inset 0 0 0 1px rgba(91, 214, 138, .25); min-height: 104px; }
@@ -2898,3 +2918,22 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .rp.tall .rp-dfg-play > b, .rp.tall .rp-bj-hand b { font-size: 4cqw; }
 .rp.tall .rp-dfg-play em, .rp.tall .rp-bj-hand em { font-size: 3.6cqw; }
 .rp.tall .rp-bj-hands { grid-template-columns: 1fr 1fr; }
+/* クイズ：区切りごとの解答者 */
+.session-block .sess-who { margin: 0 0 8px; }
+.session-block .sess-picks { margin: 0 0 6px; }
+.session-block .sess-who-note { margin: 0 0 10px; }
+/* クイズの問題カード：狭い画面で中身が枠より広がらないように（問題の種類は2段に折り返す） */
+.q-edit { grid-template-columns: minmax(0, 1fr); }
+.q-edit .seg { flex-wrap: wrap; border-radius: 16px; }
+.q-edit .seg button { flex: 1 0 auto; white-space: nowrap; }
+.q-edit .choice-edit { grid-template-columns: minmax(0, 1fr); }
+.q-edit > *, .q-edit .choice-edit > * { min-width: 0; }
+.sess-who-cell { flex-direction: column; align-items: stretch; gap: 8px; padding-top: 12px; padding-bottom: 12px; }
+.sess-who-label { font-size: 15px; }
+.pt-rank-cell > .field-label { white-space: normal; width: auto; margin-right: 0; }
+/* ゲームの設定：狭い画面では、長い選択肢を次の行に回して全文を見せる */
+@media (max-width: 600px) {
+  .game-setup .field { flex-wrap: wrap; row-gap: 2px; }
+  .game-setup .field > .field-label { flex: 1 1 9em; }
+  .game-setup .field > select { flex: 1 0 auto; max-width: 100%; }
+}
