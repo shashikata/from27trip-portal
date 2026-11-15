@@ -1269,6 +1269,36 @@ function amountPicker(input, values, label = "ポイント") {
   return [field(label, sel), customCell];
 }
 
+// 開閉する欄（<details>）は、管理者・参加者のどの画面でも、開く・閉じるをなめらかに動かす（高さと中身の薄さを少しずつ変える）
+const ACC_MS = 260;
+function accToggle(d, sm) {
+  const opening = !d.open || d.classList.contains("acc-closing");
+  const start = d.getBoundingClientRect().height;
+  d._acc?.cancel(); d._accF?.cancel();
+  d.classList.remove("acc-closing");
+  // 閉じたときの高さを測る（同じ処理の中で戻すので、画面にはちらつかない）
+  d.open = false; const shut = d.getBoundingClientRect().height;
+  d.open = true; const full = d.getBoundingClientRect().height;
+  const end = opening ? full : shut;
+  if (!opening) d.classList.add("acc-closing");
+  d.style.overflow = "hidden";
+  const body = [...d.children].filter((x) => x !== sm);
+  const a = d.animate({ height: [`${start}px`, `${end}px`] }, { duration: ACC_MS, easing: "cubic-bezier(.2, .8, .2, 1)" });
+  d._acc = a;
+  d._accF = body.length ? { cancel: () => body.forEach((x) => x.getAnimations().forEach((y) => y.id === "acc" && y.cancel())) } : null;
+  for (const x of body) { const f = x.animate({ opacity: opening ? [0, 1] : [1, 0], transform: opening ? ["translateY(-4px)", "none"] : ["none", "translateY(-4px)"] }, { duration: ACC_MS, easing: "ease", fill: "both" }); f.id = "acc"; f.onfinish = () => f.cancel(); }
+  a.onfinish = () => { d._acc = null; d.style.overflow = ""; if (!opening) { d.classList.remove("acc-closing"); d.open = false; } };
+  a.oncancel = () => { d.style.overflow = ""; };
+}
+document.addEventListener("click", (e) => {
+  const sm = e.target.closest?.("summary");
+  const d = sm?.parentElement;
+  if (!(d instanceof HTMLDetailsElement) || d.querySelector(":scope > summary") !== sm || typeof d.animate !== "function") return;
+  if (matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  e.preventDefault();
+  accToggle(d, sm);
+});
+
 // 見出しを押すと開閉する欄
 function fold(title, content, open) {
   return h("details", { class: "fold", open }, h("summary", null, h("span", null, title), icon("chevron")), content);
@@ -2354,7 +2384,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v92"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v93"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -6972,7 +7002,7 @@ function paintMemberQuiz(full = true) {
     L.phase === "lobby" || L.phase === "results" ? null : h("div", { class: "ql-meta" }, `${sessionAt(L, L.index)?.name ?? ""} 第${L.index + 1}問 / ${L.total} ・ ${QTYPE[q?.type] ?? ""} ・ ${q?.points ?? 10}点`),
     h("button", { class: "ql-close", "aria-label": "閉じる", onclick: () => { QZ.hidden = true; paintMemberQuiz(); } }, icon("xmark")));
   const qt = myQTime(L, true) || 1;
-  const timer = rem != null ? h("div", { class: "ql-timer" }, h("div", { class: "bar", style: `width:${(rem / qt) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
+  const timer = rem != null ? h("div", { class: `ql-timer${rem <= 5 ? " urgent" : ""}` }, h("div", { class: "bar", style: `width:${(rem / qt) * 100}%` }), h("span", null, `${Math.ceil(rem)}秒`)) : null;
   const panels = [
     L.phase !== "question" && L.phase !== "reading" && L.saboWin?.open && canSabotage(L) ? saboPanel(L) : null,
     L.phase !== "question" && L.phase !== "reading" && L.betWin?.open && canBet(L) ? betPanel(L) : null,
@@ -7125,6 +7155,7 @@ function updateQuizTicks() {
     const txt = document.querySelector(".ql-timer span");
     if (bar) bar.style.width = `${(rem / (myQTime(L, true) || 1)) * 100}%`;
     if (txt) txt.textContent = `${Math.ceil(rem)}秒`;
+    document.querySelector(".ql-timer")?.classList.toggle("urgent", rem <= 5);
   }
 }
 
@@ -10557,7 +10588,7 @@ const GAME_KINDS = {
   word: { label: "ワード人狼", min: 3, desc: "全員にお題が配られますが、少数派の人だけ少し違うお題です（例：うどん／そば）。お題そのものは言わずに話して、少数派を投票で当てます。自分が少数派だと気づいたら、ばれないように話を合わせましょう。" },
   ng: { label: "NGワード", min: 2, desc: "ほかの人のNGワードは見えますが、自分のNGワードだけは見えません。うっかり自分のNGワードを言ってしまったらアウトです。ほかの人がNGワードを言うように話を振りましょう。最後まで残った人の勝ちです。" },
   num: { label: "数字ならべ", min: 2, desc: "1〜100の数字がこっそり配られます。お題（例：人気の食べ物）に合わせて、自分の数字の大きさを例えで伝え合い、話し合って小さい順に並びます。最後に答え合わせをします。" },
-  bj: { label: "ブラックジャック", min: 1, max: 8, desc: "管理者の端末がディーラーになり、全員がディーラーと勝負します。カードの合計を21に近づけ、21を超えたら負けです（絵札は10、Aは1か11）。毎回チップを賭け、最後に一番多くチップを残した人の勝ちです。" },
+  bj: { label: "ブラックジャック", min: 1, max: 20, desc: "管理者の端末がディーラーになり、全員がディーラーと勝負します。カードの合計を21に近づけ、21を超えたら負けです（絵札は10、Aは1か11）。毎回チップを賭け、最後に一番多くチップを残した人の勝ちです。" },
   dfg: { label: "大富豪", min: 2, max: 8, desc: "全部のカードを配り、場より強いカードを順番に出していきます（強さは 3 が一番弱く、2 が一番強い。ジョーカーはさらに強い）。出せないときや出したくないときはパス。早く手札をなくした人ほど上位で、何回か遊んだ合計点で順位を決めます。" },
 };
 const WOLF_ROLES = {
@@ -10606,7 +10637,7 @@ const gLive = (g) => !!g && g.phase !== "ended";
 const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
 const gNames = (uids) => (uids ?? []).map(memberName).join("・");
 const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => (b.no ?? 0) - (a.no ?? 0));
-const GV = { hidden: new Set(), show: new Set(), stage: null, demo: null }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GV = { hidden: new Set(), show: new Set(), flipN: new Map(), stage: null, demo: null, log: null }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
 const GBUSY = new Set(); // 進めている最中のゲーム
@@ -10768,6 +10799,22 @@ function gPtText(g) {
 }
 
 // ---- 1段階進める。同じ段階を2台の端末が同時に進めないよう、段階の番号（step）が変わっていないときだけ書く
+// ---- 場面を戻す（管理者）：場面が進むたびに、変わる直前の値を最大 UNDO_MAX 回分だけゲームの記録に残しておく
+const UNDO_MAX = 5;
+const UNDO_SKIP = new Set(["log", "step", "undo", "settled"]);
+function undoSnap(g, update) {
+  const keys = {}, del = [];
+  for (const k of Object.keys(update)) {
+    if (UNDO_SKIP.has(k)) continue;
+    if (g[k] === undefined) del.push(k); else keys[k] = g[k];
+  }
+  return { at: Date.now(), step: g.step ?? 0, keys, del, logLen: (g.log ?? []).length, rem: g.endsAt ? Math.max(0, g.endsAt - Date.now()) : g.paused ?? null };
+}
+function undoSecSnap(prev, data, step) {
+  const keys = {}, del = [];
+  for (const k of Object.keys(data)) { if (k === "undo") continue; if (prev?.[k] === undefined) del.push(k); else keys[k] = prev[k]; }
+  return [...(prev?.undo ?? []), { step, keys, del }].slice(-UNDO_MAX);
+}
 async function gameStep(gid, step, fn, need = null) {
   if (isDemo(gid)) {
     const g0 = S.games.get(gid);
@@ -10776,8 +10823,14 @@ async function gameStep(gid, step, fn, need = null) {
     for (const u of need ?? []) { const d = S.gameSecrets.get(`${gid}_${u}`); if (d) secs.set(u, d); }
     const r = fn({ ...g0 }, secs);
     if (!r) return false;
-    for (const [uid, data] of r.secrets ?? []) demoPut("gameSecrets", `${gid}_${uid}`, data, true);
-    demoPut("games", gid, { ...g0, ...r.update, step: step + 1 });
+    if (g0.paused != null && "endsAt" in r.update) r.update.paused = null;
+    const snap = undoSnap(g0, r.update);
+    for (const [uid, data] of r.secrets ?? []) {
+      const id = `${gid}_${uid}`;
+      demoPut("gameSecrets", id, { ...data, undo: undoSecSnap(S.gameSecrets.get(id), data, step) }, true);
+      (snap.sec ??= []).push(uid);
+    }
+    demoPut("games", gid, { ...g0, ...r.update, step: step + 1, undo: [...(g0.undo ?? []), snap].slice(-UNDO_MAX) });
     return true;
   }
   const ref = D("games", gid);
@@ -10791,6 +10844,16 @@ async function gameStep(gid, step, fn, need = null) {
     for (const u of need ?? []) { const d = await tx.get(D("gameSecrets", `${gid}_${u}`)); if (d.exists()) secs.set(u, d.data()); }
     const r = fn(g, secs);
     if (!r) return false;
+    if (g.paused != null && "endsAt" in r.update) r.update.paused = null;
+    // 戻すための記録（書き込みの前に、書き換える秘密の札の今の中身も読んでおく）
+    const us = undoSnap(g, r.update);
+    const secW = [];
+    for (const [uid, data] of r.secrets ?? []) {
+      let prev = secs.get(uid);
+      if (!prev) { const d = await tx.get(D("gameSecrets", `${gid}_${uid}`)); prev = d.exists() ? d.data() : null; }
+      secW.push([uid, { ...data, undo: undoSecSnap(prev, data, step) }]);
+      (us.sec ??= []).push(uid);
+    }
     // 終わった瞬間に、旅行のポイントへ反映する（記録の ID を決めているので、二重には付かない）
     if (r.update.phase === "ended" && g.opts?.pt?.pay) {
       const rows = gPtRows({ ...g, ...r.update });
@@ -10806,8 +10869,8 @@ async function gameStep(gid, step, fn, need = null) {
       if (logs.length) addStats(tx, logs);
       r.update.settled = rows.map((x) => ({ uid: x.uid, delta: x.delta, reason: x.reason, ...(x.skip ? { skip: x.skip } : {}) }));
     }
-    tx.update(ref, { ...r.update, step: step + 1 });
-    for (const [uid, data] of r.secrets ?? []) tx.set(D("gameSecrets", `${gid}_${uid}`), data, { merge: true });
+    tx.update(ref, { ...r.update, step: step + 1, undo: [...(g.undo ?? []), us].slice(-UNDO_MAX) });
+    for (const [uid, data] of secW) tx.set(D("gameSecrets", `${gid}_${uid}`), data, { merge: true });
     return true;
   });
 }
@@ -11651,7 +11714,26 @@ const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック�
 
 // ---- トランプの参加者の画面（黒いテーブル・ガラスのカード・丸いボタン）
 // カードを少し重ねて並べる
-const cxFan = (cs, cls = "", zone = null) => { let d = 0; return h("div", { class: `cx-fan${cls}` }, cs.map((c, i) => { const el = cardEl(c, { big: true }); if (zone && cxOnce(`${zone}:${i}:${c}`)) { el.classList.add("deal"); el.style.animationDelay = `${d++ * 110}ms`; } return el; })); };
+// 新しく来たカードは、飛んできてから表に返す。伏せてあったカード（ディーラーの2枚目）は、その場でゆっくり表に返す。
+// step は1枚ずつの間隔。かかる時間の合計を data-t に入れておく（勝ち負けの表示を、めくり終わってから出すため）
+const CX_DEAL_MS = 820, CX_FLIP_MS = 900;
+const BJ_RING_MAX = 7; // 丸テーブルに並べるのは、ほかの人が7人まで（8人まで）。それより多いときは上の帯に小さく並べる
+const cxFan = (cs, cls = "", zone = null, step = 300) => {
+  let d = 0, t = 0;
+  const fan = h("div", { class: `cx-fan${cls}` }, cs.map((c, i) => {
+    const el = cardEl(c, { big: true });
+    if (zone && cxOnce(`${zone}:${i}:${c}`)) {
+      const wasDown = c != null && GC.seen.has(`${zone}:${i}:null`);
+      el.classList.add(wasDown ? "flipup" : "deal");
+      const at = d++ * step;
+      el.style.animationDelay = `${at}ms`;
+      t = Math.max(t, at + (wasDown ? CX_FLIP_MS : CX_DEAL_MS));
+    }
+    return el;
+  }));
+  fan.dataset.t = String(t);
+  return fan;
+};
 // 丸いボタン（アイコン＋名前）。cls に btn-filled などを足すと、今までの押し方の目印も残る
 // 自分のあとに座る順（自分の左隣から時計回り）
 const cxAfter = (list, me) => { const i = list.indexOf(me); return i < 0 ? [...list] : [...list.slice(i + 1), ...list.slice(0, i)]; };
@@ -11761,6 +11843,11 @@ function cardMemberBody(g) {
     const betNow = g.phase === "bet" ? Number(cardAct(g, "b", uid, r)) || 0 : keys.reduce((x, k) => x + (Number(st.hands[k].bet) || 0), 0);
     const settled = keys.filter((k) => st.hands[k].res);
     const sum = settled.reduce((x, k) => x + (Number(st.hands[k].delta) || 0), 0) + (Number(st.insRes?.[uid]) || 0);
+    // ディーラーのカードは先に作って、めくり終わるまでの時間を知る（勝ち負けは、めくり終わってから出す）
+    const dFan = dealer.length ? cxFan(dealer, "", `d${g.id}.${st.round}`, 700) : cxFan([null, null], " ghost");
+    const late = Number(dFan.dataset.t) || 0;
+    const lateA = late ? { style: `--late:${late}ms` } : {};
+    const lateC = late ? " late" : "";
     // 自分の手
     const U = chU(g);
     const waitText = g.phase === "bet" ? (g.actors.includes(uid) ? "YOUR HAND" : chips <= 0 ? `${U} 0` : "ほかの人が BET 中")
@@ -11768,10 +11855,13 @@ function cardMemberBody(g) {
     const hands = keys.length
       ? h("div", { class: `cx-hands${keys.length > 1 ? " multi" : ""}` }, keys.map((k) => {
         const hd = st.hands[k];
-        return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}` },
-          cxFan(hd.cards, "", `h${g.id}.${st.round}.${k}`),
-          h("div", { class: "cx-total" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
-          hd.res ? h("div", { class: "cx-res", title: BJ_RES[hd.res] }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
+        const isBJ = bjIsBJ(hd.cards, hd.split);
+        const fan = cxFan(hd.cards, "", `h${g.id}.${st.round}.${k}`);
+        const bjA = isBJ ? { style: `--bjd:${Number(fan.dataset.t) || 0}ms` } : {};
+        return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}${isBJ ? " is-bj" : ""}`, ...bjA },
+          fan,
+          h("div", { class: "cx-total" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
+          hd.res ? h("div", { class: `cx-res${lateC}`, title: BJ_RES[hd.res], ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
       }))
       : g.phase === "bet" && g.actors.includes(uid) ? null // 賭けを選ぶ間は、空の手札の枠を出さない（ボタンを1画面に収めるため）
         : h("div", { class: "cx-hands" }, h("div", { class: "cx-hand" }, cxFan([null, null], " ghost"), h("div", { class: "cx-total" }, waitText)));
@@ -11781,15 +11871,15 @@ function cardMemberBody(g) {
       const max = bjMaxBet(o, chips);
       const input = h("input", { type: "number", class: "plain bj-amount", min: String(o.betMin), max: String(max), step: "1", inputmode: "numeric", placeholder: `${o.betMin}〜${max} ${U}`, "aria-label": "賭ける枚数" });
       const send = h("button", { class: "btn-small", onclick: () => { const v = Math.floor(Number(input.value)); if (!(v >= o.betMin && v <= max)) return toast(`${o.betMin}〜${max}枚で入れてください`); cardSend(g, "b", r, String(v)); input.value = ""; } }, "BET");
-      ctl = [h("div", { class: "cx-label" }, "BET ", h("small", null, `${o.betMin}–${max} ${U}`)),
-        h("div", { class: "cx-bets" }, bjBetChoices(o, chips).map((x) => h("button", { class: `gl-choice cx-betchip${betNow === x ? " on" : ""}`, "aria-pressed": String(betNow === x), onclick: () => cardSend(g, "b", r, String(x)) },
+      ctl = [h("div", { class: `cx-label${betNow ? "" : " need"}` }, "BET ", h("small", null, `${o.betMin}–${max} ${U}`)),
+        h("div", { class: `cx-bets${betNow ? "" : " need"}` }, bjBetChoices(o, chips).map((x) => h("button", { class: `gl-choice cx-betchip${betNow === x ? " on" : ""}`, "aria-pressed": String(betNow === x), onclick: () => cardSend(g, "b", r, String(x)) },
           h("b", null, x === chips && !BJ_BETS.includes(x) ? "ALL" : String(x)), h("small", null, `${x}枚`)))),
         h("div", { class: "bj-custom" }, input, send),
         h("p", { class: "cx-note" }, betNow ? `BET ${betNow} ${U} ・ 締め切りまで変更できます` : o.noBet > 0 ? `未選択なら BET ${Math.max(o.betMin, Math.min(o.noBet, max))} ${U}` : "未選択ならこの回は見送り")];
     } else if (g.phase === "insure" && g.actors.includes(uid)) {
       const pick = cardAct(g, "i", uid, r), amt = Math.floor((st.hands[uid]?.bet ?? 0) / 2);
-      ctl = [h("div", { class: "cx-label" }, "INSURANCE ", h("small", null, "ディーラーの表が A")),
-        h("div", { class: "cx-acts" },
+      ctl = [h("div", { class: `cx-label${pick ? "" : " need"}` }, "INSURANCE ", h("small", null, "ディーラーの表が A")),
+        h("div", { class: `cx-acts${pick ? "" : " need"}` },
           cxBtn("check", `YES ${amt}`, `btn-filled${pick === "y" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "y") }),
           cxBtn("xmark", "NO", `btn-filled${pick === "n" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "n") })),
         h("p", { class: "cx-note" }, `INS ${amt} ${U} ・ ディーラーが BJ なら 2倍で戻る ・ 未選択は「かけない」`)];
@@ -11797,36 +11887,53 @@ function cardMemberBody(g) {
       const hd = st.hands[cur], n = hd.cards.length, can = bjCan(g, st, uid, cur);
       const pend = bjPending(g, st, uid);
       const b = (ic, label, op, cls) => cxBtn(ic, label, cls, { disabled: !!pend || !can[op], onclick: () => cardSend(g, "p", r, `${op}${bjNo(cur)}.${n}`) });
-      ctl = [h("div", { class: "cx-acts" }, b("dup", "DOUBLE", "d", "btn-small"), b("hand", "STAND", "s", "btn-filled alt"), b("plus", "HIT", "h", "btn-filled")),
-        can.p || can.r ? h("div", { class: "cx-acts sub" },
+      ctl = [h("div", { class: `cx-acts${pend ? "" : " need"}` }, b("dup", "DOUBLE", "d", "btn-small"), b("hand", "STAND", "s", "btn-filled alt"), b("plus", "HIT", "h", "btn-filled")),
+        can.p || can.r ? h("div", { class: `cx-acts sub${pend ? "" : " need"}` },
           can.p ? b("split", "SPLIT", "p", "btn-small") : null,
           can.r ? b("wflag", "SURREND.", "r", "btn-small") : null) : null,
         h("p", { class: "cx-note" }, pend ? "送信済み ・ 反映待ち…"
           : [bjHandsOf(st, uid).length > 1 ? `#${bjNo(cur)} の手` : null, can.d ? `DOUBLE → BET ${hd.bet * 2} ・ +1枚` : null, can.p ? `SPLIT → +${hd.bet} ${U}` : null, can.r ? `SURR. → ${Math.floor(hd.bet / 2)} ${U} 戻る` : null].filter(Boolean).join(" ・ "))];
     } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, "✓ STAND ・ 待機中…");
     // ほかの人の席
-    const seats = cxAfter(g.players, uid).map((u) => {
-      const ks = bjHandsOf(st, u);
-      const one = ks.length === 1 ? st.hands[ks[0]] : null;
+    const others = cxAfter(g.players, uid), crowd = others.length > BJ_RING_MAX;
+    const seatCls = (u) => {
+      const ks = bjHandsOf(st, u), one = ks.length === 1 ? st.hands[ks[0]] : null;
+      return `${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}${ks.some((k) => bjIsBJ(st.hands[k].cards, st.hands[k].split)) ? " is-bj" : ""}`;
+    };
+    const seatMeta = (u) => {
       const bet = g.phase === "bet" ? cardAct(g, "b", u, r) : null;
-      return cxSeat(u, `${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}`,
+      return g.phase === "bet" ? (bet != null ? `BET ${bet}` : g.actors.includes(u) ? "BET…" : `${U} 0`) : (st.chips[u] ?? 0) <= 0 ? `${U} 0` : g.phase !== "ended" ? "見送り" : "";
+    };
+    // 9人以上：上の帯に、頭文字・名前・合計（または結果）だけを小さく2段で並べる（横にずらして全員を見られる）
+    const crowdEl = crowd ? h("div", { class: "cx-crowd", role: "list", "aria-label": `ほかの人 ${others.length}人` }, others.map((u) => {
+      const ks = bjHandsOf(st, u);
+      const line = ks.length ? ks.map((k) => { const hd = st.hands[k]; return bjIsBJ(hd.cards, hd.split) ? "BJ" : hd.res ? BJ_RES_S[hd.res] : hd.surr ? "SURR" : `${bjTot(hd.cards, hd.split)}${hd.done && g.phase === "play" ? "✓" : ""}`; }).join("/") : seatMeta(u);
+      const res = ks.length === 1 ? st.hands[ks[0]] : null;
+      return h("div", { class: `cx-cs${seatCls(u)}`, role: "listitem", title: memberName(u) },
+        h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?"), h("b", { class: "cx-nm" }, memberName(u)),
+        h("small", { class: `cx-cs-m${res?.res ? lateC : ""}`, ...(res?.res ? lateA : {}) }, line));
+    })) : null;
+    const seats = crowd ? [] : others.map((u) => {
+      const ks = bjHandsOf(st, u);
+      return cxSeat(u, seatCls(u),
         `${st.chips[u] ?? 0}`,
         ks.length ? ks.map((k) => {
           const hd = st.hands[k], tot = bjTot(hd.cards, hd.split);
           return h("div", { class: `cx-sh${hd.res ? ` r-${hd.res}` : ""}` }, h("div", { class: "cx-mini" }, hd.cards.map((c) => cardEl(c, { small: true }))),
-            hd.res ? h("div", { class: "cx-tag" }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-tag" }, "SURR")
+            hd.res ? h("div", { class: `cx-tag${lateC}`, ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-tag" }, "SURR")
+              : bjIsBJ(hd.cards, hd.split) ? h("div", { class: "cx-tag bj" }, "BLACKJACK")
               : h("div", { class: "cx-meta" }, `${tot} · ${hd.done && g.phase === "play" ? "✓" : "BET"} ${hd.bet}${hd.doubled ? "×2" : ""}`));
-        }) : h("div", { class: "cx-meta" }, g.phase === "bet" ? (bet != null ? `BET ${bet}` : g.actors.includes(u) ? "BET…" : `${U} 0`) : (st.chips[u] ?? 0) <= 0 ? `${U} 0` : g.phase !== "ended" ? "見送り" : ""),
+        }) : h("div", { class: "cx-meta" }, seatMeta(u)),
         st.ins?.[u] ? h("div", { class: "cx-meta" }, `INS ${st.ins[u]}${st.insRes?.[u] != null ? ` · ${sgn(st.insRes[u])}` : ""}`) : null);
     });
-    out.push(h("section", { class: "cx-table" },
+    out.push(h("section", { class: `cx-table${crowd ? " crowd" : ""}` }, crowdEl,
       cxFelt(seats, h("div", { class: "cx-mid" },
         betNow ? h("div", { class: `cx-chip${cxOnce(`c${g.id}.${st.round}.${betNow}`) ? " pop" : ""}`, "aria-label": `賭け ${betNow}枚` }, String(betNow)) : h("div", { class: "cx-chip blank" }, "BET"),
-        settled.length ? h("div", { class: `cx-sum ${sum > 0 ? "plus" : sum < 0 ? "minus" : ""}${cxOnce(`s${g.id}.${st.round}`) ? " pop" : ""}` }, `${sgn(sum)} `, h("small", null, U)) : null,
+        settled.length ? h("div", { class: `cx-sum ${sum > 0 ? "plus" : sum < 0 ? "minus" : ""}${cxOnce(`s${g.id}.${st.round}`) ? " pop" : ""}${lateC}`, ...lateA }, `${sgn(sum)} `, h("small", null, U)) : null,
         st.ins?.[uid] ? h("div", { class: "cx-note" }, `INS ${st.ins[uid]}${st.insRes?.[uid] != null ? ` · ${sgn(st.insRes[uid])}` : ""}`) : null),
-        h("div", { class: "cx-dealer" },
-          h("div", { class: "cx-total" }, h("small", null, "DEALER"), dealer.length ? (hide ? bjTot([st.dealer[0]]) : bjTot(st.dealer)) : "—"),
-          dealer.length ? cxFan(dealer, "", `d${g.id}.${st.round}`) : cxFan([null, null], " ghost"))),
+        h("div", { class: `cx-dealer${!hide && bjIsBJ(st.dealer ?? []) ? " is-bj" : ""}`, ...(late ? { style: `--bjd:${late}ms` } : {}) },
+          h("div", { class: `cx-total${lateC}`, ...lateA }, h("small", null, "DEALER"), dealer.length ? (hide ? bjTot([st.dealer[0]]) : bjIsBJ(st.dealer) ? "BLACKJACK" : bjTot(st.dealer)) : "—"),
+          dFan)),
       h("div", { class: "cx-me" }, hands, ctl)));
     return out;
   }
@@ -11849,7 +11956,7 @@ function cardMemberBody(g) {
   const err = myTurn && !step ? dfgCheck(g, hand, picked) : null;
   if (exTo) {
     const k = exTo.cards.length;
-    out.push(h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, `TRADE ・ FROM ${memberName(exTo.from)}`), cardRow(exTo.cards),
+    out.push(h("div", { class: `gl-card${exSent == null ? " need-box" : ""}` }, h("div", { class: "gl-label" }, `TRADE ・ FROM ${memberName(exTo.from)}`), cardRow(exTo.cards),
       h("p", { class: "cell-sub" }, exSent != null ? "✓ 送信済み" : `↩ ${memberName(exTo.from)} へ ${k}枚 返す（未選択は弱い順）`),
       exSent == null ? h("button", { class: "btn-filled", disabled: picked.length !== k, onclick: () => { cardSend(g, "x", `x${st.round}`, picked.join(".")); sel.clear(); } }, `${picked.length}/${k}枚を渡す`) : null));
   }
@@ -11890,9 +11997,9 @@ function cardMemberBody(g) {
   out.push(h("section", { class: "cx-table dfg-x" },
     cxFelt(seats, h("div", { class: "cx-field" },
       h("div", { class: "cx-total" }, g.phase !== "play" ? "場" : f ? `場：${memberName(f.by)}` : "場は空"),
-      g.phase === "play" && f ? cxFan(f.cards, "", `f${g.id}.${st.tseq}.${f.by}`) : cxFan([], " ghost blank"),
+      g.phase === "play" && f ? cxFan(f.cards, "", `f${g.id}.${st.tseq}.${f.by}`, 160) : cxFan([], " ghost blank"),
       g.phase === "play" ? h("div", { class: `cx-turn${myTurn ? " me" : ""}` }, myTurn ? "あなたの番" : `${memberName(st.turn)}の番`) : null)),
-    h("div", { class: `cx-me dfg-hand${myTurn ? " turn" : ""}` },
+    h("div", { class: `cx-me dfg-hand${myTurn ? " turn" : ""}${myTurn && sentT == null ? " need" : ""}` },
     h("div", { class: "gl-label" }, step ? "PLAY" : myTurn ? "YOUR TURN" : `HAND ×${hand.length}`),
     step ? h("div", { class: "dfg-cards fixed" }, cardRow(step.play)) : null,
     step ? h("div", { class: "gl-label" }, stage === "give" ? "GIVE" : "DISCARD") : null,
@@ -11919,9 +12026,10 @@ function demoPut(coll, id, data, merge = false) {
   const v = { ...(merge ? DEMO[kind].get(id) ?? {} : {}), ...data, id };
   DEMO[kind].set(id, v); sMap.set(id, v);
   if (kind !== "secrets") queueMicrotask(paintGameLive);
+  if (GV.demoAdmin) scheduleRender(); // 管理者の画面で見ているデモは、その画面も描き直す
 }
 function demoAct(g, key, uid, target) {
-  demoPut("gameActs", `${g.id}_${key}_${uid}`, { uid, gameId: g.id, key, target, at: null });
+  demoPut("gameActs", `${g.id}_${key}_${uid}`, { uid, gameId: g.id, key, target, at: null, atMs: Date.now() });
   setTimeout(gameAutoTick, 30);
 }
 const DEMO_CPU = ["ハル", "ソラ", "リク", "ミオ", "ユイ", "カイ", "レン"];
@@ -11942,9 +12050,20 @@ async function demoStart(kind, o) {
   GV.demo = gid;
   paintGameLive();
 }
+// デモを、参加者の画面（自分のスマホ）と管理者の画面のどちらで見るか
+function demoView(admin) {
+  const g = GV.demo ? S.games.get(GV.demo) : null;
+  if (!g) return;
+  GV.demoAdmin = admin;
+  GA.open = admin ? g.id : null; GA.showAns = false;
+  if (admin) scrollTo(0, 0);
+  scheduleRender();
+  paintGameLive();
+}
 function demoEnd() {
   const gid = GV.demo;
-  GV.demo = null;
+  GV.demo = null; GV.demoAdmin = false;
+  if (GA.open === gid) GA.open = null;
   for (const [kind, sMap] of [["games", S.games], ["secrets", S.gameSecrets], ["acts", S.gameActs]]) {
     for (const [id, v] of [...DEMO[kind]]) if (id === gid || v.gameId === gid) { DEMO[kind].delete(id); sMap.delete(id); }
   }
@@ -12051,6 +12170,118 @@ function gameAutoTick() {
 }
 setInterval(gameAutoTick, 1000);
 
+// ---- 管理者の場面の操作：1つ戻す・進める・時間を足す
+const actMs = (a) => ts(a.at) || a.atMs || Infinity; // 送信中（時刻がまだない）は「今」とみなす
+function gameCanUndo(g) { return !!g.undo?.length && !g.settled; }
+// 1つ前の場面に戻す。戻した場面のあいだに出た投票・操作は消して、その場面をやり直す（残すと、すぐ同じように進んでしまうため）
+async function gameUndo(g) {
+  if (!gameCanUndo(g)) return toast(g.settled ? "ポイントを反映済みなので戻せません" : "戻せる場面がありません", true);
+  const e = g.undo.at(-1);
+  const startAt = g.undo.length > 1 ? g.undo.at(-2).at : g.no ?? 0;
+  const acts = [...S.gameActs.values()].filter((a) => a.gameId === g.id && actMs(a) >= startAt - 500);
+  const build = (cur) => {
+    const up = { ...e.keys, step: (cur.step ?? 0) + 1, undo: cur.undo.slice(0, -1),
+      log: [...(cur.log ?? []).slice(0, e.logLen), gLog("管理者が1つ前の場面に戻しました。", null, { type: "undo" })] };
+    const ends = "endsAt" in e.keys ? e.keys.endsAt || e.rem != null : cur.endsAt || cur.paused != null;
+    if (ends) { up.endsAt = Date.now() + Math.max(e.rem ?? 0, 30000); up.paused = null; } // 戻した直後に時間切れで進まないよう、少なくとも30秒
+    return up;
+  };
+  const secUp = (sd) => {
+    const se = sd?.undo?.at(-1);
+    if (!se || se.step !== e.step) return null;
+    return { keys: se.keys, del: se.del ?? [], undo: sd.undo.slice(0, -1) };
+  };
+  if (g.demo) {
+    const cur = S.games.get(g.id);
+    const next = { ...cur, ...build(cur) };
+    for (const k of e.del ?? []) delete next[k];
+    demoPut("games", g.id, next);
+    for (const u of e.sec ?? []) {
+      const id = `${g.id}_${u}`, sd = S.gameSecrets.get(id), x = secUp(sd);
+      if (!x) continue;
+      const v = { ...sd, ...x.keys, undo: x.undo };
+      for (const k of x.del) delete v[k];
+      demoPut("gameSecrets", id, v);
+    }
+    for (const a of acts) { DEMO.acts.delete(a.id); S.gameActs.delete(a.id); }
+    GDONE.clear();
+    return toast("1つ前の場面に戻しました");
+  }
+  const ref = D("games", g.id);
+  const ok = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) return false;
+    const cur = { id: g.id, ...snap.data() };
+    if (!cur.undo?.length || cur.settled || cur.undo.at(-1).at !== e.at) return false;
+    const secs = new Map();
+    for (const u of e.sec ?? []) { const d = await tx.get(D("gameSecrets", `${g.id}_${u}`)); if (d.exists()) secs.set(u, d.data()); }
+    const up = build(cur);
+    for (const k of e.del ?? []) up[k] = deleteField();
+    tx.update(ref, up);
+    for (const [u, sd] of secs) {
+      const x = secUp(sd);
+      if (!x) continue;
+      const v = { ...x.keys, undo: x.undo };
+      for (const k of x.del) v[k] = deleteField();
+      tx.update(D("gameSecrets", `${g.id}_${u}`), v);
+    }
+    for (const a of acts) tx.delete(D("gameActs", a.id));
+    // 終わったあとに戻したときは、残してあった記録を消して、もう一度終わったときに作り直す
+    if (cur.phase === "ended") { tx.delete(D("playLogs", `game_${g.id}`)); GARCH.delete(g.id); }
+    return true;
+  });
+  GDONE.clear();
+  toast(ok ? "1つ前の場面に戻しました" : "ほかの操作と重なったので戻せませんでした。もう一度押してください", !ok);
+}
+// 次の場面へ進める（人狼などは「次へ」のボタンと同じ。トランプは、いまの番・賭けの時間を切れたことにして進める）
+function gameForwardFn(g) {
+  if (g.kind === "wolf") return g.phase === "night" ? wolfMorning : g.phase === "day" ? wolfToVote : g.phase === "vote" ? wolfTally : null;
+  if (g.kind === "word") return g.phase === "talk" ? wordToVote : g.phase === "vote" ? wordTally : g.phase === "guess" ? wordGuessEnd : null;
+  if (g.kind === "ng") return ngEnd;
+  if (g.kind === "num") return numEnd;
+  if (g.kind === "bj" && g.phase === "result") return bjNext;
+  if (g.kind === "dfg" && g.phase === "result") return dfgNextRound;
+  return null;
+}
+async function gameForward(g) {
+  if (!gLive(g)) return;
+  const fn = gameForwardFn(g);
+  if (fn) { await gameStep(g.id, g.step ?? 0, fn); return; }
+  if (isCardKind(g.kind)) await gameSetEnds(g, Date.now() - 1500, null); // 時間切れの扱い（賭けなし・自動でパス など）で次へ
+}
+async function gameSetEnds(g, endsAt, paused = null) {
+  if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), endsAt, paused });
+  await updateDoc(D("games", g.id), { endsAt, paused });
+}
+// 残り時間を足す（時間切れのあとに押したときは、今から数える。止めている間は、止めている残り時間に足す）
+function gameAddTime(g, sec) {
+  if (!gLive(g)) return;
+  if (g.paused != null) return gameSetEnds(g, null, g.paused + sec * 1000);
+  if (!g.endsAt) return;
+  return gameSetEnds(g, Math.max(g.endsAt, Date.now()) + sec * 1000);
+}
+// タイマーを止める・動かす。止めている間は endsAt をなくして残り時間（paused）だけを持つので、時間切れで進むことはない
+function gamePause(g) {
+  if (!gLive(g)) return;
+  if (g.paused != null) return gameSetEnds(g, Date.now() + Math.max(1000, g.paused), null);
+  if (!g.endsAt) return;
+  return gameSetEnds(g, null, Math.max(0, g.endsAt - Date.now()));
+}
+const GAME_CTL_NOTE = "◀ 戻す：1つ前の場面に戻します（最大5回まで。戻した場面の投票・操作はやり直しになります。ポイントを反映したあとは戻せません）。進める ▶：時間が残っていても、いまの場面を締め切って強制的に次へ進めます。時間：⏸ で止めている間は時間切れで進みません（全員の画面にも「一時停止」と出ます）。+10秒などで残り時間を足せます。";
+function gameCtlBar(g, compact = false) {
+  const b = (label, fn, cls = "btn-small", dis = false, aria = null) => { const x = h("button", { class: cls, disabled: dis, ...(aria ? { "aria-label": aria } : {}) }, label); x.addEventListener("click", () => guard(x, () => fn())); return x; };
+  const live = gLive(g);
+  return h("div", { class: `gp-ctl${compact ? " compact" : ""}` },
+    h("div", { class: "gp-ctl-row" },
+      b("◀ 戻す", () => gameUndo(S.games.get(g.id) ?? g), "btn-small gp-back", !gameCanUndo(g), "1つ前の場面に戻す"),
+      b("進める ▶", () => gameForward(S.games.get(g.id) ?? g), "btn-small gp-fwd", !live, "次の場面へ進める")),
+    (g.endsAt || g.paused != null) && live ? h("div", { class: "gp-ctl-row time" }, h("span", { class: "gp-ctl-lb" }, "時間"),
+      b(g.paused != null ? "▶ 再開" : "⏸ 止める", () => gamePause(S.games.get(g.id) ?? g), `btn-small gp-pause${g.paused != null ? " on" : ""}`, false, g.paused != null ? "タイマーを再開する" : "タイマーを止める"),
+      b("+10秒", () => gameAddTime(S.games.get(g.id) ?? g, 10), "btn-small", false, "残り時間を10秒増やす"),
+      b("+30秒", () => gameAddTime(S.games.get(g.id) ?? g, 30), "btn-small", false, "残り時間を30秒増やす"),
+      b("+1分", () => gameAddTime(S.games.get(g.id) ?? g, 60), "btn-small", false, "残り時間を1分増やす")) : null);
+}
+
 // ---- 読み上げ（司会の画面を開いている管理者の端末だけ）
 function gameSpeak(text) {
   if (!GSPEAK.on || !("speechSynthesis" in window)) return;
@@ -12066,12 +12297,16 @@ function gameNarrate(g) {
 }
 
 // ---- 表示の部品
-const gTimer = (g) => (g.endsAt ? h("span", { class: "g-timer", "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt)) : null);
+const gTimer = (g) => (g.endsAt ? h("span", { class: `g-timer${gUrgent(g.endsAt) ? " urgent" : ""}`, "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt))
+  : g.paused != null && gLive(g) ? h("span", { class: "g-timer paused" }, gPausedText(g.paused)) : null);
+const gPausedText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `⏸ 一時停止 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+// 残り5秒からは赤く光らせる（0秒＝「時間です」の間も、進むまで赤のまま）
+const gUrgent = (endsAt) => endsAt - Date.now() <= 5000;
 function gTimeText(endsAt) {
   const s = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
   return s ? `残り ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "時間です";
 }
-setInterval(() => { for (const el of document.querySelectorAll("[data-endsat]")) el.textContent = gTimeText(Number(el.dataset.endsat)); }, 500);
+setInterval(() => { for (const el of document.querySelectorAll("[data-endsat]")) { const e = Number(el.dataset.endsat); el.textContent = gTimeText(e); el.classList.toggle("urgent", gUrgent(e)); } }, 250);
 
 function gPhaseText(g) {
   if (isCardKind(g.kind)) return cardPhaseText(g);
@@ -12109,15 +12344,15 @@ function gLogList(g, n = 50, src = null) {
 // ログの中身の分類（ゲームごと）。参加者に見せるかどうかを、管理者がこの単位で選ぶ
 // [キー, 名前, ログの種類]。どれにも当てはまらないログは先頭の分類（進行）に入る。votes は開票結果の「誰が誰に」の内訳だけを切り替える
 const LOG_CATS = {
-  wolf: [["prog", "進行（夜・朝・投票の合図）", ["night", "day", "vote"]], ["death", "犠牲者・処刑", ["morning", "exec", "noexec", "lottery"]],
+  wolf: [["prog", "場面の切り替わりの記録（夜・朝・投票になった）", ["night", "day", "vote"]], ["death", "犠牲者・処刑", ["morning", "exec", "noexec", "lottery"]],
     ["tally", "開票結果（票数）", ["tally", "runoff"]], ["votes", "投票の内訳（誰が誰に入れたか）", []], ["end", "勝敗", ["end"]]],
-  word: [["prog", "進行（話し合い・投票の合図）", ["talk", "vote", "guess"]], ["tally", "開票結果（票数）", ["tally", "runoff", "lottery"]],
+  word: [["prog", "場面の切り替わりの記録（話し合い・投票になった）", ["talk", "vote", "guess"]], ["tally", "開票結果（票数）", ["tally", "runoff", "lottery"]],
     ["votes", "投票の内訳（誰が誰に入れたか）", []], ["guessAns", "少数派のお題当て", ["guessAns"]], ["end", "答え・勝敗", ["end"]]],
-  ng: [["prog", "進行（はじめの説明）", []], ["end", "結果", ["end"]]],
-  num: [["prog", "進行（はじめの説明）", []], ["end", "答え合わせ", ["end"]]],
-  bj: [["prog", "進行（配る・賭ける）", ["bjBet", "bjSkip", "bjDeal", "bjIns"]], ["moves", "各人の行動（HIT・STAND など）", ["bjMove", "bjInsDone", "bjPeek"]],
+  ng: [["prog", "はじめの説明", []], ["end", "結果", ["end"]]],
+  num: [["prog", "はじめの説明", []], ["end", "答え合わせ", ["end"]]],
+  bj: [["prog", "配った・賭けた記録", ["bjBet", "bjSkip", "bjDeal", "bjIns"]], ["moves", "各人の行動（HIT・STAND など）", ["bjMove", "bjInsDone", "bjPeek"]],
     ["round", "各回の結果", ["bjRound"]], ["end", "最終結果", ["end"]]],
-  dfg: [["prog", "進行（配る・順番・場が流れる）", ["dfgStart", "dfgDeal", "dfgLead", "dfgFlow"]], ["plays", "出したカード・パス", ["dfgPlay", "dfgPass"]],
+  dfg: [["prog", "配った・順番・場が流れた記録", ["dfgStart", "dfgDeal", "dfgLead", "dfgFlow"]], ["plays", "出したカード・パス", ["dfgPlay", "dfgPass"]],
     ["exchange", "カードの交換", ["dfgExchange"]], ["round", "各回の順位", ["dfgRound"]], ["end", "最終結果", ["end"]]],
 };
 const logCatKeys = (kind) => (LOG_CATS[kind] ?? []).map(([k]) => k);
@@ -12200,11 +12435,39 @@ function phaseBanner(g) {
   document.body.append(el);
   setTimeout(() => el.remove(), 1700);
 }
+// ブラックジャックが出たら、全員の画面に黄色の帯で知らせる（カードが配られて・めくられてから）
+function bjFlashCheck(g) {
+  const st = g.bj;
+  if (!st?.hands) return;
+  const hide = g.phase === "play" || g.phase === "insure";
+  const who = [];
+  for (const [k, hd] of Object.entries(st.hands)) if (bjIsBJ(hd.cards, hd.split) && cxOnce(`bjf${g.id}.${st.round}.${k}`)) who.push(bjOwn(k));
+  if (!hide && bjIsBJ(st.dealer ?? []) && cxOnce(`bjf${g.id}.${st.round}.dealer`)) who.push(null);
+  if (!who.length) return;
+  const me = S.user?.uid;
+  const names = who.map((u) => (u === null ? "ディーラー" : u === me ? "あなた" : memberName(u)));
+  setTimeout(() => {
+    if (matchMedia?.("(prefers-reduced-motion: reduce)").matches) return toast(`BLACKJACK！ ${names.join("・")}`);
+    const el = h("div", { class: `bj-flash${who.includes(me) ? " mine" : ""}`, "aria-live": "polite" },
+      h("div", { class: "bj-flash-in" }, h("b", null, "BLACKJACK"), h("small", null, names.length > 4 ? `${names.slice(0, 4).join("・")} ほか${names.length - 4}人` : names.join("・"))));
+    document.body.append(el);
+    setTimeout(() => el.remove(), 2300);
+  }, 1300);
+}
 function paintGameLive() {
   let el = document.querySelector(".game-live");
   let fab = document.querySelector(".game-fab");
   const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : null) : myGame();
   if (!g && GV.demo) GV.demo = null;
+  if (!g) GV.demoAdmin = false;
+  // デモを「管理者の画面」で見ている間：参加者の画面は閉じて、戻るボタンだけ出す
+  if (g && S.isAdmin && g.demo && GV.demoAdmin && GV.stage !== g.id) {
+    el?.remove();
+    document.querySelector(".game-fab:not(.demo-fab)")?.remove();
+    if (!document.querySelector(".demo-fab")) document.body.append(h("button", { class: "game-fab demo-fab", onclick: () => demoView(false) }, h("b", null, "DEMO"), "参加者の画面に戻る"));
+    return;
+  }
+  document.querySelector(".demo-fab")?.remove();
   if (!g) { el?.remove(); fab?.remove(); if (S.isAdmin && GV.stage) { GV.stage = null; if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); } return; }
   if (S.isAdmin) gameNarrate(g);
   if (!S.isAdmin && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
@@ -12214,23 +12477,25 @@ function paintGameLive() {
     return;
   }
   fab?.remove();
+  if (g.kind === "bj") bjFlashCheck(g);
   const opened = !el;
   if (!el) { el = h("div", { class: "game-live", role: "dialog", "aria-label": "ゲーム" }); document.body.append(el); }
-  const scroll = el.scrollTop, logScroll = el.querySelector(".cx-scroll")?.scrollTop ?? 0;
+  const scroll = el.scrollTop, logScroll = el.querySelector(".cx-scroll")?.scrollTop ?? 0, sheetScroll = el.querySelector(".cx-logsheet-body")?.scrollTop ?? 0;
   // 開いたとき・場面が変わったときのモーション
   const pk = phaseKey(g), turned = GV.pk !== pk;
   GV.pk = pk;
   if (turned && (gLive(g) || !opened)) setTimeout(() => phaseBanner(g), opened ? 260 : 0);
   const enter = (inner) => { if (opened) vtIn(el, "gl-open"); else if (turned) vtIn(inner, isCardKind(g.kind) ? "vt-soft" : "vt-phase"); return inner; };
-  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (g.demo) return demoEnd(); if (S.isAdmin) return closeGameStage(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
-  if (S.isAdmin && !g.demo) {
-    // みんなに見せる画面（秘密の内容は出さない）
+  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (S.isAdmin && GV.stage) return closeGameStage(); if (g.demo) return demoEnd(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
+  if (S.isAdmin && (!g.demo || GV.stage === g.id)) {
+    // みんなに見せる画面（秘密の内容は出さない）。デモのゲームも、管理者の画面から開ける
     el.className = `game-live stage ph-${g.phase === "vote" ? "vote" : g.phase === "night" ? "night" : g.phase === "ended" ? "ended" : "day"}`;
     const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : isCardKind(g.kind) ? "♠" : "💬";
     setKids(el, enter(h("div", { class: "gl-inner st-inner" },
       h("div", { class: "st-top" }, h("span", { class: "st-title" }, g.title), (g.opts?.auto || isCardKind(g.kind)) && gLive(g) ? h("span", { class: "st-auto" }, h("span", { class: "live-dot" }), "自動で進行中") : null, close),
       h("div", { class: "st-phase" }, h("span", { class: "st-icon" }, ic), h("span", null, gPhaseText(g))),
-      g.endsAt && gLive(g) ? h("div", { class: "st-timer", "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt)) : null,
+      g.endsAt && gLive(g) ? h("div", { class: `st-timer${gUrgent(g.endsAt) ? " urgent" : ""}`, "data-endsat": String(g.endsAt) }, gTimeText(g.endsAt))
+        : g.paused != null && gLive(g) ? h("div", { class: "st-timer paused" }, gPausedText(g.paused)) : null,
       h("p", { class: "st-prompt" }, gPrompt(g)),
       gameStageBody(g))));
     el.scrollTop = scroll;
@@ -12242,9 +12507,9 @@ function paintGameLive() {
     setKids(el, enter(h("div", { class: "gl-inner cx-inner" },
       gxTop(g, close),
       h("div", { class: "gl-phase cx-phase", title: `${g.title} ・ ${gPhaseText(g)}` }, g.demo ? h("b", { class: "cx-demo" }, "DEMO") : null, h("span", null, gPhaseShort(g)), gTimer(g)),
-      g.phase === "ended" ? h("p", { class: "cx-prompt" }, gPrompt(g)) : null,
+      h("p", { class: `cx-prompt${g.phase === "ended" ? "" : " cx-now"}` }, gPrompt(g)),
       gameMemberBody(g))));
-    cxFit(el, el.firstElementChild); if (el.querySelector(".cx-scroll")) el.querySelector(".cx-scroll").scrollTop = logScroll; el.scrollTop = scroll;
+    cxFit(el, el.firstElementChild); cxRestore(el, logScroll, sheetScroll, scroll);
     return;
   }
   if (isCardKind(g.kind)) {
@@ -12256,7 +12521,7 @@ function paintGameLive() {
       // 賭け・勝負中・大富豪の番は、下の台に操作と説明があるので、上の長い説明は出さない
       ["bet", "play", "insure"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext ? "NEXT ▸ まもなく次の回" : "NEXT ▸ 管理者が進めるまで待機"),
       gameMemberBody(g))));
-    cxFit(el, el.firstElementChild); if (el.querySelector(".cx-scroll")) el.querySelector(".cx-scroll").scrollTop = logScroll; el.scrollTop = scroll;
+    cxFit(el, el.firstElementChild); cxRestore(el, logScroll, sheetScroll, scroll);
     return;
   }
   el.className = "game-live";
@@ -12297,8 +12562,26 @@ function gameStageBody(g) {
 function gameMemberBody(g) {
   const main = (isCardKind(g.kind) ? cardMemberBody(g) : partyMemberBody(g)).filter(Boolean);
   const stage = main.filter((x) => x.classList?.contains("cx-table"));
-  const rest = [...main.filter((x) => !stage.includes(x)), gPtCard(g, S.user.uid), gRevealList(g), gMemberLog(g, isCardKind(g.kind) ? 30 : 50)].filter(Boolean);
-  return [h("div", { class: "cx-stage" }, stage), h("div", { class: `cx-scroll${rest.length ? "" : " empty"}` }, rest)];
+  const rest = [S.isAdmin && g.demo ? h("div", { class: "gl-card gp-ctl-card" }, h("div", { class: "gl-label" }, "ADMIN ", h("small", null, "場面の操作")), gameCtlBar(g, true),
+      h("button", { class: "btn-small gp-demo-admin", onclick: () => demoView(true) }, icon("arrows"), "管理者の画面で見る（デモ）")) : null,
+    ...main.filter((x) => !stage.includes(x)), gPtCard(g, S.user.uid), gRevealList(g)].filter(Boolean);
+  const log = gMemberLog(g, 200);
+  if (GV.log && (GV.log !== g.id || !log)) GV.log = null;
+  return [h("div", { class: "cx-stage" }, stage), h("div", { class: `cx-scroll${rest.length ? "" : " empty"}` }, rest), log ? cxLogBar(g) : null, log && GV.log === g.id ? cxLogSheet(g, log) : null];
+}
+// ログ：画面の下の「ログを見る」から、画面の大部分を使うシートで見る（テーブルの下の狭い枠で見なくてよいように）
+function cxLogBar(g) {
+  const n = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).length, last = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).at(-1);
+  return h("button", { class: "cx-logbtn", "aria-haspopup": "dialog", onclick: () => { GV.log = g.id; GV.logAnim = true; paintGameLive(); } },
+    h("span", { class: "cx-logbtn-ic", "aria-hidden": "true" }, "≡"), h("b", null, "ログを見る"), h("small", null, last ? last.text : "まだありません"), h("i", null, `${n}件`));
+}
+function cxLogSheet(g, log) {
+  const close = () => { GV.log = null; paintGameLive(); };
+  const anim = GV.logAnim; GV.logAnim = false;
+  return h("div", { class: `cx-logsheet${anim ? " open" : ""}`, role: "dialog", "aria-label": "ログ", onclick: (e) => { if (e.target === e.currentTarget) close(); } },
+    h("div", { class: "cx-logsheet-in" },
+      h("div", { class: "cx-logsheet-head" }, h("b", null, "LOG"), h("small", null, "新しい順"), h("button", { class: "ql-close", "aria-label": "ログを閉じる", onclick: close }, icon("xmark"))),
+      h("div", { class: "cx-logsheet-body" }, log)));
 }
 // 1画面に収める：テーブルとボタンが画面の高さを超えるときは、丸テーブルの部分だけを縮める（ボタンの大きさは変えない）。
 // それでも入らない（とても低い画面）ときは、これまでどおり画面全体をずらして見られるようにする
@@ -12314,7 +12597,9 @@ function cxFit(el, inner) {
   const padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
   const cap = inner.clientHeight;
   const peek = 0; // ログは下にずらして見る（ボタンを優先して1画面に収める）
-  const bottom = () => stage.offsetTop + stage.offsetHeight - padTop;
+  const bar = inner.querySelector(":scope > .cx-logbtn");
+  const barH = bar ? bar.offsetHeight + (parseFloat(getComputedStyle(bar).marginTop) || 0) + (parseFloat(getComputedStyle(bar).marginBottom) || 0) : 0;
+  const bottom = () => stage.offsetTop + stage.offsetHeight - padTop + barH;
   let over = bottom() + CX_FIT_GAP + peek - cap;
   // まず丸テーブルを平たくする（席・ボタンの大きさは変えない）
   if (over > 0 && round) {
@@ -12340,6 +12625,16 @@ function cxFit(el, inner) {
   }
   if (bottom() + CX_FIT_GAP > cap) { el.classList.remove("fit"); if (felt) felt.style.zoom = ""; if (round) round.style.setProperty("--rh", `${round.dataset.h}px`); }
 }
+function cxRestore(el, logScroll, sheetScroll, scroll) {
+  // ログのシートは、動きのついた中身の外（画面の直下）に置く（拡大縮小のモーション中に位置がずれないように）
+  const ls = el.querySelector(".cx-inner .cx-logsheet");
+  if (ls) el.append(ls);
+  const sc = el.querySelector(".cx-scroll"), sh = el.querySelector(".cx-logsheet-body");
+  if (sc) sc.scrollTop = logScroll;
+  if (sh) sh.scrollTop = sheetScroll;
+  el.scrollTop = scroll;
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && GV.log) { GV.log = null; paintGameLive(); } });
 let cxFitT = null;
 window.addEventListener("resize", () => { clearTimeout(cxFitT); cxFitT = setTimeout(() => { if (document.querySelector(".game-live.cx-live")) paintGameLive(); }, 150); }, { passive: true });
 // ---- 人狼・ワード人狼・NGワード・数字ならべの参加者の画面（丸テーブル・ガラスのカード）
@@ -12411,9 +12706,15 @@ function partyMemberBody(g) {
         sec.results?.length ? h("ul", { class: "gl-results" }, sec.results.map((r) => h("li", null, r.kind === "medium" ? `☠ ${memberName(r.target)} → ` : `D${r.day} ☾ ${memberName(r.target)} → `, h("b", { class: r.wolf ? "wolf" : "" }, r.wolf ? "人狼" : "人間")))) : null];
     } else if (g.kind === "word") body = [h("div", { class: "cx-sc-en" }, "YOUR WORD"), h("div", { class: "gl-big" }, sec.word), h("p", { class: "gl-desc" }, "少数派かどうかは自分ではわからない")];
     else if (g.kind === "num") body = [h("div", { class: "cx-sc-en" }, `YOUR NUMBER ・ 1–${Math.max(g.players.length, g.opts?.max ?? 100)}`), h("div", { class: "gl-big" }, String(sec.number)), g.theme ? h("p", { class: "gl-desc" }, `THEME ・ ${g.theme}`) : null];
-    me.push(h("div", { class: `gl-secret cx-secret${shown ? " open" : " covered"}${shown && cxOnce(`flip${g.id}.${GV.show.has(g.id)}`) ? " flip" : ""}` },
-      shown ? body : h("button", { class: "gl-reveal-btn", onclick: () => { GV.show.add(g.id); paintGameLive(); } }, icon("lock"), h("span", null, "TAP TO REVEAL"), h("small", null, "周りに見られないように")),
-      shown && g.phase !== "ended" ? h("button", { class: "text-btn gl-hide", onclick: () => { GV.show.delete(g.id); GV.flip?.delete?.(g.id); paintGameLive(); } }, "HIDE") : null));
+    // めくる・隠すのたびに、毎回カードを返すモーションを出す（押した回数ごとに1回だけ）
+    const fn = GV.flipN.get(g.id) ?? 0;
+    const flipNow = fn > 0 && cxOnce(`flip${g.id}.${fn}`);
+    const turn = (show) => { if (show) GV.show.add(g.id); else GV.show.delete(g.id); GV.flipN.set(g.id, (GV.flipN.get(g.id) ?? 0) + 1); paintGameLive(); };
+    // まだ一度も自分の札を見ていないときは、薄紫で「ここを押す」と誘導する
+    const needSee = !shown && live && fn === 0;
+    me.push(h("div", { class: `gl-secret cx-secret${shown ? " open" : " covered"}${flipNow ? (shown ? " flip" : " flip-back") : ""}${needSee ? " need" : ""}` },
+      shown ? body : h("button", { class: "gl-reveal-btn", onclick: () => turn(true) }, icon("lock"), h("span", null, "TAP TO REVEAL"), h("small", null, "周りに見られないように")),
+      shown && g.phase !== "ended" ? h("button", { class: "text-btn gl-hide", onclick: () => turn(false) }, "HIDE") : null));
   } else {
     me.push(h("div", { class: `cx-mycard${gDead(g, uid) ? " out" : ""}` }, h("div", { class: "cx-sc-en" }, "YOUR NG WORD"), h("div", { class: "gl-big" }, g.phase === "ended" ? g.reveal?.[uid] ?? "?" : "？？？"),
       gDead(g, uid) ? h("div", { class: "cx-tag" }, "OUT") : null));
@@ -12424,15 +12725,15 @@ function partyMemberBody(g) {
       const ans = gAct(g, "g", uid);
       const inp = h("input", { type: "text", class: "plain", maxlength: "30", placeholder: "多数派のお題", "aria-label": "多数派のお題" });
       const go = h("button", { class: "btn-filled", onclick: () => { const t = inp.value.trim(); if (!t) return toast("言葉を入れてください", true); gameChoose(g, t.slice(0, 30)); inp.value = ""; } }, "GUESS");
-      me.push(h("div", { class: "cx-label" }, "GUESS ", h("small", null, "多数派のお題を当てれば逆転")), h("div", { class: "cx-guess" }, inp, go),
+      me.push(h("div", { class: `cx-label${ans ? "" : " need"}` }, "GUESS ", h("small", null, "多数派のお題を当てれば逆転")), h("div", { class: `cx-guess${ans ? "" : " need"}` }, inp, go),
         h("p", { class: "cx-note" }, ans ? `✓「${ans}」 ・ 締切まで変更可` : "あなたは少数派でした"));
     } else me.push(h("p", { class: "cx-note" }, "少数派がお題を当てています…"));
   }
-  if (canPick) me.push(h("div", { class: "cx-label" }, title), h("p", { class: "cx-note" }, mine ? `✓ ${memberName(mine)} ・ 締切まで変更可` : "テーブルの人をタップ"));
+  if (canPick) me.push(h("div", { class: `cx-label${mine ? "" : " need"}` }, title), h("p", { class: `cx-note${mine ? "" : " need"}` }, mine ? `✓ ${memberName(mine)} ・ 締切まで変更可` : "▲ 薄紫の人をタップ"));
   else if (g.kind === "wolf" && live && gDead(g, uid)) me.push(h("div", { class: "gl-dead cx-note" }, "✕ 死亡 ・ 話さずに見守る"));
   else if (g.kind === "ng" && live) me.push(h("p", { class: "cx-note" }, "言った人の OUT をタップ"));
   const k = seats.length;
-  return [h("section", { class: `cx-table gx gx-${g.kind}` },
+  return [h("section", { class: `cx-table gx gx-${g.kind}${canPick && !mine ? " need" : ""}` },
     cxFelt(seats, hub, null, (n) => (g.kind === "ng" ? 300 + Math.max(0, n - 4) * 56 : 250 + Math.max(0, n - 5) * 40) + (n ? 0 : -110)),
     h("div", { class: "cx-me" }, me))].concat(k ? [] : []);
 }
@@ -13081,7 +13382,7 @@ function gamesAdmin() {
     group("遊ぶ人", [h("div", { class: "cell" }, players.el)]),
     group("テーブルの席順", [h("div", { class: "cell seat-cell" }, seatMode, seatList)], "参加者の画面の丸テーブルに、この順で時計回りに座ります（大富豪は出す順番も同じ）。↑↓で入れ替えられます。"),
     wolfOpts, wordOpts, ngOpts, numOpts, bjOpts, dfgOpts, ptOpts,
-    group("参加者へのログ表示", [logBox], "ログ（LOG）は、はじめは管理者だけに表示されます。「全員に表示」にすると、選んだ項目だけが参加者のスマホに出ます。ゲーム中も管理者の画面から変えられます。"),
+    group("参加者へのログ（これまでの出来事）", [logBox], "ログ（LOG）は「〜さんが処刑されました」など、これまでに起きたことの記録です。はじめは管理者だけに表示され、「全員に表示」にすると選んだ項目だけが参加者のスマホの「ログを見る」から見られます。いまの場面・やること・残り時間は、この設定に関係なく全員のスマホに出ます。"),
     err, start,
     h("div", { class: "game-demo" }, demoBtn, h("p", { class: "cell-sub" }, "いま選んでいるゲームを、自分と CPU だけでためせます。この端末の中だけで動き、参加者の画面・記録・ポイントには出ません。")));
   const list = h("div");
@@ -13227,8 +13528,11 @@ function gamesAdmin() {
     const dead = (u) => (g.kind === "wolf" && !(g.alive ?? g.players).includes(u)) || (g.kind === "ng" && !!g.outs?.[u]);
     if (gLive(g)) gameNarrate(g);
     const pkWas = GA.pk; queueMicrotask(() => { if (GA.pk === pkWas) GA.pk = phaseKey(g); });
-    return h("div", { class: "game-panel" },
-      h("button", { class: "text-btn", onclick: () => { GA.open = null; scheduleRender(); } }, "‹ ゲームの一覧へ"),
+    return h("div", { class: `game-panel${g.demo ? " demo" : ""}` },
+      g.demo ? h("div", { class: "gp-demo" }, h("b", null, "DEMO"), h("span", null, "管理者の画面のデモです。この端末の中だけで動き、参加者の画面・記録・ポイントには出ません。"),
+        h("div", { class: "gp-demo-btns" }, h("button", { class: "btn-filled", onclick: () => demoView(false) }, "参加者の画面（自分のスマホ）を見る"),
+          h("button", { class: "text-btn destructive", onclick: () => { demoEnd(); scheduleRender(); } }, "デモを終える")))
+        : h("button", { class: "text-btn", onclick: () => { GA.open = null; scheduleRender(); } }, "‹ ゲームの一覧へ"),
       h("div", { class: "gp-head" }, h("h2", null, g.title), h("span", { class: `gp-phase${gLive(g) ? " live" : ""}${GA.pk !== phaseKey(g) ? " pop" : ""}` }, gPhaseText(g)), gTimer(g)),
       h("p", { class: "gl-prompt" }, gPrompt(g)),
       !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。この画面を開いたままにしてください（閉じると進行が止まります）。") : null,
@@ -13239,17 +13543,18 @@ function gamesAdmin() {
       h("div", { class: "gp-actions" }, next,
         h("button", { class: "btn-small", onclick: () => openGameStage(g) }, icon("arrows"), "みんなに見せる画面（全画面）"),
         h("button", { class: `btn-small${GSPEAK.on ? " on" : ""}`, onclick: () => { GSPEAK.on = !GSPEAK.on; if (GSPEAK.on) gameSpeak("読み上げをオンにしました"); else window.speechSynthesis?.cancel(); scheduleRender(); } }, GSPEAK.on ? "読み上げ：オン" : "読み上げ：オフ")),
+      gLive(g) || gameCanUndo(g) ? group("場面の操作", [h("div", { class: "cell" }, gameCtlBar(g))], GAME_CTL_NOTE) : null,
       gRevealList(g),
       g.kind === "bj" ? null : group(null, [
         h("button", { class: "cell cell-button", onclick: () => { GA.showAns = !GA.showAns; scheduleRender(); } }, icon("lock"), GA.showAns ? (g.kind === "dfg" ? "手札を隠す" : "答えを隠す") : g.kind === "dfg" ? "全員の手札を見る（進行役用）" : `答えを見る（${g.kind === "wolf" ? "役職" : g.kind === "num" ? "数字" : g.kind === "ng" ? "NGワード" : "お題"}を表示。司会用）`),
         GA.showAns ? h("div", { class: "cell gp-answers" }, g.players.map((u) => h("div", { class: `gp-ans${dead(u) ? " dead" : ""}` }, h("span", null, memberName(u)), h("b", null, ans(u)),
           g.actKey && gAct(g, g.actKey, u) && !isCardKind(g.kind) ? h("small", null, g.phase === "guess" ? `答え「${gAct(g, g.actKey, u)}」` : `→ ${memberName(gAct(g, g.actKey, u))}`) : null))) : null,
       ], "画面をほかの人に見られないように注意してください。"),
-      group("参加者へのログ表示", [logPubEditor(g.kind, () => S.games.get(g.id)?.logPub, (v) => setLogPub(g, v))], "ここで選んだ分だけ、参加者のスマホにログ（LOG）が出ます。ゲーム中に変えてもすぐ反映されます。管理者には下の「進行」に全部出ます。"),
+      group("参加者へのログ（これまでの出来事）", [logPubEditor(g.kind, () => S.games.get(g.id)?.logPub, (v) => setLogPub(g, v))], "「〜さんが処刑されました」など、これまでに起きたことを参加者が見られるかどうかです。選んだ分だけ参加者のスマホの「ログを見る」に出て、ゲーム中に変えてもすぐ反映されます。いまの場面・やること・残り時間は、この設定に関係なく全員のスマホに出ます。管理者には下の「進行」に全部出ます。"),
       h("div", { class: "group-header standalone" }, "進行"), h("div", { class: "gl-card" }, gLogList(g)),
       h("div", { class: "gp-actions" },
         gLive(g) ? (() => { const b = h("button", { class: "text-btn destructive" }, "ゲームを終える（答えを公開）"); b.addEventListener("click", () => { if (confirm("ゲームを終えて、全員に答えを公開しますか？")) gameGo(g, gameForceEnd, b); }); return b; })() : null,
-        h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${g.title}」を削除しますか？（記録も消えます）`)) guard(null, async () => { await deleteGame(g); GA.open = null; toast("削除しました"); }); } }, "削除")));
+        g.demo ? null : h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${g.title}」を削除しますか？（記録も消えます）`)) guard(null, async () => { await deleteGame(g); GA.open = null; toast("削除しました"); }); } }, "削除")));
   }
 
   return {

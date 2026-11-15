@@ -3328,3 +3328,166 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .game-live.cx-live.fit .cx-inner > .cx-scroll.empty { border-top: none; }
 .cx-scroll > :first-child { margin-top: 10px; }
 .cx-stage { padding-bottom: 14px; }
+
+/* v93 残り5秒からタイマーを赤く光らせる */
+.g-timer.urgent, .cx-inner .cx-phase .g-timer.urgent { color: #fff; background: #E5484D; box-shadow: 0 0 0 3px rgba(229, 72, 77, .25), 0 0 18px rgba(229, 72, 77, .55); animation: tmUrgent 1s ease-in-out infinite; }
+.st-timer.urgent { color: #FF5A5F; text-shadow: 0 0 28px rgba(255, 90, 95, .6); animation: tmUrgent 1s ease-in-out infinite; }
+.ql-timer.urgent .bar { background: linear-gradient(90deg, #FF6B6B, #E5484D); }
+.ql-timer.urgent { box-shadow: 0 0 0 2px rgba(229, 72, 77, .55), 0 0 18px rgba(229, 72, 77, .4); animation: tmUrgent 1s ease-in-out infinite; }
+@keyframes tmUrgent { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+
+/* v93 操作が必要なところを薄紫で誘導する */
+:root { --need: #C9B8FF; --need-glow: rgba(176, 150, 255, .55); }
+@keyframes needPulse { 0%, 100% { box-shadow: 0 0 0 2px var(--need), 0 0 0 6px rgba(176, 150, 255, .14), 0 0 16px var(--need-glow); } 50% { box-shadow: 0 0 0 2px var(--need), 0 0 0 10px rgba(176, 150, 255, 0), 0 0 26px var(--need-glow); } }
+.cx-label.need { color: var(--need); }
+.cx-label.need small { color: rgba(201, 184, 255, .75); }
+.cx-note.need { color: var(--need); font-weight: 600; }
+.cx-table.need .cx-seat.pick:not(.on) .cx-av { color: #fff; background: rgba(150, 120, 255, .28); animation: needPulse 1.4s ease-in-out infinite; }
+.cx-table.need .cx-seat.pick:not(.on) .cx-nm { color: var(--need); }
+.cx-secret.covered.need { animation: needPulse 1.4s ease-in-out infinite; }
+.cx-secret.covered.need .gl-reveal-btn span { color: var(--need); }
+.cx-guess.need input { box-shadow: 0 0 0 2px var(--need), 0 0 14px var(--need-glow); }
+.cx-bets.need .cx-betchip:not(.on) { box-shadow: 0 0 0 2px var(--need), 0 0 14px var(--need-glow); }
+.cx-acts.need > .cx-btn:not(:disabled):not(.on) { box-shadow: 0 0 0 2px var(--need), 0 0 16px var(--need-glow); }
+.cx-acts.need > .cx-btn.btn-filled:not(:disabled):not(.on) { animation: needPulse 1.4s ease-in-out infinite; }
+.dfg-hand.need { box-shadow: inset 0 0 0 2px var(--need), inset 0 18px 30px -18px var(--need-glow); }
+.dfg-hand.need > .gl-label:first-child { color: var(--need); }
+.gl-card.need-box { box-shadow: 0 0 0 2px var(--need), 0 0 18px var(--need-glow); }
+.cx-prompt.cx-now { margin: 4px 0 0; font-size: 12.5px; color: var(--label-2); }
+@keyframes cxFlipBack { from { transform: perspective(700px) rotateY(-90deg); opacity: .3; } to { transform: perspective(700px) rotateY(0); opacity: 1; } }
+.cx-secret.flip-back { animation: cxFlipBack .45s cubic-bezier(.2, .8, .2, 1) both; }
+.cx-secret.covered.need.flip-back { animation: cxFlipBack .45s cubic-bezier(.2, .8, .2, 1) both; }
+
+/* v93 ログは下の「ログを見る」から大きなシートで見る */
+.cx-logbtn { flex: none; display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px; width: 100%; min-height: 46px; margin: 8px 0 calc(12px + env(safe-area-inset-bottom));
+  padding: 8px 14px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 14px; background: rgba(255, 255, 255, .06); color: var(--label); font: inherit; text-align: left; }
+.cx-logbtn:active { transform: scale(.98); background: rgba(255, 255, 255, .1); }
+.cx-logbtn-ic { font-size: 16px; color: var(--accent); }
+.cx-logbtn b { font-size: 13.5px; font-weight: 700; white-space: nowrap; }
+.cx-logbtn small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--label-3); }
+.cx-logbtn i { font-style: normal; font-size: 12px; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.cx-logsheet { position: fixed; inset: 0; z-index: 320; display: flex; align-items: flex-end; background: rgba(0, 0, 0, .55); }
+.cx-logsheet-in { width: 100%; max-width: 720px; margin: 0 auto; height: min(86vh, 86dvh); display: flex; flex-direction: column; border-radius: 22px 22px 0 0;
+  background: #141417; border-top: 1px solid rgba(255, 255, 255, .1); box-shadow: 0 -20px 50px rgba(0, 0, 0, .5); padding: 0 16px env(safe-area-inset-bottom); }
+.cx-logsheet-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 14px 0 10px; border-bottom: 1px solid rgba(255, 255, 255, .08); }
+.cx-logsheet-head b { font-size: 15px; letter-spacing: .14em; }
+.cx-logsheet-head small { color: var(--label-3); font-size: 12px; }
+.cx-logsheet-head .ql-close { margin-left: auto; }
+.cx-logsheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 6px 0 24px; }
+.cx-logsheet-body .gl-card { background: transparent; border: none; padding: 0; margin: 0; }
+.cx-logsheet-body .gl-card > .gl-label:not(:has(.logpub-note)) { display: none; }
+.cx-logsheet-body .logpub-demo { margin: 6px 0 4px; }
+.cx-logsheet.open { animation: lsFade .22s ease both; }
+.cx-logsheet.open .cx-logsheet-in { animation: lsUp .34s cubic-bezier(.2, .9, .25, 1) both; }
+@keyframes lsFade { from { opacity: 0; } }
+@keyframes lsUp { from { transform: translateY(40%); opacity: .4; } }
+
+/* v93 管理者：場面の操作（戻す・進める・時間を足す） */
+.gp-ctl { display: grid; gap: 10px; width: 100%; }
+.gp-ctl-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.gp-ctl-row > .btn-small { flex: 1 1 0; min-width: 0; justify-content: center; }
+.gp-ctl-row.time > .btn-small { flex: 1 1 0; }
+.gp-ctl-lb { flex: none; font-size: 12px; color: var(--label-3); min-width: 2.5em; }
+.gp-ctl .gp-fwd:not(:disabled) { color: var(--accent); }
+.gp-ctl.compact { gap: 8px; }
+.gp-ctl-card .gl-label small { color: var(--label-3); font-weight: 500; letter-spacing: .02em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .g-timer.urgent, .st-timer.urgent, .ql-timer.urgent, .cx-table.need .cx-seat.pick:not(.on) .cx-av, .cx-secret.covered.need, .cx-acts.need > .cx-btn.btn-filled:not(:disabled):not(.on),
+  .cx-secret.flip-back, .cx-logsheet.open, .cx-logsheet.open .cx-logsheet-in { animation: none; }
+}
+
+/* v93 タイマーの一時停止 */
+.g-timer.paused, .cx-inner .cx-phase .g-timer.paused { color: #1A1A1D; background: #FFD60A; }
+.st-timer.paused { color: #FFD60A; }
+.gp-pause.on { color: #1A1A1D; background: #FFD60A; }
+
+/* v93 カード：飛んできて（裏）→ ゆっくり表に返す。伏せてあったカードは、その場でゆっくり表に返す */
+@keyframes cxDeal2 {
+  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); }
+  30% { opacity: 1; }
+  48% { transform: translate(0, 0) rotate(0) scale(1); }
+  72% { transform: perspective(600px) rotateY(90deg) scale(1.06); }
+  100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); } }
+@keyframes cxFlipUp {
+  0% { transform: perspective(600px) rotateY(0) scale(1); }
+  45% { transform: perspective(600px) rotateY(90deg) scale(1.1); }
+  100% { transform: perspective(600px) rotateY(0) scale(1); } }
+@keyframes cxBackOff { 0%, 71% { opacity: 1; } 72%, 100% { opacity: 0; } }
+@keyframes cxBackOff2 { 0%, 44% { opacity: 1; } 45%, 100% { opacity: 0; } }
+.pc.deal { animation: cxDeal2 .82s cubic-bezier(.25, .8, .3, 1) both; }
+.pc.flipup { animation: cxFlipUp .9s cubic-bezier(.4, .1, .3, 1) both; }
+.pc.deal:not(.back)::after, .pc.flipup:not(.back)::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .88) 0 2.5px, transparent 2.5px 8px) content-box, linear-gradient(160deg, #2E2E33, #1A1A1D); padding: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .15); animation: cxBackOff .82s step-end both; animation-delay: inherit; }
+.pc.flipup:not(.back)::after { animation-name: cxBackOff2; animation-duration: .9s; }
+/* 勝ち負けは、ディーラーのカードがめくり終わってから出す */
+@keyframes cxLate { 0% { opacity: 0; transform: scale(.6); } 60% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: none; } }
+.late { animation: cxLate .45s cubic-bezier(.2, 1.4, .4, 1) var(--late, 0ms) both; }
+.cx-sum.pop.late { animation: cxLate .45s cubic-bezier(.2, 1.4, .4, 1) var(--late, 0ms) both; }
+
+/* v93 ブラックジャックは黄色に光らせる（自分・ほかの人・ディーラー） */
+@keyframes bjGlow { 0%, 100% { box-shadow: 0 0 0 2px rgba(255, 214, 10, .9), 0 0 22px rgba(255, 196, 0, .55); } 50% { box-shadow: 0 0 0 3px #FFE45C, 0 0 38px rgba(255, 196, 0, .8); } }
+@keyframes bjShine { 0% { background-position: -160% 0; } 100% { background-position: 260% 0; } }
+@keyframes bjIn { 0% { opacity: 0; transform: scale(.5); } 60% { opacity: 1; transform: scale(1.15); } 100% { opacity: 1; transform: none; } }
+.cx-hand.is-bj .cx-fan .pc, .cx-dealer.is-bj .cx-fan .pc { animation-name: cxDeal2, bjGlow; animation-duration: .82s, 1.4s; animation-delay: 0s, var(--bjd, 0ms); animation-iteration-count: 1, infinite; animation-fill-mode: both, none; }
+.cx-hand.is-bj .cx-fan .pc:not(.deal), .cx-dealer.is-bj .cx-fan .pc:not(.deal):not(.flipup) { animation: bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-dealer.is-bj .cx-fan .pc.flipup { animation: cxFlipUp .9s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-hand.is-bj > .cx-total, .cx-dealer.is-bj > .cx-total { color: #FFD60A; font-weight: 800; letter-spacing: .14em;
+  background: linear-gradient(100deg, #FFD60A 30%, #FFF6C2 50%, #FFD60A 70%) 0 0 / 220% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  animation: bjIn .5s cubic-bezier(.2, 1.4, .4, 1) var(--bjd, 0ms) both, bjShine 1.8s linear calc(var(--bjd, 0ms) + .5s) infinite; }
+.cx-dealer.is-bj > .cx-total small { -webkit-text-fill-color: var(--label-3); }
+.cx-seat.is-bj .cx-av, .cx-cs.is-bj .cx-av { color: #1A1A1D; background: #FFD60A; animation: bjGlow 1.4s ease-in-out infinite; }
+.cx-seat.is-bj .cx-nm, .cx-cs.is-bj .cx-nm { color: #FFD60A; }
+.cx-seat.is-bj .cx-mini .pc { box-shadow: 0 0 0 1.5px #FFD60A, 0 0 12px rgba(255, 196, 0, .6); }
+.cx-tag.bj, .cx-seat.r-bj .cx-tag, .cx-cs.is-bj .cx-cs-m { color: #1A1A1D; background: #FFD60A; }
+.cx-seat.r-bj .cx-tag { color: #1A1A1D; background: #FFD60A; }
+.bj-flash { position: fixed; inset: 0; z-index: 410; display: grid; place-items: center; pointer-events: none; }
+.bj-flash-in { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; padding: 22px 16px; text-align: center;
+  background: linear-gradient(90deg, transparent, rgba(40, 32, 0, .9) 16%, rgba(40, 32, 0, .9) 84%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 214, 10, .7), 0 -1px 0 rgba(255, 214, 10, .7); animation: cxBanner 2.2s cubic-bezier(.2, .9, .25, 1) both; }
+.bj-flash b { font-size: 34px; font-weight: 900; letter-spacing: .16em; padding-left: .16em;
+  background: linear-gradient(100deg, #FFC400 30%, #FFF6C2 50%, #FFC400 70%) 0 0 / 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: cxBannerTxt 2.2s cubic-bezier(.2, .9, .25, 1) both, bjShine 1.2s linear infinite; }
+.bj-flash small { font-size: 13px; color: #FFE89A; letter-spacing: .06em; }
+.bj-flash.mine b { font-size: 40px; }
+
+/* v93 ブラックジャック 9人以上：ほかの人は上の帯に小さく2段で並べる */
+.cx-crowd { display: grid; grid-auto-flow: column; grid-template-rows: repeat(2, auto); grid-auto-columns: 60px; gap: 6px 4px; overflow-x: auto; overscroll-behavior-x: contain;
+  margin: 0 -16px 2px; padding: 6px 16px 8px; scroll-snap-type: x proximity; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(90deg, transparent, #000 12px, #000 calc(100% - 18px), transparent); }
+.cx-crowd::-webkit-scrollbar { display: none; }
+.cx-cs { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; padding: 4px 2px; border-radius: 12px; background: rgba(255, 255, 255, .04); scroll-snap-align: start; text-align: center; }
+.cx-cs .cx-av { width: 26px; height: 26px; font-size: 12px; }
+.cx-cs .cx-nm { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; color: var(--label-2); }
+.cx-cs-m { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: 999px; font-size: 10px; font-weight: 700; color: var(--label-2); background: rgba(255, 255, 255, .07); font-variant-numeric: tabular-nums; }
+.cx-cs.r-win .cx-cs-m, .cx-cs.r-charlie .cx-cs-m { color: #7EE2A8; background: rgba(126, 226, 168, .12); }
+.cx-cs.r-lose .cx-cs-m, .cx-cs.r-bust .cx-cs-m, .cx-cs.r-surr .cx-cs-m { color: #FF8A8A; background: rgba(255, 138, 138, .12); }
+.cx-cs.done { opacity: .7; }
+.cx-cs.out { opacity: .4; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pc.deal, .pc.flipup, .late, .cx-sum.pop.late, .cx-hand.is-bj .cx-fan .pc, .cx-dealer.is-bj .cx-fan .pc, .cx-hand.is-bj > .cx-total, .cx-dealer.is-bj > .cx-total, .cx-seat.is-bj .cx-av, .cx-cs.is-bj .cx-av { animation: none; }
+  .pc.deal::after, .pc.flipup::after { display: none; }
+}
+
+/* v93 開閉する欄：閉じ始めたら、矢印はすぐ元に戻す */
+.fold.acc-closing > summary .icon { transform: none; }
+.poll-fold.acc-closing > summary .icon { transform: none; }
+
+/* v93 管理者の画面のデモ */
+.gp-demo { display: grid; gap: 8px; margin: 0 0 14px; padding: 12px 14px; border-radius: 16px; background: rgba(162, 158, 255, .1); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .35); }
+.gp-demo > b { justify-self: start; padding: 1px 10px; border-radius: 999px; font-size: 11px; letter-spacing: .18em; color: var(--on-accent); background: var(--accent); }
+.gp-demo > span { font-size: 13px; line-height: 1.6; color: var(--label-2); }
+.gp-demo-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.gp-demo-btns .btn-filled { flex: 1 1 220px; }
+.demo-fab b { margin-right: 2px; padding: 0 8px; border-radius: 999px; font-size: 10.5px; letter-spacing: .14em; color: var(--accent); background: var(--on-accent); }
+.gp-ctl-card .gp-demo-admin { width: 100%; margin-top: 10px; justify-content: center; }
+.gp-ctl-row > .btn-small { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.gp-ctl-row.time { gap: 6px; flex-wrap: nowrap; }
+.gp-ctl-row.time > .gp-pause { flex: 1.4 1 0; }
+.gp-ctl-row.time .gp-ctl-lb { min-width: 0; }
+.gp-ctl button:disabled { opacity: .35; }
+@media (max-width: 380px) { .gp-ctl-row.time .gp-ctl-lb { display: none; } }
+/* 低い画面では、上の帯は1段にして横にずらして見る */
+@media (max-height: 800px) { .cx-crowd { grid-template-rows: auto; } }
