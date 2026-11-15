@@ -3269,3 +3269,62 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .seat-mv:disabled { opacity: .25; }
 .seat-mv:active:not(:disabled) { transform: scale(.92); }
 .seat-shuffle { align-self: flex-start; }
+
+/* v92 参加者へのログ表示（管理者が選ぶ） */
+.logpub .logpub-mode { display: block; }
+.logpub .logpub-mode .seg { width: 100%; }
+.gl-label .logpub-note { display: block; margin-top: 3px; font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--label-3); line-height: 1.45; }
+.logpub-demo { margin: 4px 0 8px; }
+.logpub-demo > summary { cursor: pointer; font-size: 13px; color: var(--accent, var(--label-2)); padding: 6px 0; }
+.logpub-demo .logpub { border-radius: 12px; overflow: hidden; background: rgba(255, 255, 255, .04); }
+
+/* v92 画面の切り替えのモーション */
+@keyframes vtIn { from { opacity: 0; transform: translateY(14px) scale(.992); filter: blur(5px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes vtSoft { from { opacity: .35; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes vtPhase { 0% { opacity: 0; transform: scale(.975); filter: blur(8px) brightness(1.6); } 100% { opacity: 1; transform: none; filter: none; } }
+@keyframes glOpen { from { opacity: 0; transform: scale(.965); } to { opacity: 1; transform: none; } }
+.vt-in { animation: vtIn .42s cubic-bezier(.2, .9, .25, 1) backwards; }
+.vt-in > * { animation: vtIn .46s cubic-bezier(.2, .9, .25, 1) backwards; }
+.vt-in > :nth-child(2) { animation-delay: .04s; } .vt-in > :nth-child(3) { animation-delay: .08s; } .vt-in > :nth-child(4) { animation-delay: .12s; }
+.vt-in > :nth-child(5) { animation-delay: .16s; } .vt-in > :nth-child(n+6) { animation-delay: .2s; }
+.vt-soft { animation: vtSoft .32s cubic-bezier(.2, .9, .25, 1) backwards; }
+.vt-phase { animation: vtPhase .6s cubic-bezier(.2, .9, .25, 1) backwards; }
+.game-live.gl-open { animation: glOpen .38s cubic-bezier(.2, .9, .25, 1) backwards; }
+/* セグメントの白い丸がすべって動く */
+.seg { position: relative; }
+.seg > .seg-thumb { position: absolute; left: 0; top: 0; z-index: 0; border-radius: 999px; background: var(--seg-on); pointer-events: none; opacity: 0;
+  transition: transform .38s cubic-bezier(.3, 1.25, .5, 1), width .38s cubic-bezier(.3, 1.25, .5, 1), height .3s, opacity .2s; }
+.seg.thumb-on > .seg-thumb { opacity: 1; }
+.seg > button { position: relative; z-index: 1; transition: color .25s; }
+.seg.thumb-on > button[aria-selected=true] { background: transparent; box-shadow: none; }
+/* 場面転換の帯 */
+.cx-banner { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; pointer-events: none; }
+.cx-banner-in { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 22px 16px; text-align: center;
+  background: linear-gradient(90deg, transparent, rgba(12, 12, 16, .88) 18%, rgba(12, 12, 16, .88) 82%, transparent);
+  box-shadow: 0 1px 0 rgba(162, 158, 255, .35), 0 -1px 0 rgba(162, 158, 255, .35); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  animation: cxBanner 1.6s cubic-bezier(.2, .9, .25, 1) both; }
+.cx-banner-ic { font-size: 22px; line-height: 1; color: var(--label-2); }
+.cx-banner b { font-size: 34px; font-weight: 800; letter-spacing: .22em; padding-left: .22em; color: #fff; animation: cxBannerTxt 1.6s cubic-bezier(.2, .9, .25, 1) both; }
+.cx-banner small { font-size: 12px; letter-spacing: .08em; color: var(--label-2); }
+.cx-banner.ph-night .cx-banner-in { box-shadow: 0 1px 0 rgba(110, 120, 255, .6), 0 -1px 0 rgba(110, 120, 255, .6); }
+.cx-banner.ph-vote .cx-banner-in { box-shadow: 0 1px 0 rgba(255, 110, 110, .55), 0 -1px 0 rgba(255, 110, 110, .55); }
+.cx-banner.ph-ended .cx-banner-in b { color: #D9D6FF; }
+@keyframes cxBanner { 0% { opacity: 0; transform: scaleY(.2); } 14% { opacity: 1; transform: none; } 78% { opacity: 1; transform: none; } 100% { opacity: 0; transform: scaleY(.6); } }
+@keyframes cxBannerTxt { 0% { opacity: 0; letter-spacing: .6em; filter: blur(6px); } 22% { opacity: 1; letter-spacing: .22em; filter: none; } 80% { opacity: 1; } 100% { opacity: 0; letter-spacing: .3em; } }
+.gp-phase.pop { animation: cxPop .5s cubic-bezier(.2, 1.4, .4, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .vt-in, .vt-in > *, .vt-soft, .vt-phase, .game-live.gl-open, .gp-phase.pop { animation: none; }
+  .seg > .seg-thumb { transition: none; }
+  .cx-banner { display: none; }
+}
+
+/* v92 スマホでも、テーブルと操作ボタンを1画面に収める（ずらして見るのはログだけ） */
+.game-live.cx-live.fit { overflow: hidden; }
+.game-live.cx-live.fit .cx-inner { height: 100%; display: flex; flex-direction: column; padding-bottom: 0; }
+.game-live.cx-live.fit .cx-inner > * { flex: none; }
+.game-live.cx-live.fit .cx-inner > .cx-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  margin: 0 -16px; padding: 4px 16px 28px; border-top: 1px solid rgba(255, 255, 255, .06);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14px); mask-image: linear-gradient(to bottom, transparent, #000 14px); }
+.game-live.cx-live.fit .cx-inner > .cx-scroll.empty { border-top: none; }
+.cx-scroll > :first-child { margin-top: 10px; }
+.cx-stage { padding-bottom: 14px; }
