@@ -3548,3 +3548,82 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 @media (prefers-reduced-motion: reduce) {
   .ql-choices.enter > .ql-choice, .ql-choice.picked, .ql-buzz.ripple::after, .ql-buzzwrap.got-turn .ql-buzz, .quiz-live.fx-ok::before, .quiz-live.fx-ng::before, .quiz-live.fx-ng .ql-q, .quiz-live.fx-ok .ql-verdict, .ql-top li { animation: none; }
 }
+
+/* v94 管理者がディーラー（手で進める）：管理者の画面の「ディーラーの操作」 */
+.gp-dealer { margin: 12px 0 4px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2, rgba(255,255,255,.06)); display: grid; gap: 10px; }
+.gp-dealer-head { display: grid; gap: 2px; }
+.gp-dealer-head b { font-size: 13px; letter-spacing: .02em; }
+.gp-dealer-head small { color: var(--sub, #9a9aa3); font-size: 12px; line-height: 1.5; }
+.gp-dealer-btn { width: 100%; min-height: 48px; font-size: 16px; }
+.gp-dealer-btn.need { box-shadow: 0 0 0 2px var(--need, #C9B8FF); animation: needPulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .gp-dealer-btn.need { animation: none; } }
+
+/* v94 ブラックジャック：配る・めくるを約1.5秒で。飛んできて、少し浮いてためてから、くるっと表に返し、一瞬明るく光る */
+@keyframes cxDealBJ {
+  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); }
+  18% { opacity: 1; }
+  30% { transform: translate(0, 0) rotate(0) scale(1); }
+  42% { transform: perspective(600px) translateY(-5px) rotateY(0) scale(1.05); }
+  66% { transform: perspective(600px) translateY(-7px) rotateY(90deg) scale(1.12); filter: brightness(1); }
+  80% { filter: brightness(1.45); }
+  100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
+@keyframes cxFlipUpBJ {
+  0% { transform: perspective(600px) rotateY(0) scale(1); }
+  14% { transform: perspective(600px) translateY(-4px) rotateZ(-2deg) scale(1.04); }
+  26% { transform: perspective(600px) translateY(-5px) rotateZ(2deg) scale(1.05); }
+  36% { transform: perspective(600px) translateY(-6px) rotateZ(0) scale(1.06); }
+  58% { transform: perspective(600px) translateY(-7px) rotateY(90deg) scale(1.12); filter: brightness(1); }
+  74% { filter: brightness(1.45); }
+  100% { transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
+@keyframes cxBackOffBJ { 0%, 65% { opacity: 1; } 66%, 100% { opacity: 0; } }
+@keyframes cxBackOffBJ2 { 0%, 57% { opacity: 1; } 58%, 100% { opacity: 0; } }
+.cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both; }
+.cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both; }
+.cx-fan.bj-slow .pc.deal:not(.back)::after { animation: cxBackOffBJ 1.5s step-end both; animation-delay: inherit; }
+.cx-fan.bj-slow .pc.flipup:not(.back)::after { animation: cxBackOffBJ2 1.5s step-end both; animation-delay: inherit; }
+.cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cx-fan.bj-slow .pc.deal, .cx-fan.bj-slow .pc.flipup, .cx-hand.is-bj .cx-fan.bj-slow .pc.deal, .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: none; }
+  .cx-fan.bj-slow .pc.deal::after, .cx-fan.bj-slow .pc.flipup::after { display: none; }
+}
+
+/* v94 脱落・その回にやられた人・バーストを、その瞬間に約2秒のモーションで目立たせる（赤く光って揺れてから、ふだんの「脱落」の見た目に落ち着く） */
+@keyframes fallRing {
+  0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); transform: scale(1); }
+  10% { box-shadow: 0 0 0 4px rgba(229, 72, 77, .95), 0 0 28px rgba(229, 72, 77, .8); transform: scale(1.22); }
+  18% { transform: scale(1.12) rotate(-8deg); }
+  26% { transform: scale(1.12) rotate(8deg); }
+  34% { transform: scale(1.1) rotate(-5deg); }
+  42% { transform: scale(1.08) rotate(0); box-shadow: 0 0 0 3px rgba(229, 72, 77, .9), 0 0 22px rgba(229, 72, 77, .6); }
+  70% { box-shadow: 0 0 0 3px rgba(229, 72, 77, .7), 0 0 16px rgba(229, 72, 77, .4); transform: scale(1.04); }
+  100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); transform: scale(1); } }
+@keyframes fallText { 0% { color: inherit; } 10%, 70% { color: #FF6B6F; text-shadow: 0 0 12px rgba(229, 72, 77, .7); } 100% { text-shadow: none; } }
+@keyframes fallShake {
+  0% { transform: none; filter: none; }
+  8% { transform: translateX(-6px) scale(1.03); filter: drop-shadow(0 0 14px rgba(229, 72, 77, .85)); }
+  16% { transform: translateX(6px) scale(1.03); }
+  24% { transform: translateX(-4px); }
+  32% { transform: translateX(4px); }
+  40% { transform: translateX(0); filter: drop-shadow(0 0 18px rgba(229, 72, 77, .8)); }
+  75% { filter: drop-shadow(0 0 10px rgba(229, 72, 77, .5)); }
+  100% { transform: none; filter: none; } }
+@keyframes fallBox { 0% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); } 10%, 60% { box-shadow: 0 0 0 2px #E5484D, 0 0 26px rgba(229, 72, 77, .55); } 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0); } }
+.cx-seat.fallen .cx-av, .cx-cs.fallen .cx-av { animation: fallRing 2s cubic-bezier(.3, .7, .3, 1) var(--fd, 0ms) both; }
+.cx-seat.fallen .cx-nm, .cx-cs.fallen .cx-nm { animation: fallText 2s ease var(--fd, 0ms) both; }
+.st-player.fallen { animation: fallBox 2s ease var(--fd, 0ms) both, fallShake 2s ease var(--fd, 0ms) both; }
+.cx-mycard.fallen, .gl-dead.fallen, .cx-secret.fallen { animation: fallBox 2s ease var(--fd, 0ms) both, fallShake 2s ease var(--fd, 0ms) both; }
+.cx-hand.fallen .cx-fan, .cx-dealer.fallen .cx-fan { animation: fallShake 2s ease var(--fd, 0ms) both; }
+.cx-hand.fallen > .cx-total, .cx-dealer.fallen > .cx-total { animation: fallText 2s ease var(--fd, 0ms) both; }
+/* バーストした手は、合計を赤に */
+.cx-hand.is-bust > .cx-total, .cx-dealer.is-bust > .cx-total { color: #FF6B6F; }
+@media (prefers-reduced-motion: reduce) {
+  .cx-seat.fallen .cx-av, .cx-cs.fallen .cx-av, .cx-seat.fallen .cx-nm, .cx-cs.fallen .cx-nm, .st-player.fallen, .cx-mycard.fallen, .gl-dead.fallen, .cx-secret.fallen,
+  .cx-hand.fallen .cx-fan, .cx-dealer.fallen .cx-fan, .cx-hand.fallen > .cx-total, .cx-dealer.fallen > .cx-total { animation: fallBox 2s ease var(--fd, 0ms) both; }
+}
+/* ディーラーの合計は、めくり終わってから出す（late）のと、バーストの赤を両方かける */
+.cx-dealer.fallen > .cx-total.late { animation: cxLate .45s cubic-bezier(.2, 1.4, .4, 1) var(--late, 0ms) both, fallText 2s ease var(--fd, 0ms) both; }
+
+/* v94 クイズの自動進行：操作用の画面の下に、次の動きを出す */
+.op-auto { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; color: var(--label-2, #c9c9cf); background: rgba(201, 184, 255, .1); border-top: 1px solid rgba(201, 184, 255, .25); }
+.op-auto .live-dot { flex: none; }

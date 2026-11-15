@@ -2384,7 +2384,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v93"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v94"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -5125,6 +5125,8 @@ function betCfg(qz) {
   };
 }
 // 進行中の状態（live/quiz）に載せる設定。参加者のスマホはクイズ本体を読まないので、必要なものをここに入れる
+// v94 クイズの自動進行 quizzes/{id}.auto = { on, closeAll（全員が答えたら締め切る）, revealSec（締切→発表）, nextSec（発表→次の問題）, noTimeSec（制限時間のない問題の制限時間） }
+const quizAutoCfg = (qz) => ({ on: false, closeAll: true, revealSec: 4, nextSec: 8, noTimeSec: 30, ...(qz?.auto ?? {}) });
 function liveBase(qz) {
   const sessions = quizSessions(qz);
   return {
@@ -5801,14 +5803,14 @@ function quizManager({ withTitle = true } = {}) {
   function tryLoad() {
     const qz = S.quizzes.get(editing);
     if (!qz || draft) return;
-    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [], sessions: quizSessions(qz), sabo: saboCfg(qz), bet: betCfg(qz) }));
+    draft = JSON.parse(JSON.stringify({ title: qz.title, answerers: qz.answerers ?? null, questions: qz.questions ?? [], sessions: quizSessions(qz), sabo: saboCfg(qz), bet: betCfg(qz), auto: quizAutoCfg(qz) }));
     // 区切りが無い問題は最初の区切りへ
     draft.questions.forEach((q) => { if (!draft.sessions.some((x) => x.id === q.session)) q.session = draft.sessions[0].id; });
     paintEditor();
   }
   const touch = () => { dirty = true; editor.classList.add("dirty"); };
   async function save() {
-    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions, sessions: draft.sessions, sabo: draft.sabo, bet: draft.bet });
+    await updateDoc(D("quizzes", editing), { title: draft.title.trim() || "クイズ", answerers: draft.answerers, questions: draft.questions, sessions: draft.sessions, sabo: draft.sabo, bet: draft.bet, auto: draft.auto });
     dirty = false; editor.classList.remove("dirty");
     toast("保存しました");
   }
@@ -5825,7 +5827,7 @@ function quizManager({ withTitle = true } = {}) {
       quizzes.length ? quizzes.map((qz) => h("article", { class: "card quiz-card", "data-quiz": qz.id },
         h("div", { class: "quiz-card-title" }, icon("quiz"), qz.title),
         h("div", { class: "cell-sub" }, [`${qz.questions?.length ?? 0}問`, quizSessions(qz).length > 1 ? `${quizSessions(qz).length}区切り` : null, `解答者：${quizWhoText(qz)}`,
-          qz.sabo?.on ? "妨害あり" : null, qz.bet?.on ? "賭けあり" : null].filter(Boolean).join(" ・ ")),
+          qz.sabo?.on ? "妨害あり" : null, qz.bet?.on ? "賭けあり" : null, qz.auto?.on ? "自動進行" : null].filter(Boolean).join(" ・ ")),
         h("div", { class: "quiz-card-actions" },
           h("button", { class: "text-btn", onclick: () => openEditor(qz.id) }, "編集"),
           h("button", { class: "text-btn destructive", onclick: () => { if (confirm(`「${qz.title}」を削除しますか？`)) fire(deleteDoc(D("quizzes", qz.id)), "削除しました"); } }, "削除"),
@@ -6059,7 +6061,24 @@ function quizManager({ withTitle = true } = {}) {
       const sb = d.sabo, bt = d.bet;
       const who = segmented([{ value: "spectators", label: "解答者以外" }, { value: "all", label: "全員" }], sb.who);
       who.addEventListener("change", () => { sb.who = who.value; touch(); paintSettings(); });
+      const au = d.auto ?? (d.auto = quizAutoCfg(null));
+      const secSel = (val, opts, onset, label) => {
+        const x = h("select", { class: "inline-select", "aria-label": label }, opts.map((v) => h("option", { value: String(v) }, `${v}秒`)));
+        x.value = String(val);
+        x.addEventListener("change", () => { onset(Number(x.value)); touch(); });
+        return x;
+      };
       setKids(settings,
+        group("進行", [
+          field("自動で進める", sw(au.on, (v) => { au.on = v; }, true)),
+          ...(au.on ? [
+            field("全員が答えたら締め切る", sw(au.closeAll, (v) => { au.closeAll = v; })),
+            field("締め切ってから正解を発表するまで", secSel(au.revealSec, [2, 3, 4, 6, 8, 10], (v) => { au.revealSec = v; }, "締め切ってから正解を発表するまでの秒数")),
+            field("発表から次の問題まで", secSel(au.nextSec, [4, 6, 8, 12, 20, 30], (v) => { au.nextSec = v; }, "発表から次の問題までの秒数")),
+            field("制限時間のない問題の制限時間", secSel(au.noTimeSec, [15, 20, 30, 45, 60, 90, 120], (v) => { au.noTimeSec = v; }, "制限時間のない問題の制限時間")),
+          ] : []),
+        ], au.on ? "「第1問を出題」だけ司会が押します（参加者がそろうのを待つため）。そのあとは、時間（または全員の回答）で締め切る → 正解を発表 → 次の問題 → 最後に結果発表 まで自動で進みます。早押しは、送られた答えが正解（「／」で区切った別解も）と同じ文字なら正解、違えば不正解に自動でします。操作用の画面のボタンで、いつでも手で進めたり判定を直したりできます。進めている間は、管理者の操作用か表示用の画面のどれか1つを開いたままにしてください。"
+          : "オフのときは、これまでどおり司会が操作用の画面のボタンで進めます。"),
         group("妨害システム", [
           field("妨害を使う", sw(sb.on, (v) => { sb.on = v; }, true)),
           ...(sb.on ? [
@@ -6157,6 +6176,74 @@ function remainingSec(L, local) {
   return Math.max(0, myQTime(L, local) - elapsed);
 }
 
+// v94 クイズの自動進行（操作用・表示用のどちらの画面でも動く。2台で開いていても、先に取った1台だけが進める）
+const QA = { key: null, at: 0, busy: false, judged: new Set(), winAt: 0 };
+function quizAutoTick(L, qz) {
+  const au = quizAutoCfg(qz);
+  if (!au.on || !S.isAdmin || !L || L.phase === "lobby" || L.phase === "results" || L.phase === "off") return;
+  const q = qz.questions[L.index];
+  const tag = L.phase === "reveal" ? (allRevealed(L, qz) ? "all" : "part") : "";
+  const key = `${L.seq}:${L.phase}:${tag}`, now = Date.now();
+  if (QA.key !== key) { QA.key = key; QA.at = now; QA.winAt = 0; }
+  const since = (now - QA.at) / 1000;
+  let act = null;
+  if (L.phase === "reading") {
+    // 読み終わって1.5秒たったら解答開始
+    if (since >= qText(L).length / (L.q?.speed || READ_SPEED) + 1.5) act = quizStartAnswering;
+  } else if (L.phase === "question") {
+    const audience = quizAudience(answerersAt(L, L.index)).filter((m) => effectOn(L, m.id) !== "seal");
+    const answers = answersOf(L.index);
+    if (q?.type === "buzz") {
+      // 早押しの答えは、正解（別解）と同じ文字なら正解、違えば不正解
+      for (const a of buzzOrder(L.index)) {
+        if (!a.text || a.timeout || typeof a.judge === "boolean" || QA.judged.has(a.id)) continue;
+        QA.judged.add(a.id);
+        fire(updateDoc(D("quizAnswers", a.id), { judge: acceptedAnswers(q).includes(normAnswer(a.text)) }));
+      }
+      if (buzzWinner(L, qz)) { QA.winAt ||= now; if (now - QA.winAt >= 1500) act = () => quizReveal({ showAns: "all", shown: "all", answerShown: true }); }
+      else {
+        const wrong = new Set(answers.filter((a) => a.buzz && judged(q, a) === false).map((a) => a.uid));
+        const allWrong = audience.length > 0 && audience.every((m) => wrong.has(m.id));
+        if (allWrong || (!L.q?.time && since >= au.noTimeSec)) act = () => quizSetPhase("closed");
+      }
+    } else {
+      const got = new Set(answers.map((a) => a.uid));
+      const allIn = au.closeAll && audience.length > 0 && audience.every((m) => got.has(m.id));
+      if ((allIn && since >= 1) || (!L.q?.time && since >= au.noTimeSec)) act = () => quizSetPhase("closed");
+    }
+  } else if (L.phase === "closed") {
+    if (since >= au.revealSec) act = () => quizReveal({ showAns: "all", shown: "all", answerShown: true });
+  } else if (L.phase === "reveal") {
+    if (tag === "part" && since >= au.revealSec) act = () => quizReveal({ showAns: "all", shown: "all", answerShown: true });
+    else if (tag === "all" && since >= au.nextSec) act = () => (L.index + 1 < qz.questions.length ? quizOpenQuestion(qz, L.index + 1) : quizFinish(qz));
+  }
+  if (!act || QA.busy) return;
+  QA.busy = true;
+  quizAutoLock(L, key).then((ok) => { if (ok) act(); }).finally(() => { QA.busy = false; });
+}
+// 同じ場面を2台が同時に進めないように、進行状態に「この場面はこの端末が進める」と書いてから進める
+async function quizAutoLock(L, key) {
+  try {
+    return await runTransaction(db, async (tx) => {
+      const d = await tx.get(liveRef());
+      const x = d.exists() ? d.data() : null;
+      if (!x || x.seq !== L.seq || x.phase !== L.phase || x.autoLock === key) return false;
+      tx.update(liveRef(), { autoLock: key });
+      return true;
+    });
+  } catch (e) { console.warn("quiz auto", e); return false; }
+}
+// 自動進行のときに、操作用・表示用の画面に出す次の動き
+function quizAutoNote(L, qz) {
+  const au = quizAutoCfg(qz);
+  if (!au.on || !L) return null;
+  if (L.phase === "lobby") return "自動進行：「第1問を出題」を押すと、そのあとは自動で進みます";
+  if (L.phase === "results") return null;
+  const left = (s) => Math.max(0, Math.ceil(s - (Date.now() - QA.at) / 1000));
+  const t = L.phase === "closed" ? `あと${left(au.revealSec)}秒で正解を発表` : L.phase === "reveal" && allRevealed(L, qz) ? `あと${left(au.nextSec)}秒で${L.index + 1 < qz.questions.length ? "次の問題" : "結果発表"}`
+    : L.phase === "question" ? (L.q?.time ? "時間になると締め切ります" : `あと${left(au.noTimeSec)}秒で締め切ります`) : L.phase === "reading" ? "読み終わると解答開始" : "";
+  return `自動進行中 ・ ${t}`;
+}
 function paintPresenter(full = true) {
   const P = QZ.presenter;
   // 開始を押した直後（数秒）は、前のクイズの「終了」がまだ残っていても閉じずに待つ
@@ -6183,7 +6270,8 @@ function paintPresenter(full = true) {
   // 制限時間が来たら自動で締め切る（表示用・操作用のどちらが開いていても動く）
   const rem = L.phase === "question" ? remainingSec(L, false) : null;
   if (rem === 0 && QZ.autoClosedSeq !== L.seq) { QZ.autoClosedSeq = L.seq; quizSetPhase("closed"); }
-  if (QZ.mode === "operator") quizSyncTurn(L, qz);
+  if (QZ.mode === "operator" || quizAutoCfg(qz).on) quizSyncTurn(L, qz);
+  quizAutoTick(L, qz);
   // 普段はタイマーだけ更新する。ただし「準備中」の表示中と、2秒に1回は全体を描き直して取りこぼしを防ぐ
   if (!full && P.dataset.state !== "wait" && Date.now() - (QZ.lastFull ?? 0) < 2000) { updateQuizTicks(); return; }
   QZ.lastFull = Date.now();
@@ -6567,7 +6655,8 @@ function paintOperator(P, L, qz, rem) {
     h("button", { class: "pr-btn danger", onclick: quizEnd }, quizEndArmed() ? "もう一度押して終了" : "終了"));
   // 入力中の欄（操作用はないが念のため）やスクロール位置を保つ
   const scroll = P.querySelector(".op-body")?.scrollTop ?? 0;
-  setKids(P, head, body, foot);
+  const an = quizAutoNote(L, qz);
+  setKids(P, head, body, an ? h("div", { class: "op-auto" }, h("span", { class: "live-dot" }), h("span", { class: "op-auto-t" }, an)) : null, foot);
   const ob = P.querySelector(".op-body");
   if (ob) ob.scrollTop = scroll;
 }
@@ -7203,6 +7292,7 @@ function paintQuizLive(full = true) {
 function updateQuizTicks() {
   const L = S.live;
   if (!L) return;
+  for (const el of document.querySelectorAll(".op-auto-t")) { const qz = S.quizzes.get(L.quizId); const t = qz && quizAutoNote(L, qz); if (t) el.textContent = t; }
   for (const el of document.querySelectorAll("[data-read]")) paintRead(el, L);
   for (const el of document.querySelectorAll("[data-turncount]")) {
     const n = Math.ceil(turnLeft(S.live?.turn?.uid));
@@ -10713,7 +10803,7 @@ const gLive = (g) => !!g && g.phase !== "ended";
 const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
 const gNames = (uids) => (uids ?? []).map(memberName).join("・");
 const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => (b.no ?? 0) - (a.no ?? 0));
-const GV = { hidden: new Set(), show: new Set(), flipN: new Map(), stage: null, demo: null, log: null }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GV = { hidden: new Set(), show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
 const GBUSY = new Set(); // 進めている最中のゲーム
@@ -11260,7 +11350,7 @@ function bjDeal(g, secs) {
   const secrets = [[DEALER, { gameId: g.id, uid: DEALER, shoe, hole }]];
   // 表向きが A で保険ありなら、先に保険を受け付ける
   if (o.insurance && up[1] === "A") {
-    return { update: { bj: st, phase: "insure", actKey: "i", actors: inRound.filter((u) => bjFree(st, u) >= Math.max(1, Math.floor(st.hands[u].bet / 2))), endsAt: Date.now() + o.insSec * 1000,
+    return { update: { bj: st, phase: "insure", actKey: "i", actors: inRound.filter((u) => bjFree(st, u) >= Math.max(1, Math.floor(st.hands[u].bet / 2))), endsAt: cardEnds(g.opts, o.insSec),
       log: [...log, gLog("ディーラーの表向きのカードが A です。保険（賭けの半分）をかけるか選んでください。", null, { type: "bjIns", round: r })] }, secrets };
   }
   return bjPeek(g, st, hole, shoe, log, secrets);
@@ -11268,16 +11358,18 @@ function bjDeal(g, secs) {
 // ディーラーがブラックジャックか確かめる（ならすぐ精算）
 function bjPeek(g, st, hole, shoe, log, secrets) {
   const o = bjO(g.opts);
-  const inRound = Object.keys(st.hands);
-  if (bjIsBJ([st.dealer[0], hole]) || inRound.every((k) => st.hands[k].done)) return { update: bjSettle(g, st, hole, shoe, log), secrets: [[DEALER, { gameId: g.id, uid: DEALER, shoe, hole: null }]] };
+  const inRound = Object.keys(st.hands), manual = cardManual(g.opts);
+  // 管理者がディーラーのときは、全員がブラックジャックでもディーラーがカードを開けるまで待つ（ディーラーのブラックジャックはすぐ開く）
+  if (bjIsBJ([st.dealer[0], hole]) || (!manual && inRound.every((k) => st.hands[k].done))) return { update: bjSettle(g, st, hole, shoe, log), secrets: [[DEALER, { gameId: g.id, uid: DEALER, shoe, hole: null }]] };
   if (st.insTaken) log = [...log, gLog("ディーラーはブラックジャックではありませんでした（保険は没収です）。", null, { type: "bjPeek", quiet: true })];
-  return { update: { bj: st, phase: "play", actKey: "p", actors: [...new Set(inRound.map(bjOwn))], endsAt: Date.now() + o.playSec * 1000, log }, secrets };
+  const actors = [...new Set(inRound.map(bjOwn))];
+  return { update: { bj: st, phase: "play", actKey: "p", actors: manual ? actors.filter((u) => bjCur(st, u)) : actors, endsAt: cardEnds(g.opts, o.playSec), log }, secrets };
 }
 // 保険の受付を締め切る
-function bjInsure(g, secs) {
+function bjInsure(g, secs, force = false) {
   const st = structuredClone(g.bj), r = st.round;
   const dsec = secs.get(DEALER) ?? {};
-  const timeUp = g.endsAt && Date.now() >= g.endsAt + 1000;
+  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
   if (!timeUp && !g.actors.every((u) => cardAct(g, "i", u, `r${r}`) != null)) return null;
   const took = [];
   for (const u of g.actors) {
@@ -11342,8 +11434,27 @@ function bjPlay(g, secs) {
   }
   if (!changed) return null;
   const log = [...(g.log ?? []), ...lines.map((x) => gLog(x, null, { type: "bjMove", quiet: true }))];
-  if (Object.values(st.hands).every((x) => x.done)) return { update: bjSettle(g, st, dsec.hole, shoe, log), secrets: [[DEALER, { shoe, hole: null }]] };
+  if (Object.values(st.hands).every((x) => x.done)) {
+    // 管理者がディーラーのときは、ディーラーが「カードを開ける」を押すまで待つ
+    if (cardManual(g.opts)) return { update: { bj: st, actors: [], log }, secrets: [[DEALER, { shoe }]] };
+    return { update: bjSettle(g, st, dsec.hole, shoe, log), secrets: [[DEALER, { shoe, hole: null }]] };
+  }
   return { update: { bj: st, actors: owners.filter((u) => bjCur(st, u)), log }, secrets: [[DEALER, { shoe }]] };
+}
+// 管理者がディーラーのとき：締め切って、ディーラーのカードを開ける（まだ選んでいない人の手はスタンド）
+function bjReveal(g, secs) {
+  if (g.phase !== "play") return null;
+  const st = structuredClone(g.bj);
+  const dsec = secs.get(DEALER) ?? {};
+  const shoe = [...(dsec.shoe ?? [])];
+  const lines = [];
+  for (const u of [...new Set(Object.keys(st.hands).map(bjOwn))]) {
+    if (!bjCur(st, u)) continue;
+    for (const k of bjHandsOf(st, u)) st.hands[k].done = true;
+    lines.push(`${memberName(u)}：ディーラーが締め切ったのでスタンド`);
+  }
+  const log = [...(g.log ?? []), ...lines.map((x) => gLog(x, null, { type: "bjMove", quiet: true }))];
+  return { update: bjSettle(g, st, dsec.hole, shoe, log), secrets: [[DEALER, { shoe, hole: null }]] };
 }
 // ディーラーが引いて精算する
 function bjSettle(g, st, hole, shoe, log) {
@@ -11376,14 +11487,14 @@ function bjAfterRound(g, st, log) {
   const o = bjO(g.opts);
   const last = st.round >= o.rounds || g.players.every((u) => (st.chips[u] ?? 0) < Math.max(1, o.betMin));
   if (last) return bjEndUpdate(g, st, log);
-  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext ? Date.now() + o.resultSec * 1000 : null, log };
+  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? Date.now() + o.resultSec * 1000 : null, log };
 }
 function bjNext(g) {
   if (g.phase !== "result") return null;
   const st = structuredClone(g.bj), o = bjO(g.opts);
   st.round += 1; st.hands = {}; st.dealer = []; st.ins = {}; st.insRes = {}; st.insTaken = null;
   const actors = g.players.filter((u) => (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
-  return { update: { bj: st, phase: "bet", actKey: "b", actors, endsAt: Date.now() + o.betSec * 1000,
+  return { update: { bj: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
     log: [...(g.log ?? []), gLog(`第${st.round}回です。賭けるチップを選んでください。`, null, { type: "bjBet", round: st.round })] } };
 }
 function bjEndUpdate(g, st, log) {
@@ -11402,6 +11513,13 @@ const DFG_TITLE_PT = { 大富豪: 2, 富豪: 1, 平民: 0, 貧民: -1, 大貧民
 //   five 5スキップ／seven 7渡し／ten 10捨て／nine 9リバース／exBig・exSmall 交換の枚数／score "rank"|"title"／exSec 交換の時間／autoNext・resultSec
 const dfgO = (o) => ({ jokers: 1, eight: true, revolution: true, stairs: true, spade3: true, exchange: true, stairsMin: 3, revN: 4, stairsRev: 0, jback: false, shibari: false,
   miyako: false, foul: false, five: false, seven: false, ten: false, nine: false, exBig: 2, exSmall: 1, score: "rank", exSec: 40, autoNext: true, resultSec: 9, turnSec: 45, rounds: 3, ...o });
+// 進め方（ブラックジャック・大富豪で共通）
+//   dealer "auto"（既定）：管理者の端末が自動でディーラーになり、時間や全員の操作で次へ進む
+//   dealer "manual"：管理者がディーラー。配る・保険を締め切る・ディーラーのカードを開ける・交換を締め切る・次の回へ は管理者がボタンで進める
+//   dealerTimer：手動のときに参加者の持ち時間を付けるか（false なら時間切れはなく、ディーラーが締め切るまで待つ）
+const cardManual = (o) => o?.dealer === "manual";
+const cardEnds = (o, sec) => (cardManual(o) && o?.dealerTimer === false ? null : Date.now() + sec * 1000);
+const cardNeed = (g) => (g.kind === "bj" ? [DEALER] : g.dfg?.seats ?? []);
 // いまの強さの向き（革命と11バックが両方かかると元に戻る）
 const dfgRevNow = (st) => !!st.rev !== !!st.jback;
 const dfgSuits = (cs) => cs.filter((c) => !isJoker(c)).map((c) => c[0]).sort().join("");
@@ -11522,18 +11640,18 @@ function dfgDealRound(g, st, log) {
   const leader = titles ? st.seats.find((u) => titles[u] === "大貧民") ?? st.seats[0] : st.seats.find((u) => hands[u].includes("D3")) ?? st.seats[0];
   st.lead = leader;
   log = [...log, gLog(`第${st.round}回：カードを配りました。${ex.length ? `カードの交換：${ex.map((x) => `${memberName(x.from)} → ${memberName(x.to)}（${x.cards.length}枚）`).join("・")}` : ""}`, null, { type: "dfgDeal", round: st.round, exchange: ex, titles: titles ?? null })];
-  if (ex.length) return { update: { dfg: st, phase: "exchange", actKey: "x", actors: ex.map((x) => x.to), endsAt: Date.now() + o.exSec * 1000, log }, secrets };
+  if (ex.length) return { update: { dfg: st, phase: "exchange", actKey: "x", actors: ex.map((x) => x.to), endsAt: cardEnds(g.opts, o.exSec), log }, secrets };
   return { update: dfgStartPlay(g, st, log), secrets };
 }
 function dfgStartPlay(g, st, log) {
   st.turn = st.lead; st.tseq = (st.tseq ?? 0) + 1;
-  return { dfg: st, phase: "play", actKey: "t", actors: [st.turn], endsAt: Date.now() + dfgO(g.opts).turnSec * 1000,
+  return { dfg: st, phase: "play", actKey: "t", actors: [st.turn], endsAt: cardEnds(g.opts, dfgO(g.opts).turnSec),
     log: [...log, gLog(`${memberName(st.turn)}さんから始めます。${st.round === 1 || !st.titles ? "（♦3を持っている人）" : "（前の回の大貧民）"}`, null, { type: "dfgLead", uid: st.turn, quiet: true })] };
 }
 // お金持ちが返すカードを決める（選ばなかった人は一番弱いカード）
-function dfgExchangeDone(g, secs) {
+function dfgExchangeDone(g, secs, force = false) {
   const st = structuredClone(g.dfg), r = st.round;
-  const timeUp = g.endsAt && Date.now() >= g.endsAt + 1000;
+  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
   const ready = st.exchange.every((x) => cardAct(g, "x", x.to, `x${r}`) != null);
   if (!ready && !timeUp) return null;
   const hands = new Map(st.seats.map((u) => [u, [...(secs.get(u)?.hand ?? [])]]));
@@ -11555,12 +11673,12 @@ function dfgExchangeDone(g, secs) {
 // 場を流す
 function dfgFlow(st) { st.field = null; st.passes = []; st.lock = null; st.jback = false; }
 // 番の人の操作（出す・パス・時間切れ）。操作の中身は「出すカード|渡すカード|捨てるカード」（カードは . でつなぐ）
-function dfgMove(g, secs) {
+function dfgMove(g, secs, force = false) {
   const st = structuredClone(g.dfg), o = dfgO(g.opts), u = st.turn;
   const hands = new Map(st.seats.map((x) => [x, [...(secs.get(x)?.hand ?? [])]]));
   const hand = hands.get(u) ?? [];
-  const a = cardAct(g, "t", u, st.tseq);
-  const timeUp = g.endsAt && Date.now() >= g.endsAt + 1000;
+  const a = cardAct(g, "t", u, st.tseq); // force（ディーラーが進める）でも、届いている操作があればそれを使う
+  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
   const revBefore = dfgRevNow(st);
   let play = null, wantGive = [], wantDisc = [];
   if (a === "pass") play = st.field ? [] : null;
@@ -11652,7 +11770,7 @@ function dfgMove(g, secs) {
     } else st.turn = dfgNextAfter(st.seats, u, cands, dir, skip);
   }
   st.tseq += 1;
-  return { update: { dfg: st, actors: [st.turn], endsAt: Date.now() + o.turnSec * 1000, log }, secrets };
+  return { update: { dfg: st, actors: [st.turn], endsAt: cardEnds(g.opts, o.turnSec), log }, secrets };
 }
 function dfgRoundEnd(g, st, log) {
   const o = dfgO(g.opts);
@@ -11665,7 +11783,7 @@ function dfgRoundEnd(g, st, log) {
   dfgFlow(st); st.turn = null;
   log = [...log, gLog(`第${st.round}回の結果：${order.map((u, k) => `${T[k]} ${memberName(u)}`).join("・")}`, null, { type: "dfgRound", round: st.round, order, titles: st.titles, points: { ...st.points } })];
   if (st.round >= o.rounds) return dfgEndUpdate(g, st, log);
-  return { dfg: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext ? Date.now() + o.resultSec * 1000 : null, log };
+  return { dfg: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? Date.now() + o.resultSec * 1000 : null, log };
 }
 function dfgNextRound(g) {
   if (g.phase !== "result") return null;
@@ -11687,7 +11805,7 @@ function cardStartState(kind, players, o) {
     const chips = Object.fromEntries(players.map((u) => [u, Math.max(0, Math.floor(o.startChips?.[u] ?? o.chips))]));
     const st = { round: 1, chips, start: { ...chips }, hands: {}, dealer: [], ins: {} };
     const same = new Set(Object.values(chips)).size === 1;
-    return { bj: st, phase: "bet", actKey: "b", actors: players.filter((u) => chips[u] >= Math.max(1, bjO(o).betMin)), endsAt: Date.now() + bjO(o).betSec * 1000,
+    return { bj: st, phase: "bet", actKey: "b", actors: players.filter((u) => chips[u] >= Math.max(1, bjO(o).betMin)), endsAt: cardEnds(o, bjO(o).betSec),
       log: [gLog(`ブラックジャックを始めます。${o.pt?.chips === "real" ? "旅行のポイントをチップとして持ち込みました" : "全員にチップを配りました"}（${same ? `${Object.values(chips)[0]}枚ずつ` : players.map((u) => `${memberName(u)} ${chips[u]}枚`).join("・")}）。第1回の賭けるチップを選んでください。`, null, { type: "bjBet", round: 1 })] };
   }
   return null;
@@ -11697,16 +11815,17 @@ function cardTick(g) {
   const now = Date.now();
   const timeUp = g.endsAt && now >= g.endsAt + 1000;
   const acted = (key, pre) => g.actors.every((u) => cardAct(g, key, u, pre) != null);
+  const manual = cardManual(g.opts); // 管理者がディーラー：場面の切り替えは管理者が押す（参加者の操作の反映と、持ち時間切れだけ自動）
   let fn = null;
   if (g.kind === "bj") {
     const st = g.bj, r = `r${st.round}`;
-    if (g.phase === "bet" && (timeUp || acted("b", r))) fn = bjDeal;
-    else if (g.phase === "insure" && (timeUp || acted("i", r))) fn = bjInsure;
-    else if (g.phase === "play" && (timeUp || g.actors.some((u) => bjPending(g, st, u)))) fn = bjPlay;
+    if (g.phase === "bet" && !manual && (timeUp || acted("b", r))) fn = bjDeal;
+    else if (g.phase === "insure" && !manual && (timeUp || acted("i", r))) fn = bjInsure;
+    else if (g.phase === "play" && (g.actors.some((u) => bjPending(g, st, u)) || (timeUp && (!manual || g.actors.some((u) => bjCur(st, u)))))) fn = bjPlay;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = bjNext;
   } else {
     const st = g.dfg;
-    if (g.phase === "exchange" && (timeUp || st.exchange.every((x) => cardAct(g, "x", x.to, `x${st.round}`) != null))) fn = dfgExchangeDone;
+    if (g.phase === "exchange" && !manual && (timeUp || st.exchange.every((x) => cardAct(g, "x", x.to, `x${st.round}`) != null))) fn = dfgExchangeDone;
     else if (g.phase === "play" && (timeUp || cardAct(g, "t", st.turn, st.tseq) != null)) fn = dfgMove;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = dfgNextRound;
   }
@@ -11736,9 +11855,10 @@ function cardPhaseShort(g) {
 }
 function cardPrompt(g) {
   if (g.phase === "ended") return g.result?.text ?? "";
-  const auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext;
-  const after = auto ? "まもなく次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
-  if (g.kind === "bj") return g.phase === "bet" ? "賭けるチップの枚数を選んでください。" : g.phase === "insure" ? "ディーラーの表向きのカードが A です。保険（賭けの半分。ディーラーがブラックジャックなら2倍で戻る）をかけるか選んでください。"
+  const manual = cardManual(g.opts), auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !manual;
+  const after = auto ? "まもなく次の回が始まります。" : manual ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
+  if (g.kind === "bj" && manual && g.phase === "play" && !g.actors.length) return "全員の番が終わりました。ディーラー（管理者）がカードを開けるのを待っています。";
+  if (g.kind === "bj") return g.phase === "bet" ? `賭けるチップの枚数を選んでください。${manual ? "ディーラー（管理者）が締め切ると配られます。" : ""}` : g.phase === "insure" ? "ディーラーの表向きのカードが A です。保険（賭けの半分。ディーラーがブラックジャックなら2倍で戻る）をかけるか選んでください。"
     : g.phase === "play" ? "ヒットでカードを1枚引き、スタンドでそこまでにします。21を超えると負けです。" : `この回の結果です。${after}`;
   if (g.phase === "exchange") return "カードを交換しています。大富豪・富豪の人は、渡すカードを選んでください。";
   if (g.phase === "result") return `この回の結果です。${after}`;
@@ -11793,9 +11913,31 @@ const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック�
 // 新しく来たカードは、飛んできてから表に返す。伏せてあったカード（ディーラーの2枚目）は、その場でゆっくり表に返す。
 // step は1枚ずつの間隔。かかる時間の合計を data-t に入れておく（勝ち負けの表示を、めくり終わってから出すため）
 const CX_DEAL_MS = 820, CX_FLIP_MS = 900;
+// v94 脱落・その回にやられた人・バーストを、その瞬間に約2秒のモーションで目立たせる。
+// 始まった時刻を覚えておき、途中で画面が描き直されても続きから動かす（遅れた分だけ animation-delay を負にする）。delay は始めるまでの待ち時間（カードがめくれ終わってから など）
+const FALL_MS = 2000;
+function fallFx(key, isNew, delay = 0) {
+  const now = Date.now();
+  if (isNew && !GV.fall.has(key)) GV.fall.set(key, now + delay);
+  const t0 = GV.fall.get(key);
+  if (t0 == null || now - t0 > FALL_MS) return { cls: "", style: "" };
+  return { cls: " fallen", style: `--fd:${t0 - now}ms;` };
+}
+// 人狼・NGワード：だれが「いま」脱落したか（この端末で前に見たときは生きていた人。開き直したときは、その回に処刑・襲撃された人）
+function gFallFx(g, u, ns = "") {
+  if (!gDead(g, u)) return { cls: "", style: "" };
+  const prev = GV.outPrev.get(`${ns}${g.id}`);
+  const isNew = prev ? !prev.has(u) : u === g.lastDeath || u === g.lastExec;
+  // 人狼などの脱落は場面の切り替わりと同時に起きるので、真ん中の帯（約1.6秒）が消えかけてから光らせる。NGワードのアウトは場面が変わらないのですぐ
+  const wait = g.kind === "ng" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 1300;
+  return fallFx(`fall:${ns}${g.id}:${u}`, isNew, wait);
+}
+const gFallSeen = (g, ns = "") => GV.outPrev.set(`${ns}${g.id}`, new Set(g.players.filter((u) => gDead(g, u))));
+const BJ_FLIP_MS = 1500; // v94 ブラックジャックは、配る・めくるを約1.5秒かけて（わくわく感を出す）。cls に " bj-slow" を付けたときに使う
 const BJ_RING_MAX = 7; // 丸テーブルに並べるのは、ほかの人が7人まで（8人まで）。それより多いときは上の帯に小さく並べる
 const cxFan = (cs, cls = "", zone = null, step = 300) => {
   let d = 0, t = 0;
+  const slow = cls.includes("bj-slow"), dealMs = slow ? BJ_FLIP_MS : CX_DEAL_MS, flipMs = slow ? BJ_FLIP_MS : CX_FLIP_MS;
   const fan = h("div", { class: `cx-fan${cls}` }, cs.map((c, i) => {
     const el = cardEl(c, { big: true });
     if (zone && cxOnce(`${zone}:${i}:${c}`)) {
@@ -11803,7 +11945,7 @@ const cxFan = (cs, cls = "", zone = null, step = 300) => {
       el.classList.add(wasDown ? "flipup" : "deal");
       const at = d++ * step;
       el.style.animationDelay = `${at}ms`;
-      t = Math.max(t, at + (wasDown ? CX_FLIP_MS : CX_DEAL_MS));
+      t = Math.max(t, at + (wasDown ? flipMs : dealMs));
     }
     return el;
   }));
@@ -11923,7 +12065,7 @@ function cardMemberBody(g) {
     const settled = keys.filter((k) => st.hands[k].res);
     const sum = settled.reduce((x, k) => x + (Number(st.hands[k].delta) || 0), 0) + (Number(st.insRes?.[uid]) || 0);
     // ディーラーのカードは先に作って、めくり終わるまでの時間を知る（勝ち負けは、めくり終わってから出す）
-    const dFan = dealer.length ? cxFan(dealer, "", `d${g.id}.${st.round}`, 700) : cxFan([null, null], " ghost");
+    const dFan = dealer.length ? cxFan(dealer, " bj-slow", `d${g.id}.${st.round}`, 1000) : cxFan([null, null], " ghost");
     const late = Number(dFan.dataset.t) || 0;
     const lateA = late ? { style: `--late:${late}ms` } : {};
     const lateC = late ? " late" : "";
@@ -11935,9 +12077,11 @@ function cardMemberBody(g) {
       ? h("div", { class: `cx-hands${keys.length > 1 ? " multi" : ""}` }, keys.map((k) => {
         const hd = st.hands[k];
         const isBJ = bjIsBJ(hd.cards, hd.split);
-        const fan = cxFan(hd.cards, "", `h${g.id}.${st.round}.${k}`);
-        const bjA = isBJ ? { style: `--bjd:${Number(fan.dataset.t) || 0}ms` } : {};
-        return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}${isBJ ? " is-bj" : ""}`, ...bjA },
+        const fan = cxFan(hd.cards, " bj-slow", `h${g.id}.${st.round}.${k}`, 450);
+        const bust = bjValue(hd.cards).total > 21;
+        const bfx = bust ? fallFx(`bust:${g.id}:${st.round}:${k}`, true, Number(fan.dataset.t) || 0) : { cls: "", style: "" }; // バーストは、引いたカードがめくれ終わってから光らせる
+        const bjA = isBJ || bfx.style ? { style: `${isBJ ? `--bjd:${Number(fan.dataset.t) || 0}ms;` : ""}${bfx.style}` } : {};
+        return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}${isBJ ? " is-bj" : ""}${bust ? " is-bust" : ""}${bfx.cls}`, ...bjA },
           fan,
           h("div", { class: "cx-total" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
           hd.res ? h("div", { class: `cx-res${lateC}`, title: BJ_RES[hd.res], ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
@@ -11972,12 +12116,15 @@ function cardMemberBody(g) {
           can.r ? b("wflag", "SURREND.", "r", "btn-small") : null) : null,
         h("p", { class: "cx-note" }, pend ? "送信済み ・ 反映待ち…"
           : [bjHandsOf(st, uid).length > 1 ? `#${bjNo(cur)} の手` : null, can.d ? `DOUBLE → BET ${hd.bet * 2} ・ +1枚` : null, can.p ? `SPLIT → +${hd.bet} ${U}` : null, can.r ? `SURR. → ${Math.floor(hd.bet / 2)} ${U} 戻る` : null].filter(Boolean).join(" ・ "))];
-    } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, "✓ STAND ・ 待機中…");
+    } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, cardManual(g.opts) && !g.actors.length ? "✓ 全員 STAND ・ ディーラーがカードを開けるのを待機中…" : "✓ STAND ・ 待機中…");
     // ほかの人の席
     const others = cxAfter(g.players, uid), crowd = others.length > BJ_RING_MAX;
+    // バーストした人（ほかの人）：その瞬間に2秒光らせる
+    const seatFx = (u) => { const b = bjHandsOf(st, u).find((k) => bjValue(st.hands[k].cards).total > 21); return b ? fallFx(`bust:${g.id}:${st.round}:${b}`, true) : { cls: "", style: "" }; };
+    const withFx = (el, fx) => { if (fx.style) el.setAttribute("style", fx.style); return el; };
     const seatCls = (u) => {
       const ks = bjHandsOf(st, u), one = ks.length === 1 ? st.hands[ks[0]] : null;
-      return `${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}${ks.some((k) => bjIsBJ(st.hands[k].cards, st.hands[k].split)) ? " is-bj" : ""}`;
+      return `${seatFx(u).cls}${ks.some((k) => bjValue(st.hands[k].cards).total > 21) ? " is-bust" : ""}${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}${ks.some((k) => bjIsBJ(st.hands[k].cards, st.hands[k].split)) ? " is-bj" : ""}`;
     };
     const seatMeta = (u) => {
       const bet = g.phase === "bet" ? cardAct(g, "b", u, r) : null;
@@ -11988,13 +12135,13 @@ function cardMemberBody(g) {
       const ks = bjHandsOf(st, u);
       const line = ks.length ? ks.map((k) => { const hd = st.hands[k]; return bjIsBJ(hd.cards, hd.split) ? "BJ" : hd.res ? BJ_RES_S[hd.res] : hd.surr ? "SURR" : `${bjTot(hd.cards, hd.split)}${hd.done && g.phase === "play" ? "✓" : ""}`; }).join("/") : seatMeta(u);
       const res = ks.length === 1 ? st.hands[ks[0]] : null;
-      return h("div", { class: `cx-cs${seatCls(u)}`, role: "listitem", title: memberName(u) },
+      return withFx(h("div", { class: `cx-cs${seatCls(u)}`, role: "listitem", title: memberName(u) },
         h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?"), h("b", { class: "cx-nm" }, memberName(u)),
-        h("small", { class: `cx-cs-m${res?.res ? lateC : ""}`, ...(res?.res ? lateA : {}) }, line));
+        h("small", { class: `cx-cs-m${res?.res ? lateC : ""}`, ...(res?.res ? lateA : {}) }, line)), seatFx(u));
     })) : null;
     const seats = crowd ? [] : others.map((u) => {
       const ks = bjHandsOf(st, u);
-      return cxSeat(u, seatCls(u),
+      return withFx(cxSeat(u, seatCls(u),
         `${st.chips[u] ?? 0}`,
         ks.length ? ks.map((k) => {
           const hd = st.hands[k], tot = bjTot(hd.cards, hd.split);
@@ -12003,16 +12150,17 @@ function cardMemberBody(g) {
               : bjIsBJ(hd.cards, hd.split) ? h("div", { class: "cx-tag bj" }, "BLACKJACK")
               : h("div", { class: "cx-meta" }, `${tot} · ${hd.done && g.phase === "play" ? "✓" : "BET"} ${hd.bet}${hd.doubled ? "×2" : ""}`));
         }) : h("div", { class: "cx-meta" }, seatMeta(u)),
-        st.ins?.[u] ? h("div", { class: "cx-meta" }, `INS ${st.ins[u]}${st.insRes?.[u] != null ? ` · ${sgn(st.insRes[u])}` : ""}`) : null);
+        st.ins?.[u] ? h("div", { class: "cx-meta" }, `INS ${st.ins[u]}${st.insRes?.[u] != null ? ` · ${sgn(st.insRes[u])}` : ""}`) : null), seatFx(u));
     });
     out.push(h("section", { class: `cx-table${crowd ? " crowd" : ""}` }, crowdEl,
       cxFelt(seats, h("div", { class: "cx-mid" },
         betNow ? h("div", { class: `cx-chip${cxOnce(`c${g.id}.${st.round}.${betNow}`) ? " pop" : ""}`, "aria-label": `賭け ${betNow}枚` }, String(betNow)) : h("div", { class: "cx-chip blank" }, "BET"),
         settled.length ? h("div", { class: `cx-sum ${sum > 0 ? "plus" : sum < 0 ? "minus" : ""}${cxOnce(`s${g.id}.${st.round}`) ? " pop" : ""}${lateC}`, ...lateA }, `${sgn(sum)} `, h("small", null, U)) : null,
         st.ins?.[uid] ? h("div", { class: "cx-note" }, `INS ${st.ins[uid]}${st.insRes?.[uid] != null ? ` · ${sgn(st.insRes[uid])}` : ""}`) : null),
-        h("div", { class: `cx-dealer${!hide && bjIsBJ(st.dealer ?? []) ? " is-bj" : ""}`, ...(late ? { style: `--bjd:${late}ms` } : {}) },
+        (() => { const dBust = !hide && (st.dealer?.length ?? 0) > 2 && bjValue(st.dealer).total > 21, dfx = dBust ? fallFx(`bust:${g.id}:${st.round}:dealer`, true, late) : { cls: "", style: "" };
+          return h("div", { class: `cx-dealer${!hide && bjIsBJ(st.dealer ?? []) ? " is-bj" : ""}${dBust ? " is-bust" : ""}${dfx.cls}`, ...(late || dfx.style ? { style: `${late ? `--bjd:${late}ms;` : ""}${dfx.style}` } : {}) },
           h("div", { class: `cx-total${lateC}`, ...lateA }, h("small", null, "DEALER"), dealer.length ? (hide ? bjTot([st.dealer[0]]) : bjIsBJ(st.dealer) ? "BLACKJACK" : bjTot(st.dealer)) : "—"),
-          dFan)),
+          dFan); })()),
       h("div", { class: "cx-me" }, hands, ctl)));
     return out;
   }
@@ -12322,8 +12470,49 @@ function gameForwardFn(g) {
   if (g.kind === "dfg" && g.phase === "result") return dfgNextRound;
   return null;
 }
+// 管理者がディーラーのときの「進める」（配る・保険を締め切る・カードを開ける・交換を締め切る・番の人をパス・次の回へ）
+function cardForwardFn(g) {
+  if (g.kind === "bj") return g.phase === "bet" ? bjDeal : g.phase === "insure" ? (x, s) => bjInsure(x, s, true) : g.phase === "play" ? bjReveal : g.phase === "result" ? bjNext : null;
+  return g.phase === "exchange" ? (x, s) => dfgExchangeDone(x, s, true) : g.phase === "play" ? (x, s) => dfgMove(x, s, true) : g.phase === "result" ? dfgNextRound : null;
+}
+// 管理者の画面の「ディーラーの操作」（大きいボタン1つと、いまの状況）
+function cardDealerBox(g) {
+  const label = cardDealerLabel(g), fn = cardForwardFn(g);
+  if (!label || !fn) return null;
+  let sub = null, ready = true;
+  if (g.kind === "bj") {
+    const st = g.bj, r = `r${st.round}`;
+    if (g.phase === "bet" || g.phase === "insure") {
+      const k = g.phase === "bet" ? "b" : "i", done = g.actors.filter((u) => cardAct(g, k, u, r) != null), wait = g.actors.filter((u) => cardAct(g, k, u, r) == null);
+      ready = !wait.length;
+      sub = `${g.phase === "bet" ? "賭けた人" : "選んだ人"} ${done.length} / ${g.actors.length}人${wait.length ? ` ・ まだ：${gNames(wait)}` : " ・ 全員そろいました"}`;
+    } else if (g.phase === "play") {
+      const left = [...new Set(Object.keys(st.hands ?? {}).map(bjOwn))].filter((u) => bjCur(st, u));
+      ready = !left.length;
+      sub = left.length ? `まだ選んでいる人：${gNames(left)}（押すとスタンドになります）` : "全員の番が終わりました";
+    }
+  } else if (g.phase === "exchange") {
+    const wait = g.dfg.exchange.filter((x) => cardAct(g, "x", x.to, `x${g.dfg.round}`) == null).map((x) => x.to);
+    ready = !wait.length;
+    sub = wait.length ? `まだ選んでいる人：${gNames(wait)}（押すと一番弱いカードを返します）` : "全員選び終わりました";
+  } else if (g.phase === "play") { ready = false; sub = "番は参加者の操作で進みます。止まってしまったときだけ押してください。"; }
+  const b = h("button", { class: `btn-filled gp-dealer-btn${ready ? " need" : ""}` }, label);
+  b.addEventListener("click", () => { if (GBUSY.has(g.id)) return; GBUSY.add(g.id); guard(b, () => gameStep(g.id, g.step ?? 0, fn, cardNeed(g))).finally(() => GBUSY.delete(g.id)); });
+  return h("div", { class: "gp-dealer" }, h("div", { class: "gp-dealer-head" }, h("b", null, "ディーラーの操作"), sub ? h("small", null, sub) : null), b);
+}
+// 場面の操作バー用の短い名前
+const cardDealerShort = (g) => (g.kind === "bj" ? { bet: "配る", insure: "保険を締切", play: "カードを開ける", result: "次の回へ" } : { exchange: "交換を締切", play: "パスにする", result: "次の回へ" })[g.phase] ?? null;
+// ディーラーの操作のボタン名（管理者がディーラーのとき）
+function cardDealerLabel(g) {
+  if (g.kind === "bj") {
+    const st = g.bj, left = g.phase === "play" ? [...new Set(Object.keys(st.hands ?? {}).map(bjOwn))].filter((u) => bjCur(st, u)) : [];
+    return g.phase === "bet" ? "締め切って配る" : g.phase === "insure" ? "保険を締め切る" : g.phase === "play" ? (left.length ? "締め切ってディーラーのカードを開ける" : "ディーラーのカードを開ける") : g.phase === "result" ? "次の回へ" : null;
+  }
+  return g.phase === "exchange" ? "交換を締め切る" : g.phase === "play" ? (g.dfg.field ? `${memberName(g.dfg.turn)}さんをパスにする` : `${memberName(g.dfg.turn)}さんの一番弱いカードを出す`) : g.phase === "result" ? "次の回へ（カードを配る）" : null;
+}
 async function gameForward(g) {
   if (!gLive(g)) return;
+  if (isCardKind(g.kind) && cardManual(g.opts)) { const f = cardForwardFn(g); if (f) await gameStep(g.id, g.step ?? 0, f, cardNeed(g)); return; }
   const fn = gameForwardFn(g);
   if (fn) { await gameStep(g.id, g.step ?? 0, fn); return; }
   if (isCardKind(g.kind)) await gameSetEnds(g, Date.now() - 1500, null); // 時間切れの扱い（賭けなし・自動でパス など）で次へ
@@ -12353,7 +12542,7 @@ function gameCtlBar(g, compact = false) {
   return h("div", { class: `gp-ctl${compact ? " compact" : ""}` },
     h("div", { class: "gp-ctl-row" },
       b("◀ 戻す", () => gameUndo(S.games.get(g.id) ?? g), "btn-small gp-back", !gameCanUndo(g), "1つ前の場面に戻す"),
-      b("進める ▶", () => gameForward(S.games.get(g.id) ?? g), "btn-small gp-fwd", !live, "次の場面へ進める")),
+      b(`${cardManual(g.opts) && isCardKind(g.kind) ? cardDealerShort(g) ?? "進める" : "進める"} ▶`, () => gameForward(S.games.get(g.id) ?? g), "btn-small gp-fwd", !live, "次の場面へ進める")),
     (g.endsAt || g.paused != null) && live ? h("div", { class: "gp-ctl-row time" }, h("span", { class: "gp-ctl-lb" }, "時間"),
       b(g.paused != null ? "▶ 再開" : "止める", () => gamePause(S.games.get(g.id) ?? g), `btn-small gp-pause${g.paused != null ? " on" : ""}`, false, g.paused != null ? "タイマーを再開する" : "タイマーを止める"),
       b("+10秒", () => gameAddTime(S.games.get(g.id) ?? g, 10), "btn-small", false, "残り時間を10秒増やす"),
@@ -12598,7 +12787,7 @@ function paintGameLive() {
       cxTop(g, close),
       h("div", { class: "gl-phase cx-phase", title: `${g.title} ・ ${gPhaseText(g)}` }, g.demo ? h("b", { class: "cx-demo" }, "DEMO") : null, h("span", null, cardPhaseShort(g)), gTimer(g)),
       // 賭け・勝負中・大富豪の番は、下の台に操作と説明があるので、上の長い説明は出さない
-      ["bet", "play", "insure"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext ? "NEXT ▸ まもなく次の回" : "NEXT ▸ 管理者が進めるまで待機"),
+      ["bet", "play", "insure"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !cardManual(g.opts) ? "NEXT ▸ まもなく次の回" : cardManual(g.opts) ? "NEXT ▸ ディーラーが進めるまで待機" : "NEXT ▸ 管理者が進めるまで待機"),
       gameMemberBody(g))));
     cxFit(el, el.firstElementChild); cxRestore(el, logScroll, sheetScroll, scroll);
     return;
@@ -12632,7 +12821,8 @@ function gameStageBody(g) {
     acted != null ? h("div", { class: "st-progress" }, h("div", { class: "st-bar" }, h("span", { style: `width:${g.actors.length ? (acted / g.actors.length) * 100 : 0}%` })),
       h("span", null, `選び終わった人 ${acted} / ${g.actors.length}人`)) : null,
     last ? h("div", { class: `st-news${fresh ? " enter" : ""}` }, last.text) : null,
-    h("div", { class: "st-players" }, g.players.map((u) => h("span", { class: `st-player${out(u) ? " out" : ""}` }, out(u) ? h("i", null, g.kind === "ng" ? "OUT" : "✝") : null, memberName(u)))),
+    h("div", { class: "st-players" }, g.players.map((u) => { const fx = gFallFx(g, u, "st:"); return h("span", { class: `st-player${out(u) ? " out" : ""}${fx.cls}`, style: fx.style }, out(u) ? h("i", null, g.kind === "ng" ? "OUT" : "✝") : null, memberName(u)); })),
+    (gFallSeen(g, "st:"), null),
     gRevealList(g),
     h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 6)),
   ];
@@ -12759,16 +12949,18 @@ function partyMemberBody(g) {
   const others = sec?.others ?? {};
   // テーブルの席
   const seats = cxAfter(g.players, uid).map((u) => {
-    const out = gDead(g, u);
+    const out = gDead(g, u), fx = gFallFx(g, u), fa = fx.style ? { style: fx.style } : {};
     const rv = g.phase === "ended" && g.reveal?.[u] != null ? h("div", { class: "cx-meta rv" }, String(g.reveal[u]), minors.has(u) ? h("em", null, " ★") : null) : null;
     if (g.kind === "ng") {
-      return gSeat("div", u, ` g-ng-row${out ? " out" : ""}`, {}, out ? "OUT" : null,
+      return gSeat("div", u, ` g-ng-row${out ? " out" : ""}${fx.cls}`, fa, out ? "OUT" : null,
         h("div", { class: "g-word cx-word" }, g.phase === "ended" ? g.reveal?.[u] ?? others[u] ?? "?" : others[u] ?? "…"),
         live ? h("button", { class: `cx-out${out ? " on ghost-out" : ""}`, "aria-label": out ? `${memberName(u)}のアウトを戻す` : `${memberName(u)}をアウトにする`, onclick: () => ngToggleOut(g, u) }, out ? "↺" : "OUT") : null);
     }
     if (canPick && candSet.has(u)) return gSeat("button", u, ` pick gl-choice${mine === u ? " on" : ""}`, { type: "button", "aria-pressed": String(mine === u), onclick: () => gameChoose(g, u) }, mine === u ? "✓" : null, rv);
-    return gSeat("div", u, out ? " out" : "", {}, out ? "✕" : null, rv);
+    return gSeat("div", u, `${out ? " out" : ""}${fx.cls}`, fa, out ? "✕" : null, rv);
   });
+  const meFx = gFallFx(g, uid);
+  gFallSeen(g);
   // 真ん中
   const ic = g.phase === "ended" ? "★" : g.kind === "wolf" ? (g.phase === "night" ? "☾" : g.phase === "day" ? "☀" : "✋") : g.kind === "word" ? (g.phase === "talk" ? "…" : g.phase === "guess" ? "?" : "✋") : g.kind === "ng" ? "NG" : "#";
   const hub = h("div", { class: `cx-hub ph-${g.phase}` }, h("div", { class: "cx-hub-ic" }, ic),
@@ -12791,11 +12983,13 @@ function partyMemberBody(g) {
     const turn = (show) => { if (show) GV.show.add(g.id); else GV.show.delete(g.id); GV.flipN.set(g.id, (GV.flipN.get(g.id) ?? 0) + 1); paintGameLive(); };
     // まだ一度も自分の札を見ていないときは、薄紫で「ここを押す」と誘導する
     const needSee = !shown && live && fn === 0;
-    me.push(h("div", { class: `gl-secret cx-secret${shown ? " open" : " covered"}${flipNow ? (shown ? " flip" : " flip-back") : ""}${needSee ? " need" : ""}` },
+    // 自分が処刑・襲撃されたときは、自分の札も2秒光らせる（処刑でそのままゲームが終わったときも）
+    const secFx = gDead(g, uid) && !flipNow ? meFx : { cls: "", style: "" };
+    me.push(h("div", { class: `gl-secret cx-secret${shown ? " open" : " covered"}${flipNow ? (shown ? " flip" : " flip-back") : ""}${needSee ? " need" : ""}${secFx.cls}`, ...(secFx.style ? { style: secFx.style } : {}) },
       shown ? body : h("button", { class: "gl-reveal-btn", onclick: () => turn(true) }, icon("lock"), h("span", null, "TAP TO REVEAL"), h("small", null, "周りに見られないように")),
       shown && g.phase !== "ended" ? h("button", { class: "text-btn gl-hide", onclick: () => turn(false) }, "HIDE") : null));
   } else {
-    me.push(h("div", { class: `cx-mycard${gDead(g, uid) ? " out" : ""}` }, h("div", { class: "cx-sc-en" }, "YOUR NG WORD"), h("div", { class: "gl-big" }, g.phase === "ended" ? g.reveal?.[uid] ?? "?" : "？？？"),
+    me.push(h("div", { class: `cx-mycard${gDead(g, uid) ? " out" : ""}${meFx.cls}`, style: meFx.style }, h("div", { class: "cx-sc-en" }, "YOUR NG WORD"), h("div", { class: "gl-big" }, g.phase === "ended" ? g.reveal?.[uid] ?? "?" : "？？？"),
       gDead(g, uid) ? h("div", { class: "cx-tag" }, "OUT") : null));
   }
   // 操作
@@ -12809,7 +13003,7 @@ function partyMemberBody(g) {
     } else me.push(h("p", { class: "cx-note" }, "少数派がお題を当てています…"));
   }
   if (canPick) me.push(h("div", { class: `cx-label${mine ? "" : " need"}` }, title), h("p", { class: `cx-note${mine ? "" : " need"}` }, mine ? `✓ ${memberName(mine)} ・ 締切まで変更可` : "▲ 薄紫の人をタップ"));
-  else if (g.kind === "wolf" && live && gDead(g, uid)) me.push(h("div", { class: "gl-dead cx-note" }, "✕ 死亡 ・ 話さずに見守る"));
+  else if (g.kind === "wolf" && live && gDead(g, uid)) me.push(h("div", { class: `gl-dead cx-note${meFx.cls}`, style: meFx.style }, "✕ 死亡 ・ 話さずに見守る"));
   else if (g.kind === "ng" && live) me.push(h("p", { class: "cx-note" }, "言った人の OUT をタップ"));
   const k = seats.length;
   return [h("section", { class: `cx-table gx gx-${g.kind}${canPick && !mine ? " need" : ""}` },
@@ -13327,7 +13521,7 @@ function gamesAdmin() {
   const numOpts = group("設定", [field("司会を自動で進行する", numAuto), field("制限時間", numLimit), field("配る数字の範囲", numMax), h("div", { class: "cell" }, theme)],
     "数字を、重ならないように1人に1つずつ配ります。自動の司会がオンのときは、制限時間になると答え合わせまで進みます。");
   // ブラックジャック
-  const cardNote = "この画面を開いている管理者の端末がディーラー（進行役）になり、配る・判定する・次の回へ進めるのを自動で行います。遊んでいる間は、管理者の端末でアプリを開いたままにしてください（閉じると止まり、開き直すと続きから進みます）。";
+  const cardNote = "「自動」：この画面を開いている管理者の端末がディーラー（進行役）になり、配る・判定する・次の回へ進めるのを自動で行います。「管理者が手で進める」：配る・ディーラーのカードを開ける・次の回へ などを管理者がボタンで進めます（参加者の持ち時間をなしにすると、ディーラーが締め切るまで待ちます）。どちらの場合も、遊んでいる間は管理者の端末でアプリを開いたままにしてください（閉じると止まり、開き直すと続きから進みます）。";
   const bjRounds = mins([3, 5, 7, 10, 15, 20], 5, "回"), bjChips = mins([50, 100, 200, 500, 1000], 100, "枚");
   const bjBet = mins([10, 15, 20, 30, 45, 60], 20, "秒"), bjPlay = mins([20, 30, 45, 60, 90], 45, "秒"), bjInsSec = mins([10, 15, 20, 30], 15, "秒");
   const bjDecks = mins([1, 2, 4, 6, 8], 4, "組"), bjShuffle = pick([["low", "山札が少なくなったら"], ["each", "毎回"]], "low");
@@ -13340,13 +13534,15 @@ function gamesAdmin() {
   const bjDas = toggle(true), bjIns = toggle(true), bjSurr = toggle(false), bjAuto = toggle(true);
   const bjCharlie = pick([[0, "なし"], [5, "5枚"], [6, "6枚"], [7, "7枚"]], 0);
   const bjResult = mins([5, 8, 12, 20], 8, "秒");
+  const dealerPick = () => pick([["auto", "自動（この端末がディーラー）"], ["manual", "管理者が手で進める"]], "auto");
+  const bjDealer = dealerPick(), bjTimer = toggle(true), dfgDealer = dealerPick(), dfgTimer = toggle(true);
   const bjOpts = h("div", null,
     group("ブラックジャックの設定", [field("遊ぶ回数", bjRounds), field("はじめのチップ（ゲーム内だけのチップのとき）", bjChips), field("使うトランプの組数", bjDecks), field("トランプを混ぜ直す", bjShuffle),
       field("ディーラーの引き方", bjH17), field("ブラックジャック（最初の2枚で21）の配当", bjPay), field("チャーリー（この枚数で21以下なら勝ち）", bjCharlie)]),
     group("賭け", [field("賭けの最小", bjMin), field("賭けの最大", bjMax), field("賭けを選ばなかったとき", bjNoBet)]),
     group("できること", [field("ダブル（賭けを2倍にして1枚だけ引く）", bjDouble), field("スプリット（同じ数字の2枚を2つの手に分ける）", bjSplit), field("スプリットのあとのダブル", bjDas),
       field("保険（ディーラーの表が A のとき）", bjIns), field("降りる（最初の2枚で、賭けの半分を返してもらう）", bjSurr)]),
-    group("進行", [field("賭けを選ぶ時間", bjBet), field("1回の勝負の時間", bjPlay), field("保険を選ぶ時間", bjInsSec), field("結果のあと自動で次の回へ進む", bjAuto), field("結果を見せる時間", bjResult)],
+    group("進行", [field("ディーラー（進行役）", bjDealer), field("参加者の持ち時間", bjTimer), field("賭けを選ぶ時間", bjBet), field("1回の勝負の時間", bjPlay), field("保険を選ぶ時間", bjInsSec), field("結果のあと自動で次の回へ進む", bjAuto), field("結果を見せる時間", bjResult)],
       `${cardNote} 時間内に選ばなかった人はスタンドになります。Aのスプリットは1枚ずつ配り、スプリットした手の21はブラックジャックになりません。`));
   // 大富豪
   const dfgRounds = mins([1, 2, 3, 4, 5, 6, 8, 10], 3, "回"), dfgTurn = mins([15, 20, 30, 45, 60, 90], 45, "秒"), dfgJokers = mins([0, 1, 2], 1, "枚");
@@ -13365,7 +13561,7 @@ function gamesAdmin() {
       field("9リバース（9を出すと順番が逆回り）", dfgNine), field("都落ち（前の回の大富豪が1番にあがれないと最下位）", dfgMiyako), field("反則上がり（ジョーカー・2・8などであがると最下位）", dfgFoul)]),
     group("カードの交換（2回目から）", [field("交換する", dfgEx), field("大富豪と大貧民", dfgExBig), field("富豪と貧民", dfgExSmall), field("お返しを選ぶ時間", dfgExSec)],
       "貧しい人からは一番強いカードを自動で渡し、お金持ちは好きなカードを同じ枚数返します。"),
-    group("進行", [field("1人の持ち時間", dfgTurn), field("結果のあと自動で次の回へ進む", dfgAuto), field("結果を見せる時間", dfgResult)],
+    group("進行", [field("ディーラー（進行役）", dfgDealer), field("参加者の持ち時間", dfgTimer), field("1人の持ち時間", dfgTurn), field("結果のあと自動で次の回へ進む", dfgAuto), field("結果を見せる時間", dfgResult)],
       `${cardNote} 持ち時間が過ぎると自動でパスします（場が空のときは一番弱いカードを出します）。反則上がりになるのは、最後に出したカードにジョーカー・一番強い数字（ふだんは2、強さが逆のときは3）・8（8切りあり）・♠3（スペ3返し）が入っているときです。`));
   // ポイント（全ゲーム共通。数字ならべは勝ち負けがないので使わない）
   const ptPay = pick([["", "使わない"], ["user", "個人のポイント"], ["team", "チームのポイント"]], "");
@@ -13481,8 +13677,14 @@ function gamesAdmin() {
     dfgStairsMin.closest(".cell").hidden = !dfgStairs.checked;
     if (!dfgStairs.checked) dfgStairsRev.closest(".cell").hidden = true;
     dfgExBig.closest(".cell").hidden = dfgExSmall.closest(".cell").hidden = dfgExSec.closest(".cell").hidden = !dfgEx.checked;
-    bjResult.closest(".cell").hidden = !bjAuto.checked;
-    dfgResult.closest(".cell").hidden = !dfgAuto.checked;
+    // 管理者がディーラーのときは、結果のあとも管理者が「次の回へ」を押す。持ち時間なしなら時間の欄は出さない
+    const bjMan = bjDealer.value === "manual", dfgMan = dfgDealer.value === "manual";
+    bjTimer.closest(".cell").hidden = !bjMan; dfgTimer.closest(".cell").hidden = !dfgMan;
+    bjAuto.closest(".cell").hidden = bjMan; dfgAuto.closest(".cell").hidden = dfgMan;
+    bjResult.closest(".cell").hidden = bjMan || !bjAuto.checked;
+    dfgResult.closest(".cell").hidden = dfgMan || !dfgAuto.checked;
+    for (const x of [bjBet, bjPlay, bjInsSec]) x.closest(".cell").hidden = bjMan && !bjTimer.checked;
+    dfgTurn.closest(".cell").hidden = dfgMan && !dfgTimer.checked;
     bjDas.closest(".cell").hidden = bjSplit.value === "0" || bjDouble.value === "off";
     ngOne.closest(".cell").hidden = !ngAuto.checked;
     const n = chosen().length;
@@ -13547,11 +13749,11 @@ function gamesAdmin() {
     else if (k === "ng") o = { auto: ngAuto.checked, limitMin: N(ngLimit), endAtOne: ngOne.checked, words: [...new Set(ngList.value.split(/\r?\n/).map((x) => x.trim().slice(0, 30)).filter(Boolean))] };
     else if (k === "bj") o = { rounds: N(bjRounds), chips: N(bjChips), decks: N(bjDecks), reshuffle: bjShuffle.value, h17: bjH17.value === "1", pay: N(bjPay), charlie: N(bjCharlie),
       betMin: N(bjMin), betMax: N(bjMax), noBet: N(bjNoBet) === 1 ? N(bjMin) : N(bjNoBet), double: bjDouble.value, split: N(bjSplit), das: bjDas.checked, insurance: bjIns.checked, surrender: bjSurr.checked,
-      betSec: N(bjBet), playSec: N(bjPlay), insSec: N(bjInsSec), autoNext: bjAuto.checked, resultSec: N(bjResult), ...(plan.startChips ? { startChips: plan.startChips } : {}) };
+      betSec: N(bjBet), playSec: N(bjPlay), insSec: N(bjInsSec), autoNext: bjAuto.checked, resultSec: N(bjResult), dealer: bjDealer.value, dealerTimer: bjTimer.checked, ...(plan.startChips ? { startChips: plan.startChips } : {}) };
     else if (k === "dfg") o = { rounds: N(dfgRounds), turnSec: N(dfgTurn), jokers: N(dfgJokers), score: dfgScore.value, eight: dfgEight.checked, revolution: dfgRev.checked, revN: N(dfgRevN),
       stairs: dfgStairs.checked, stairsMin: N(dfgStairsMin), stairsRev: N(dfgStairsRev), spade3: dfgSpade3.checked, jback: dfgJback.checked, shibari: dfgShibari.checked, five: dfgFive.checked,
       seven: dfgSeven.checked, ten: dfgTen.checked, nine: dfgNine.checked, miyako: dfgMiyako.checked, foul: dfgFoul.checked,
-      exchange: dfgEx.checked, exBig: N(dfgExBig), exSmall: N(dfgExSmall), exSec: N(dfgExSec), autoNext: dfgAuto.checked, resultSec: N(dfgResult) };
+      exchange: dfgEx.checked, exBig: N(dfgExBig), exSmall: N(dfgExSmall), exSec: N(dfgExSec), autoNext: dfgAuto.checked, resultSec: N(dfgResult), dealer: dfgDealer.value, dealerTimer: dfgTimer.checked };
     else o = { auto: numAuto.checked, limitMin: N(numLimit), max: N(numMax), theme: theme.value.trim() };
     if (plan.pt) o.pt = plan.pt;
     o.logPub = logSet[k] ?? { on: false, cats: logCatKeys(k) };
@@ -13571,8 +13773,9 @@ function gamesAdmin() {
     if (plan.err) return toast(plan.err, true);
     const o = buildOpts(k, n, plan);
     const ptNote = plan.pt ? `\n\n${gPtText({ kind: k, opts: o })}` : "";
-    if (!confirm((k === "bj" ? `ブラックジャックを ${n}人で始めます。遊ぶ人のスマホに賭けの画面が出ます。この端末がディーラーになるので、終わるまでアプリを開いたままにしてください。よろしいですか？`
-      : k === "dfg" ? `大富豪を ${n}人で始めます。遊ぶ人のスマホに手札が届きます。この端末が進行役になるので、終わるまでアプリを開いたままにしてください。よろしいですか？`
+    const man = cardManual(o) ? "あなたがディーラーとして、配る・カードを開ける・次の回へ をボタンで進めます。" : "";
+    if (!confirm((k === "bj" ? `ブラックジャックを ${n}人で始めます。遊ぶ人のスマホに賭けの画面が出ます。${man || "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
+      : k === "dfg" ? `大富豪を ${n}人で始めます。遊ぶ人のスマホに手札が届きます。${man || "この端末が進行役になるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
         : `${GAME_KINDS[k].label}を ${n}人で始めます。遊ぶ人のスマホに${k === "wolf" ? "役職" : k === "num" ? "数字" : k === "ng" ? "NGワード" : "お題"}が届きます。よろしいですか？`) + ptNote)) return;
     // 読み上げは、ボタンを押した流れで一度鳴らしておかないと、iPhone などでは鳴らない
     if (o.auto) { GSPEAK.on = true; }
@@ -13592,6 +13795,7 @@ function gamesAdmin() {
     if (g.kind === "wolf") next = g.phase === "night" ? btn("朝にする（夜の結果を出す）", wolfMorning) : g.phase === "day" ? btn("話し合いを終えて投票へ", wolfToVote) : g.phase === "vote" ? btn("開票する", wolfTally) : null;
     else if (g.kind === "word") next = g.phase === "talk" ? btn("話し合いを終えて投票へ", wordToVote) : g.phase === "vote" ? btn("開票する", wordTally)
       : g.phase === "guess" ? h("div", { class: "gp-actions" }, btn("締め切って判定する", wordGuessEnd), btn("当たりにする（逆転）", wordGuessHit, "btn-small"), btn("はずれにする", wordGuessMiss, "btn-small")) : null;
+    else if (isCardKind(g.kind) && cardManual(g.opts)) next = null; // 下の「ディーラーの操作」で進める
     else if (isCardKind(g.kind) && g.phase === "result") next = btn("次の回へ", g.kind === "bj" ? bjNext : dfgNextRound);
     else if (gLive(g) && !isCardKind(g.kind)) next = btn("終了して答え合わせ", g.kind === "ng" ? ngEnd : numEnd);
     const ans = (u) => {
@@ -13616,9 +13820,12 @@ function gamesAdmin() {
       h("p", { class: "gl-prompt" }, gPrompt(g)),
       !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。管理者の端末（この操作用の画面か、表示用画面）のどれか1台でアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       gPtCard(g),
-      isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "管理者の端末がディーラー（進行役）です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
+      isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), cardManual(g.opts)
+        ? "あなた（管理者）がディーラーです。下の「ディーラーの操作」のボタンで、配る・カードを開ける・次の回へ を進めてください。参加者のヒット・スタンドなどはこの端末が反映するので、この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください。"
+        : "管理者の端末がディーラー（進行役）です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       isCardKind(g.kind) ? h("div", { class: "gl-card" }, g.kind === "bj" ? bjTable(g) : dfgTable(g)) : null,
       g.actKey && !isCardKind(g.kind) ? h("div", { class: "gp-progress" }, `選び終わった人 ${acted.length} / ${g.actors.length}人`, waiting.length ? h("small", null, `まだ：${gNames(waiting)}`) : null) : null,
+      isCardKind(g.kind) && cardManual(g.opts) && gLive(g) ? cardDealerBox(g) : null,
       h("div", { class: "gp-actions" }, next,
         h("button", { class: "btn-small", onclick: () => openGameStage(g) }, icon("arrows"), "表示用画面を開く（PC・全画面）"),
         h("button", { class: `btn-small${GSPEAK.on ? " on" : ""}`, onclick: () => { GSPEAK.on = !GSPEAK.on; if (GSPEAK.on) gameSpeak("読み上げをオンにしました"); else window.speechSynthesis?.cancel(); scheduleRender(); } }, GSPEAK.on ? "読み上げ：オン" : "読み上げ：オフ")),
