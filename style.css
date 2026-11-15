@@ -3567,6 +3567,15 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
   66% { transform: perspective(600px) translateY(-7px) rotateY(90deg) scale(1.12); filter: brightness(1); }
   80% { filter: brightness(1.45); }
   100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
+/* ディーラーのカードは、上の「DEALER」の文字の上を通らないように、右横（カードの山）から滑ってくる */
+@keyframes cxDealBJd {
+  0% { opacity: 0; transform: translate(44px, 0) rotate(8deg) scale(.82); }
+  18% { opacity: 1; }
+  30% { transform: translate(0, 0) rotate(0) scale(1); }
+  42% { transform: perspective(600px) translateY(-4px) rotateY(0) scale(1.05); }
+  66% { transform: perspective(600px) translateY(-5px) rotateY(90deg) scale(1.1); filter: brightness(1); }
+  80% { filter: brightness(1.45); }
+  100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
 @keyframes cxFlipUpBJ {
   0% { transform: perspective(600px) rotateY(0) scale(1); }
   14% { transform: perspective(600px) translateY(-4px) rotateZ(-2deg) scale(1.04); }
@@ -3583,9 +3592,11 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .cx-fan.bj-slow .pc.flipup:not(.back)::after { animation: cxBackOffBJ2 1.5s step-end both; animation-delay: inherit; }
 .cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-dealer .cx-fan.bj-slow .pc.deal { animation-name: cxDealBJd; }
 @media (prefers-reduced-motion: reduce) {
   .cx-fan.bj-slow .pc.deal, .cx-fan.bj-slow .pc.flipup, .cx-hand.is-bj .cx-fan.bj-slow .pc.deal, .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: none; }
   .cx-fan.bj-slow .pc.deal::after, .cx-fan.bj-slow .pc.flipup::after { display: none; }
+  .cx-dealer .cx-fan.bj-slow .pc.deal { animation: none; }
 }
 
 /* v94 脱落・その回にやられた人・バーストを、その瞬間に約2秒のモーションで目立たせる（赤く光って揺れてから、ふだんの「脱落」の見た目に落ち着く） */
