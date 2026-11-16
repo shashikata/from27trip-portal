@@ -2384,7 +2384,7 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v95"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v96"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -10996,7 +10996,10 @@ const gLive = (g) => !!g && g.phase !== "ended";
 // ev：あとで「履歴の再生」に使う、進行の区切り（公開してよい内容だけ。夜の行動などの秘密は入れない）
 const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
 const gNames = (uids) => (uids ?? []).map(memberName).join("・");
-const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => (b.no ?? 0) - (a.no ?? 0));
+// ゲームを始めた時刻。サーバーが付けた時刻（createdAt）を使う。no は始めた管理者の端末の時計なので、
+// その端末の時計がずれていると（例：PC の時計が遅れている）新しいゲームが古い扱いになり、参加者の画面が切り替わらなかった
+const gStart = (g) => ts(g.createdAt) || g.no || 0;
+const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => gStart(b) - gStart(a));
 const GV = { hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
@@ -12910,7 +12913,7 @@ function gRevealList(g) {
 function myGame() {
   if (S.isAdmin || !S.user) return null;
   const uid = S.user.uid;
-  return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || Date.now() - (g.no ?? 0) < 6 * 3600000)) ?? null;
+  return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || Date.now() - gStart(g) < 6 * 3600000)) ?? null;
 }
 // 観戦できるゲーム（遊ぶ人ではない参加者だけ）。進行中のもの。開いて見ている間は、終わってもそのまま出す
 const WATCH_NOTE = "オンにすると、遊ぶ人に選ばれていない参加者のスマホに「観戦する」ボタンが出て、いまの場面・残り時間・席（脱落した人）・ログを見られます。役職・お題・手札などの秘密は出ません。ログは「参加者へのログ」の設定に従います。ゲーム中に変えてもすぐ反映されます。";
