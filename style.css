@@ -3223,6 +3223,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 .cx-hub-t { font-size: 11px; font-weight: 700; letter-spacing: .16em; color: var(--label-2); max-width: 150px; overflow-wrap: anywhere; }
 .cx-hub-t small { display: block; font-size: 9.5px; color: var(--label-3); margin-bottom: 2px; }
 .gx-num .cx-hub-t { font-size: 13px; letter-spacing: .02em; color: var(--label); }
+.gx-num .cx-hub-scale { display: block; max-width: 150px; margin: 3px auto 0; font-size: 10.5px; font-weight: 500; line-height: 1.3; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 押せる席 */
 button.cx-seat { border: none; background: none; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 .cx-seat.gl-choice { min-height: 0; padding: 0; width: 100%; border-radius: 14px; box-shadow: none; flex-direction: column; justify-content: flex-start; }
@@ -3766,3 +3767,141 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .recv-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; }
 .recv-k { flex: none; color: var(--label-2); font-size: 14px; }
 .recv-v { text-align: right; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; min-width: 0; }
+/* v98 管理者：だれが操作を済ませたか（済み＝薄紫、まだ＝線だけ） */
+.gp-acts { margin: 12px 0; padding: 14px; border-radius: 16px; background: var(--cell); box-shadow: inset 0 0 0 1px var(--edge); }
+.gp-acts-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.gp-acts-head b { font-size: 15px; }
+.gp-acts-n { font-size: 14px; font-weight: 700; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.gp-acts.all .gp-acts-n { color: var(--accent); }
+.gp-acts-bar { height: 6px; margin: 10px 0 12px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.gp-acts-bar span { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
+.gp-acts-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.gp-act { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; max-width: 100%; padding: 6px 12px; border-radius: 999px; font-size: 14px; font-weight: 600;
+  color: var(--label-2); box-shadow: inset 0 0 0 1.5px var(--separator); }
+.gp-act i { font-style: normal; font-weight: 800; color: var(--label-3); }
+.gp-act-nm { overflow-wrap: anywhere; }
+.gp-act.done { color: var(--on-accent); background: var(--accent); box-shadow: none; }
+.gp-act.done i { color: var(--on-accent); }
+.gp-act small { font-size: 12px; font-weight: 700; opacity: .8; overflow-wrap: anywhere; }
+.gp-acts-note { margin: 10px 0 0; font-size: 12.5px; color: var(--label-2); }
+@media (prefers-reduced-motion: reduce) { .gp-acts-bar span { transition: none; } }
+/* v98 NGワード：人ごとに決める */
+.ng-assign { display: grid; gap: 8px; margin-top: 10px; }
+.ng-assign-row { display: grid; grid-template-columns: minmax(64px, 30%) 1fr; align-items: center; gap: 10px; }
+.ng-assign-nm { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.ng-assign-in { min-width: 0; width: 100%; }
+.ng-assign-btns { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+/* v98 NGワード：話題のお題（管理者の画面・テーブルの真ん中・表示用画面） */
+.ng-topic-cell { display: grid; gap: 10px; }
+.ng-topic-now { font-size: 18px; font-weight: 700; line-height: 1.4; color: var(--accent); overflow-wrap: anywhere; }
+.ng-topic-now.none { color: var(--label-3); font-size: 15px; }
+.ng-topic-btns { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.gx .cx-hub-t.cx-topic { max-width: 168px; font-size: 13.5px; line-height: 1.35; letter-spacing: .01em; color: var(--accent); }
+.gx .cx-hub-t.cx-topic small { letter-spacing: .16em; }
+.cx-topic.pop { animation: topicPop .6s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes topicPop { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: none; } }
+.st-topic { max-width: 900px; margin: 2vh auto 0; padding: 16px 22px; border-radius: 22px; background: rgba(162, 158, 255, .12); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .4); }
+.st-topic small { display: block; font-size: clamp(12px, 1.4vw, 16px); font-weight: 700; letter-spacing: .12em; color: var(--label-2); }
+.st-topic b { display: block; margin-top: 4px; font-size: clamp(22px, 3.6vw, 44px); line-height: 1.35; color: var(--accent); overflow-wrap: anywhere; }
+/* v98 終わったときの札（いちばん上に大きく） */
+.g-end { position: relative; width: min(100%, 520px); margin: 8px auto 0; padding: 20px 18px 18px; border-radius: 22px; text-align: center;
+  background: linear-gradient(180deg, rgba(162, 158, 255, .2), rgba(162, 158, 255, .06)); box-shadow: inset 0 0 0 1.5px rgba(162, 158, 255, .55); }
+.g-end.pop { animation: gEndIn .7s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes gEndIn { from { opacity: 0; transform: translateY(14px) scale(.96); } to { opacity: 1; transform: none; } }
+.g-end-top { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.g-end-ic { font-size: 26px; line-height: 1; color: var(--accent); }
+.g-end-top b { font-size: 28px; font-weight: 800; letter-spacing: .08em; color: #fff; }
+.g-end-top small { font-size: 13px; color: var(--label-2); }
+.g-end-me { margin: 14px auto 0; padding: 10px 12px; border-radius: 16px; background: rgba(0, 0, 0, .35); max-width: 280px; }
+.g-end-me > small { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: .1em; color: var(--label-2); }
+.g-end-big { font-size: 40px; font-weight: 800; line-height: 1.15; color: #fff; font-variant-numeric: tabular-nums; }
+.g-end.win .g-end-big { color: var(--accent); }
+.g-end.lose .g-end-big { color: var(--label-2); }
+.g-end-sub { font-size: 14px; font-weight: 600; color: var(--label); }
+/* 最終結果（「最後まで残ったのは〜」など）は薄紫で大きく */
+.g-end-text { margin: 14px 0 0; font-size: 18px; font-weight: 800; line-height: 1.5; color: var(--accent); overflow-wrap: anywhere; }
+.g-end-rank { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 6px; text-align: left; }
+.g-end-rank li { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 12px; background: rgba(255, 255, 255, .05); font-size: 15px; }
+.g-end-rank li.top { background: rgba(162, 158, 255, .22); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .5); }
+.g-end-rank li.top b, .g-end-rank li.top .g-end-pl { color: var(--accent); }
+.g-end-rank li.me { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, .5); }
+.g-end-rank li.top.me { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.g-end-pl { font-weight: 800; color: var(--label-2); font-variant-numeric: tabular-nums; }
+.g-end-nm { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.g-end-nm em { margin-left: 6px; font-style: normal; font-size: 11px; font-weight: 700; color: var(--label-2); }
+.g-end-rank b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.g-end-home { margin-top: 16px; width: 100%; max-width: 280px; }
+.g-end-last { margin-top: 18px; }
+.g-end-last > .gl-label { margin-bottom: 6px; }
+.st-inner .g-end { width: min(100%, 760px); margin-top: 2vh; }
+.st-inner .g-end-text { font-size: clamp(20px, 3vw, 36px); }
+.st-inner .g-end-rank li { font-size: clamp(15px, 1.8vw, 22px); }
+@media (prefers-reduced-motion: reduce) { .g-end.pop, .cx-topic.pop { animation: none; } }
+/* v98 管理者の画面：終わったあとの結果の文は薄紫で大きく */
+.gl-prompt.gp-final { padding: 14px 16px; border-radius: 16px; font-size: 18px; font-weight: 800; line-height: 1.5; color: var(--accent);
+  background: rgba(162, 158, 255, .12); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .45); }
+/* v98 大富豪：8切り・革命などの帯（BJ の黄色と分けて薄紫） */
+.dfg-flash .bj-flash-in { background: linear-gradient(90deg, transparent, rgba(22, 20, 52, .92) 16%, rgba(22, 20, 52, .92) 84%, transparent);
+  box-shadow: 0 1px 0 rgba(162, 158, 255, .8), 0 -1px 0 rgba(162, 158, 255, .8); }
+.dfg-flash b { background: linear-gradient(100deg, #A29EFF 30%, #FFFFFF 50%, #A29EFF 70%) 0 0 / 220% 100%; -webkit-background-clip: text; background-clip: text; }
+.dfg-flash small { color: #D9D7FF; font-size: 14px; }
+@media (max-width: 400px) { .dfg-flash b { font-size: 30px; letter-spacing: .08em; padding-left: .08em; } .dfg-flash.mine b { font-size: 34px; } }
+/* v98 並行で進めるゲーム：ほかのゲームで遊んでいる人の印・管理者の切り替えボタン */
+.pick.busy { box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .45); }
+.pick-note { font-size: 11px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+.busy-cell .text-btn { min-height: 32px; padding: 0; font-size: 14px; }
+.gp-switch { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.gp-switch::-webkit-scrollbar { display: none; }
+.gp-switch-k { flex: none; font-size: 12px; font-weight: 700; color: var(--label-2); letter-spacing: .06em; }
+.gp-switch-b { flex: none; display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; min-height: 44px; padding: 6px 14px; border-radius: 14px;
+  color: var(--label); background: var(--fill); box-shadow: inset 0 0 0 1px var(--edge); text-align: left; }
+.gp-switch-b b { font-size: 14px; }
+.gp-switch-b small { font-size: 11.5px; color: var(--label-2); }
+.gp-switch-b.on { color: var(--on-accent); background: var(--accent); box-shadow: none; }
+.gp-switch-b.on small { color: var(--on-accent); opacity: .8; }
+/* v98 数字ならべ：自分の順位を選ぶ・答え合わせの ○× ・これまでの回 */
+.num-board { max-width: 420px; margin: 0 auto; }
+.num-board-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.num-slot { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 6px 10px; border: 0; border-radius: 12px; text-align: left;
+  color: var(--label); background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px var(--edge); font: inherit; }
+button.num-slot { cursor: pointer; }
+.num-slot-n { flex: 0 0 auto; min-width: 26px; font-size: 18px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; color: var(--label-2); }
+.num-slot-who { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: 13.5px; font-weight: 600; }
+.num-slot-who i { font-style: normal; overflow-wrap: anywhere; }
+.num-slot-who i.me { color: var(--accent); }
+.num-slot-who small { font-size: 11.5px; font-weight: 500; color: var(--label-3); }
+.num-slot-x { flex: 0 0 auto; font-size: 10.5px; color: var(--label-2); }
+.num-slot.taken { background: rgba(255, 255, 255, .1); }
+.num-slot.taken:disabled { opacity: 1; cursor: default; color: var(--label); }
+.num-board-lost { margin: 8px 0 0; text-align: center; font-size: 12.5px; font-weight: 600; color: var(--orange); }
+.num-slot.on { background: rgba(162, 158, 255, .2); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.num-slot.on .num-slot-n { color: var(--accent); }
+.num-board-left { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--label-2); }
+.num-board-left.done { color: var(--accent); }
+.st-board .num-board { max-width: none; }
+.st-board .num-board-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.st-board .num-slot { min-height: 64px; }
+.st-board .num-slot-n { font-size: 26px; }
+.st-board .num-slot-who { font-size: 20px; }
+.num-judge { display: flex; flex-direction: column; align-items: center; gap: 4px; max-width: 340px; margin: 14px auto 0; padding: 12px 14px; border-radius: 14px;
+  background: rgba(162, 158, 255, .14); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .35); }
+.num-judge b { font-size: 22px; font-weight: 800; color: var(--accent); }
+.num-judge.ng { background: rgba(255, 95, 87, .1); box-shadow: inset 0 0 0 1px rgba(255, 95, 87, .32); }
+.num-judge.ng b { color: var(--red); }
+.num-judge small { font-size: 12.5px; color: var(--label-2); }
+.num-judge.pop { animation: correctPop .6s ease-out; }
+.num-ox { font-style: normal; font-weight: 800; }
+.num-ox.ok { color: var(--accent); }
+.num-ox.ng { color: var(--red); }
+.num-row b { display: inline-flex; align-items: baseline; gap: 8px; }
+.num-guess { font-size: 11.5px; font-weight: 500; color: var(--label-2); }
+.num-hist-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.num-hist-list li { padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, .04); box-shadow: inset 0 0 0 1px var(--edge); }
+.num-hist-h { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 6px; }
+.num-hist-h b { font-size: 13px; }
+.num-hist-h span { font-size: 12.5px; color: var(--label-2); }
+.num-hist-line { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 13px; }
+.num-hist-line span { display: inline-flex; align-items: baseline; gap: 4px; }
+.num-hist-line em { font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--label); }
+.num-hist-line i { font-style: normal; font-weight: 800; }
+@media (prefers-reduced-motion: reduce) { .num-judge.pop { animation: none; } }
