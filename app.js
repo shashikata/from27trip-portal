@@ -258,6 +258,7 @@ const S = {
   annLimit: 50,              // 参加者が読み込むお知らせの件数（「過去の分を読み込む」で増える）
   logLimit: 150,             // 参加者が読み込むポイント履歴の件数
   meta: {},                  // クエリごとの fromCache / hasPendingWrites
+  listenErr: {},             // v96 受け取りでエラーになったクエリ（設定の「受信の確認」に出す）
   tab: "home",
   sheet: null,               // PC 版で開いている小窓 { key, title, view }
 };
@@ -298,11 +299,13 @@ function listen(key, ref, onData) {
       // （起動直後は受信の数だけこれが届くので、毎回すべて描き直すと重い）
       if (!changed && prev && prev.pending === meta.pending) { onData(snap); scheduleRender("status"); return; }
       DATA_VER++;
+      delete S.listenErr[key];
       onData(snap);
       scheduleRender(metaChanged ? "all" : RENDER_KIND[key] ?? "all");
     },
     (err) => {
       console.warn(`[${key}]`, err.code, err.message);
+      S.listenErr[key] = err.code ?? "error";
       DATA_VER++;
       onData(null, err);
       scheduleRender();
@@ -932,6 +935,42 @@ const teamName = (teamId) => {
 const teamOptions = () => sortedSets().flatMap((s) => teamsInSet(s.id).map((t) => ({ value: t.id, label: t.name, group: s.name })));
 
 const ts = (x) => (x?.toMillis ? x.toMillis() : 0);
+// v96 端末の時計のずれ：このサイトの配信元（GitHub Pages）が返す時刻（応答の Date）との差を測る。
+// ゲーム・クイズの残り時間・締め切りなど、ほかの端末と比べる時刻は nowS()（＝サーバーの時刻）で書いて比べる。
+// 例：PC の時計が2時間遅れていると、PC で始めたゲームの残り時間が参加者のスマホで「時間です」と出ていた。
+// 差が2秒未満（時計が合っている端末）は 0 のまま＝今までと同じ動き
+let CLOCK_SKEW = 0;
+const nowS = () => Date.now() + CLOCK_SKEW;
+const CLOCK = { busy: false, at: -1e9, ready: false }; // ready：最初の1回を測り終えた（失敗しても true。端末の時計のまま使う）
+async function syncClock(force = false) {
+  if (CLOCK.busy || (!force && performance.now() - CLOCK.at < 60000)) return;
+  CLOCK.busy = true;
+  try {
+    let best = null;
+    for (let k = 0; k < 3; k++) {
+      // HEAD はサービスワーカーを通らない（sw.js は GET だけ扱う）。no-store でブラウザのキャッシュも使わない
+      const p0 = performance.now(), t0 = Date.now();
+      const ac = new AbortController(), kill = setTimeout(() => ac.abort(), 4000); // 電波が悪くて返ってこないときは4秒で打ち切る
+      const r = await fetch(`./manifest.webmanifest?clock=${t0}${k}`, { method: "HEAD", cache: "no-store", signal: ac.signal }).finally(() => clearTimeout(kill));
+      const rtt = performance.now() - p0;
+      const d = Date.parse(r.headers.get("date") ?? "");
+      if (!Number.isFinite(d)) break;
+      // Date は秒単位（切り捨て）なので +500ms。届いた時刻は行きと帰りの真ん中とみなす
+      const sk = d + 500 - (t0 + rtt / 2);
+      if (!best || rtt < best.rtt) best = { rtt, sk };
+      if (rtt < 150) break;
+    }
+    if (best) {
+      CLOCK.at = performance.now();
+      const next = Math.abs(best.sk) < 2000 ? 0 : Math.round(best.sk);
+      if (next !== CLOCK_SKEW) { CLOCK_SKEW = next; if (next) console.info(`[clock] この端末の時計はサーバーと ${Math.round(next / 1000)} 秒ずれています。ゲーム・クイズの時刻は補正して使います`); scheduleRender(); }
+    }
+  } catch { /* 電波がないときは前の値のまま */ } finally { CLOCK.busy = false; CLOCK.ready = true; }
+}
+setTimeout(() => syncClock(true), 0);
+setTimeout(() => { CLOCK.ready = true; }, 5000); // 測れなくても5秒たったら端末の時計のまま進める（自動の司会が止まらないように）
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") syncClock(); });
+addEventListener("online", () => syncClock(true));
 const fmtDate = (x) => {
   if (!x?.toDate) return "送信中…";
   const d = x.toDate();
@@ -1722,7 +1761,7 @@ function syncLocationSharing() {
 }
 
 const agoText = (x) => {
-  const ms = Date.now() - ts(x);
+  const ms = nowS() - ts(x);
   if (!ts(x)) return "送信中…";
   if (ms < 60000) return "たった今";
   if (ms < 3600000) return `${Math.floor(ms / 60000)}分前`;
@@ -1931,7 +1970,7 @@ function mapView() {
       const alive = new Set();
       for (const l of locs) {
         alive.add(l.id);
-        const stale = Date.now() - ts(l.at) > 5 * 60000;
+        const stale = nowS() - ts(l.at) > 5 * 60000;
         const name = memberName(l.id);
         const iconEl = window.L.divIcon({ className: "", html: `<div class="pin${stale ? " stale" : ""}"><span></span><b></b></div>`, iconSize: [0, 0] });
         let mk = others.get(l.id);
@@ -1947,7 +1986,7 @@ function mapView() {
     groupNote.textContent = gs.length ? `位置の共有グループ：${gs.map((g) => `${g.name}（${(g.members ?? []).map(memberName).join("・")}）`).join("　")}` : "";
     people.hidden = !locs.length;
     people.replaceChildren(...locs.sort((a, b) => byNatural(memberName(a.id), memberName(b.id))).map((l) => {
-      const stale = Date.now() - ts(l.at) > 5 * 60000;
+      const stale = nowS() - ts(l.at) > 5 * 60000;
       return h("button", {
         class: `person${stale ? " stale" : ""}`,
         onclick: () => { follow = false; map?.setView([l.lat, l.lng], Math.max(map.getZoom(), 17)); },
@@ -2334,6 +2373,7 @@ function settingsView({ withTitle = true } = {}) {
   const next = h("input", { type: "password", autocomplete: "new-password", minlength: "6", placeholder: "6文字以上", required: true });
   const btn = h("button", { class: "cell cell-button", type: "submit" }, "パスワードを変更");
   const adminBox = h("div");
+  const diag = recvCheck();
   const profiles = profilesGroup();
   const myId = emailToId(S.user.email);
   const spec = S.isAdmin && !altSession ? (ACCOUNT_SWITCH ?? {})[myId] : null;
@@ -2384,13 +2424,15 @@ function settingsView({ withTitle = true } = {}) {
       },
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v96"),
+    diag.el,
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v97"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
   return {
     el,
     update() {
+      diag.update();
       profiles.update();
       locGroupsBox.update();
       pushBox.update();
@@ -3880,7 +3922,7 @@ const otherSide = (s) => (s === "home" ? "away" : "home");
 const sortedMatches = () => [...S.matches.values()].sort((a, b) => (b.order ?? 0) - (a.order ?? 0));
 const mPeriodMs = (m, i = m.cur ?? 0) => Math.round((Number(m.periods?.[i]?.min) || 0) * 60000);
 const mStartMs = (m) => (m.startedAt?.toMillis ? m.startedAt.toMillis() : null);
-const mElapsed = (m, now = Date.now()) => Math.max(0, (Number(m.elapsed) || 0) + (m.running && mStartMs(m) != null ? Math.max(0, now - mStartMs(m)) : 0));
+const mElapsed = (m, now = nowS()) => Math.max(0, (Number(m.elapsed) || 0) + (m.running && mStartMs(m) != null ? Math.max(0, now - mStartMs(m)) : 0));
 const mLeft = (m) => mPeriodMs(m) - mElapsed(m);
 const fmtMs = (ms) => { const s = Math.floor(Math.abs(ms) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 const mClockText = (m) => { const left = mLeft(m); return left >= 0 ? fmtMs(Math.ceil(left / 1000) * 1000) : `+${fmtMs(-left)}`; };
@@ -3939,7 +3981,7 @@ function mPossLive(m, side) {
   const hd = m.hold?.[side];
   const at = hd?.at?.toMillis?.();
   // ほかの人が押している分（15秒ごとに足されるので、30秒より古いものは押しっぱなしの止まった端末とみなして数えない）
-  if (at && hd.uid !== S.user?.uid && m.running && Date.now() - at < 30000) v += Math.max(0, Date.now() - Math.max(at, mStartMs(m) ?? 0));
+  if (at && hd.uid !== S.user?.uid && m.running && nowS() - at < 30000) v += Math.max(0, nowS() - Math.max(at, mStartMs(m) ?? 0));
   return v;
 }
 function mPossPct(m) {
@@ -4042,7 +4084,7 @@ function paintPoss(el, m) {
   for (const s of ["home", "away"]) {
     const t = el.querySelector(`[data-poss-pct=${s}]`);
     if (t) t.textContent = pc ? `${pc[s]}%` : "—";
-    const live = !!(HOLD && HOLD.mid === m.id && HOLD.side === s) || !!(m.hold?.[s] && Date.now() - (m.hold[s].at?.toMillis?.() ?? 0) < 30000);
+    const live = !!(HOLD && HOLD.mid === m.id && HOLD.side === s) || !!(m.hold?.[s] && nowS() - (m.hold[s].at?.toMillis?.() ?? 0) < 30000);
     el.querySelector(`[data-poss-live=${s}]`)?.classList.toggle("on", live);
   }
 }
@@ -5611,7 +5653,7 @@ function quizOpenQuestion(qz, i, read = wantsRead(qz, i)) {
   b.set(liveRef(), {
     ...base, run: S.live?.run ?? null,
     index: i, phase: reading ? "reading" : "question", seq: Date.now(), openedAt: serverTimestamp(), q: publicQuestion(q), answer: null, scores: null,
-    marks: [...(S.live?.marks ?? []).slice(-400), { i, k: "open", t: Date.now() }], // 出題・発表の時刻（履歴の再生に使う。始めるたびに空に戻る）
+    marks: [...(S.live?.marks ?? []).slice(-400), { i, k: "open", t: nowS() }], // 出題・発表の時刻（履歴の再生に使う。始めるたびに空に戻る）
     read: !!read, fullText: false, turn: null, readStop: null, effects, saboWin: null, betWin: null, slide: null,
   });
   fire(b.commit());
@@ -5721,7 +5763,7 @@ function quizFinish(qz) {
   if (S.live?.betWin?.open) bets = resolveBets(qz, b, base);
   if (S.live?.bet?.on) settleInto(b, qz, bets, rows, base.bet);
   b.update(liveRef(), { phase: "results", scores: rows.map(({ uid, score }) => ({ uid, score })), saboWin: null, betWin: null, slide: null });
-  b.set(D("playLogs", `quiz_${S.live?.run ?? Date.now()}`), quizArchive(qz, rows, false));
+  b.set(D("playLogs", `quiz_${S.live?.run ?? nowS()}`), quizArchive(qz, rows, false));
   fire(b.commit());
 }
 
@@ -5768,7 +5810,7 @@ function quizReveal(patch) {
   const first = L.phase !== "reveal";
   fire(updateDoc(liveRef(), {
     phase: "reveal", answer: revealAnswerOf(qz.questions[L.index]),
-    ...(first ? { showAns: [], shown: [], answerShown: false, marks: arrayUnion({ i: L.index, k: "reveal", t: Date.now() }) } : {}),
+    ...(first ? { showAns: [], shown: [], answerShown: false, marks: arrayUnion({ i: L.index, k: "reveal", t: nowS() }) } : {}),
     ...patch,
   }));
 }
@@ -5809,7 +5851,7 @@ async function quizStart(quizId, mode = "operator") {
   if (S.live && S.live.phase !== "off" && S.live.quizId !== quizId && !confirm("別のクイズが進行中です。終了して、このクイズを始めますか？")) return;
   // run：このクイズを何回目に始めたか（前に同じクイズをやったときの妨害・賭けと混ざらないように）
   fire(setDoc(liveRef(), {
-    ...liveBase(qz), run: Date.now(),
+    ...liveBase(qz), run: nowS(),
     index: 0, phase: "lobby", seq: Date.now(), q: null, answer: null, scores: null, effects: {}, saboWin: null, betWin: null, slide: null,
   }));
   QZ.startedAt = Date.now(); // 新しい進行状態が届くまでの間に、前の「終了」を見て画面を閉じないように
@@ -6270,8 +6312,8 @@ document.addEventListener("keydown", (e) => {
 const myQTime = (L, local) => (L?.q?.time ? (local && !S.isAdmin && L.q.type !== "buzz" && myEffect() === "time" ? L.q.time / 2 : L.q.time) : 0);
 function remainingSec(L, local) {
   if (!L?.q?.time) return null;
-  const start = local ? QZ.t0 : ts(L.openedAt) || Date.now();
-  const elapsed = local ? (performance.now() - start) / 1000 : (Date.now() - start) / 1000;
+  const start = local ? QZ.t0 : ts(L.openedAt) || nowS();
+  const elapsed = local ? (performance.now() - start) / 1000 : (nowS() - start) / 1000;
   return Math.max(0, myQTime(L, local) - elapsed);
 }
 
@@ -6279,7 +6321,7 @@ function remainingSec(L, local) {
 const QA = { key: null, at: 0, busy: false, judged: new Set(), winAt: 0 };
 function quizAutoTick(L, qz) {
   const au = quizAutoCfg(qz);
-  if (!au.on || !S.isAdmin || !L || L.phase === "lobby" || L.phase === "results" || L.phase === "off") return;
+  if (!au.on || !S.isAdmin || !CLOCK.ready || !L || L.phase === "lobby" || L.phase === "results" || L.phase === "off") return;
   const q = qz.questions[L.index];
   const tag = L.phase === "reveal" ? (allRevealed(L, qz) ? "all" : "part") : "";
   const key = `${L.seq}:${L.phase}:${tag}`, now = Date.now();
@@ -7546,7 +7588,7 @@ const redrawOnLeave = (root) => root.addEventListener("focusout", () => setTimeo
 const yen = (n) => `¥${(Number(n) || 0).toLocaleString("ja-JP")}`;
 const PAY_METHODS = ["現金", "振込", "PayPay", "その他"];
 const PAY_STATUS = { unpaid: "未入金", paid: "入金済み", exempt: "免除" };
-const pollDeadlinePassed = (p) => !!p.deadline && Date.now() > new Date(p.deadline).getTime();
+const pollDeadlinePassed = (p) => !!p.deadline && nowS() > new Date(p.deadline).getTime();
 const pollOpen = (p) => p.open !== false && !pollDeadlinePassed(p);
 const fmtDeadline = (s) => { if (!s) return ""; const d = new Date(s); return `${d.getMonth() + 1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`; };
 const sortedPolls = () => [...S.polls.values()].sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
@@ -7579,7 +7621,7 @@ function pollComments(p, tally) {
 }
 // 管理者：アンケートの回答順と回答時刻
 function voteOrderList(p, votes) {
-  const first = (v) => ts(v.firstAt ?? v.at) || Date.now();
+  const first = (v) => ts(v.firstAt ?? v.at) || nowS();
   const list = [...votes].sort((a, b) => first(a) - first(b) || ts(a.at) - ts(b.at));
   if (!list.length) return null;
   const answer = (v) => (isRankPoll(p) ? (v.order ?? [v.choice]).map((o, i) => `${i + 1}位 ${o}`).join("・") : v.choice);
@@ -7840,7 +7882,7 @@ const splitOptions = (text) => [...new Set(String(text).split(/[/／,、\n]/).ma
 const tmsOf = (x) => (x?.toMillis ? x.toMillis() : x ? new Date(x).getTime() : 0);
 function pendingAdds(p, v) {
   if (!v || !p.optionUids?.length) return [];
-  const at = v.at ? ts(v.at) : Date.now(); // 送信中（時刻がまだない）は「今」答えたことにする
+  const at = v.at ? ts(v.at) : nowS(); // 送信中（時刻がまだない）は「今」答えたことにする
   const placed = new Set(isRankPoll(p) ? v.order ?? [v.choice] : [v.choice]);
   const self = selfOption(p, v.uid);
   const out = (p.addedOptions ?? []).filter((x) => tmsOf(x.at) > at && p.options.includes(x.name) && !placed.has(x.name) && !(p.noSelf && x.name === self)).map((x) => x.name);
@@ -8839,6 +8881,34 @@ function memberAllocGroups(uid) {
   ];
 }
 
+// v96 参加者：左上の「部屋・車」から開く画面（発表された分だけ。中身はホームのチームの欄の上と同じ）
+const allocAnyShown = () => Object.keys(ALLOC_KINDS).some(allocShown);
+function memberAllocsView({ withTitle = true } = {}) {
+  const body = h("div");
+  const el = h("div", { class: "member-allocs" }, withTitle ? h("h1", { class: "large-title" }, "部屋・車") : null, body);
+  let sig = null;
+  return {
+    el,
+    update() {
+      const s = `${DATA_VER}`;
+      if (s === sig) return;
+      sig = s;
+      const gs = S.user ? memberAllocGroups(S.user.uid) : [];
+      setKids(body, gs.length ? gs : emptyState("bed", "まだ公開されていません", "管理者が部屋割り・車割りを発表すると、ここで見られます。"));
+    },
+  };
+}
+// 左上の「部屋・車」ボタン：公開前は灰色（押せるが、押すと案内だけ出す）
+function paintAllocButtons() {
+  if (S.isAdmin) return;
+  const on = allocAnyShown();
+  for (const b of document.querySelectorAll("[data-sheet=allocs]")) {
+    b.classList.toggle("is-off", !on);
+    b.setAttribute("aria-disabled", String(!on));
+    b.title = on ? "部屋・車" : "部屋・車（まだ公開されていません）";
+  }
+}
+
 function adminAllocs({ withTitle = true } = {}) {
   let kind = "room";
   const kindSeg = segmented(Object.entries(ALLOC_KINDS).map(([value, k]) => ({ value, label: k.title })), kind);
@@ -9496,13 +9566,13 @@ const chatStoreKey = (name) => `island.chat.${name}.${S.pid}.${S.user?.uid}`;
 const loadJson = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const saveJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 保存できなくても動く */ } };
 const chatRead = () => loadJson(chatStoreKey("read"), {});
-function markChatRead(key) { const r = chatRead(); r[key] = Date.now(); saveJson(chatStoreKey("read"), r); }
+function markChatRead(key) { const r = chatRead(); r[key] = nowS(); saveJson(chatStoreKey("read"), r); }
 const knownThreads = () => loadJson(chatStoreKey("threads"), []);
 function rememberThread(key) { const t = knownThreads(); if (!t.includes(key)) { t.push(key); saveJson(chatStoreKey("threads"), t); } }
 
 function unreadOf(key) {
   const last = chatRead()[key] ?? 0;
-  return [...S.msgRecent.values()].filter((m) => m.chat === key && m.uid !== S.user.uid && (ts(m.at) || Date.now()) > last).length;
+  return [...S.msgRecent.values()].filter((m) => m.chat === key && m.uid !== S.user.uid && (ts(m.at) || nowS()) > last).length;
 }
 // 一覧に出すチャット
 function chatList() {
@@ -10763,7 +10833,7 @@ function openPollEditor(p, votes) {
       }
       Object.assign(patch, { options, optionUids: uids, noSelf });
       // 回答済みの人に「追加があったので、どこに入れるか」を聞くための印
-      const now = new Date();
+      const now = new Date(nowS());
       const addedOptions = [...(p.addedOptions ?? []).filter((x) => options.includes(x.name)), ...added.map((m) => ({ name: m.name, at: now }))];
       if (added.length || (p.addedOptions ?? []).length) patch.addedOptions = addedOptions;
       if (p.noSelf && !noSelf) patch.selfAllowedAt = now;
@@ -10994,13 +11064,13 @@ const gSecret = (g, uid) => S.gameSecrets.get(`${g.id}_${uid}`) ?? null;
 const gAct = (g, key, uid) => S.gameActs.get(`${g.id}_${key}_${uid}`)?.target ?? null;
 const gLive = (g) => !!g && g.phase !== "ended";
 // ev：あとで「履歴の再生」に使う、進行の区切り（公開してよい内容だけ。夜の行動などの秘密は入れない）
-const gLog = (text, detail = null, ev = null) => ({ t: Date.now(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
+const gLog = (text, detail = null, ev = null) => ({ t: nowS(), text, ...(detail ? { detail } : {}), ...(ev ? { ev } : {}) });
 const gNames = (uids) => (uids ?? []).map(memberName).join("・");
 // ゲームを始めた時刻。サーバーが付けた時刻（createdAt）を使う。no は始めた管理者の端末の時計なので、
 // その端末の時計がずれていると（例：PC の時計が遅れている）新しいゲームが古い扱いになり、参加者の画面が切り替わらなかった
 const gStart = (g) => ts(g.createdAt) || g.no || 0;
 const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => gStart(b) - gStart(a));
-const GV = { hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GV = { pick: null, hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
 const GBUSY = new Set(); // 進めている最中のゲーム
@@ -11041,7 +11111,7 @@ async function startGame(kind, players, o, demo = false) {
   const ref = demo ? null : doc(C("games"));
   const gid = demo ? `demo-${Date.now()}` : ref.id;
   const b = demo ? { set: (r, data) => demoPut(r.parent.id, r.id, data) } : writeBatch(db);
-  const now = Date.now();
+  const now = nowS();
   const order = gShuffle(players);
   const sec = (uid, data) => b.set(D("gameSecrets", `${gid}_${uid}`), { gameId: gid, uid, ...data });
   const base = { kind, title: GAME_KINDS[kind].label, players, no: now, createdAt: demo ? null : serverTimestamp(), ...(demo ? { demo: true } : {}), step: 0, phase: "play", day: 1,
@@ -11171,7 +11241,7 @@ function undoSnap(g, update) {
     if (UNDO_SKIP.has(k)) continue;
     if (g[k] === undefined) del.push(k); else keys[k] = g[k];
   }
-  return { at: Date.now(), step: g.step ?? 0, keys, del, logLen: (g.log ?? []).length, rem: g.endsAt ? Math.max(0, g.endsAt - Date.now()) : g.paused ?? null };
+  return { at: nowS(), step: g.step ?? 0, keys, del, logLen: (g.log ?? []).length, rem: g.endsAt ? Math.max(0, g.endsAt - nowS()) : g.paused ?? null };
 }
 function undoSecSnap(prev, data, step) {
   const keys = {}, del = [];
@@ -11286,12 +11356,12 @@ function wolfMorning(g) {
   const win = wolfWin(g, next);
   if (win) return { update: { ...wolfEnd(g, next, log, win), lastExec: null, lastDeath: dead }, secrets };
   log.push(gLog(`話し合いの時間です（${g.opts.talkMin}分）。生き残っているのは ${next.length}人です。`, null, { type: "day", day: d + 1 }));
-  return { update: { phase: "day", day: d + 1, alive: next, actKey: null, actors: [], candidates: [], endsAt: Date.now() + g.opts.talkMin * 60000, lastExec: null, lastDeath: dead, log }, secrets };
+  return { update: { phase: "day", day: d + 1, alive: next, actKey: null, actors: [], candidates: [], endsAt: nowS() + g.opts.talkMin * 60000, lastExec: null, lastDeath: dead, log }, secrets };
 }
 // 話し合い → 投票
 function wolfToVote(g) {
   if (g.phase !== "day") return null;
-  return { update: { phase: "vote", actKey: `v${g.day}`, actors: g.alive, candidates: g.alive, endsAt: Date.now() + g.opts.voteSec * 1000,
+  return { update: { phase: "vote", actKey: `v${g.day}`, actors: g.alive, candidates: g.alive, endsAt: nowS() + g.opts.voteSec * 1000,
     log: [...(g.log ?? []), gLog("投票の時間です。処刑する人を1人選んでください。", null, { type: "vote", key: `v${g.day}` })] } };
 }
 // 投票の集計（ワード人狼と共通）。{ top, lines, runoff }
@@ -11313,24 +11383,24 @@ function wolfTally(g) {
   if (r.top.length === 1) x = r.top[0];
   else if (!r.runoff && tie !== "lottery") {
     log.push(gLog(`同じ票数の人がいるので、決選投票をします（候補：${gNames(r.top)}）。`, null, { type: "runoff", cands: r.top }));
-    return { update: { phase: "vote", actKey: `v${g.day}b`, actors: g.alive, candidates: r.top, endsAt: Date.now() + g.opts.voteSec * 1000, log } };
+    return { update: { phase: "vote", actKey: `v${g.day}b`, actors: g.alive, candidates: r.top, endsAt: nowS() + g.opts.voteSec * 1000, log } };
   } else if (tie === "runoff-none") {
     log.push(gLog("決選投票も同じ票数だったので、今日は処刑しません。", null, { type: "noexec" }));
     log.push(gLog(`${g.day}日目の夜になりました。全員、自分のスマホで1人を選んでください。`, null, { type: "night", day: g.day }));
-    return { update: { phase: "night", actKey: `n${g.day}`, actors: g.alive, candidates: [], endsAt: Date.now() + g.opts.nightSec * 1000, lastExec: null, log } };
+    return { update: { phase: "night", actKey: `n${g.day}`, actors: g.alive, candidates: [], endsAt: nowS() + g.opts.nightSec * 1000, lastExec: null, log } };
   } else { x = gPick(r.top); log.push(gLog(`${r.runoff ? "決選投票も" : ""}同じ票数だったので、くじで決めました。`, null, { type: "lottery", uid: x })); }
   const next = g.alive.filter((u) => u !== x);
   log.push(gLog(`${memberName(x)}さんが処刑されました${wolfDeath(g, x)}。`, null, { type: "exec", uid: x }));
   const win = wolfWin(g, next);
   if (win) return { update: { ...wolfEnd(g, next, log, win), lastExec: x }, secrets: wolfDeadSee(g, [x]) };
   log.push(gLog(`${g.day}日目の夜になりました。全員、自分のスマホで1人を選んでください。`, null, { type: "night", day: g.day }));
-  return { update: { phase: "night", alive: next, actKey: `n${g.day}`, actors: next, candidates: [], endsAt: Date.now() + g.opts.nightSec * 1000, lastExec: x, log }, secrets: wolfDeadSee(g, [x]) };
+  return { update: { phase: "night", alive: next, actKey: `n${g.day}`, actors: next, candidates: [], endsAt: nowS() + g.opts.nightSec * 1000, lastExec: x, log }, secrets: wolfDeadSee(g, [x]) };
 }
 
 // ---- ワード人狼の進行
 function wordToVote(g) {
   if (g.phase !== "talk") return null;
-  return { update: { phase: "vote", actKey: "v1", actors: g.players, candidates: g.players, endsAt: Date.now() + (g.opts.voteSec ?? 60) * 1000,
+  return { update: { phase: "vote", actKey: "v1", actors: g.players, candidates: g.players, endsAt: nowS() + (g.opts.voteSec ?? 60) * 1000,
     log: [...(g.log ?? []), gLog("投票の時間です。少数派だと思う人を1人選んでください。", null, { type: "vote", key: "v1" })] } };
 }
 function wordReveal(g) {
@@ -11346,7 +11416,7 @@ function wordTally(g) {
   const log = [...(g.log ?? []), gLog(`開票結果：${r.sum}`, r.lines, { type: "tally", key: g.actKey, cands: g.candidates })];
   if (r.top.length > 1 && !r.runoff && o.runoff !== false) {
     log.push(gLog(`同じ票数の人がいるので、決選投票をします（候補：${gNames(r.top)}）。`, null, { type: "runoff", cands: r.top }));
-    return { update: { actKey: "v1b", candidates: r.top, endsAt: Date.now() + (o.voteSec ?? 60) * 1000, log } };
+    return { update: { actKey: "v1b", candidates: r.top, endsAt: nowS() + (o.voteSec ?? 60) * 1000, log } };
   }
   const w = wordReveal(g);
   let x = r.top.length === 1 ? r.top[0] : null;
@@ -11355,7 +11425,7 @@ function wordTally(g) {
   // 少数派が当てられたら、多数派のお題を当てるチャンス
   if (caught && o.guess === true) {
     log.push(gLog(`${memberName(x)}さんは少数派でした！ 少数派の人は、多数派のお題を当てると逆転勝ちです（${o.guessSec ?? 45}秒）。`, null, { type: "guess", voted: x }));
-    return { update: { phase: "guess", actKey: "g", actors: w.minors, candidates: [], endsAt: Date.now() + (o.guessSec ?? 45) * 1000, voted: x, log } };
+    return { update: { phase: "guess", actKey: "g", actors: w.minors, candidates: [], endsAt: nowS() + (o.guessSec ?? 45) * 1000, voted: x, log } };
   }
   const text = !x ? "決選投票でも決まらなかったので、少数派の勝ちです！"
     : caught ? `${memberName(x)}さんは少数派でした。多数派の勝ちです！${o.guess === true ? "" : `（少数派が多数派のお題「${w.majorWord}」を言い当てたら逆転）`}`
@@ -11569,7 +11639,7 @@ function bjPeek(g, st, hole, shoe, log, secrets) {
 function bjInsure(g, secs, force = false) {
   const st = structuredClone(g.bj), r = st.round;
   const dsec = secs.get(DEALER) ?? {};
-  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
+  const timeUp = force || (g.endsAt && nowS() >= g.endsAt + 1000);
   if (!timeUp && !g.actors.every((u) => cardAct(g, "i", u, `r${r}`) != null)) return null;
   const took = [];
   for (const u of g.actors) {
@@ -11593,7 +11663,7 @@ function bjPlay(g, secs) {
   const st = structuredClone(g.bj), o = bjO(g.opts);
   const dsec = secs.get(DEALER) ?? {};
   const shoe = [...(dsec.shoe ?? [])];
-  const timeUp = g.endsAt && Date.now() >= g.endsAt + 1000;
+  const timeUp = g.endsAt && nowS() >= g.endsAt + 1000;
   const lines = [];
   let changed = false;
   const owners = [...new Set(Object.keys(st.hands).map(bjOwn))];
@@ -11687,7 +11757,7 @@ function bjAfterRound(g, st, log) {
   const o = bjO(g.opts);
   const last = st.round >= o.rounds || g.players.every((u) => (st.chips[u] ?? 0) < Math.max(1, o.betMin));
   if (last) return bjEndUpdate(g, st, log);
-  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? Date.now() + o.resultSec * 1000 : null, log };
+  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 : null, log };
 }
 function bjNext(g) {
   if (g.phase !== "result") return null;
@@ -11718,7 +11788,7 @@ const dfgO = (o) => ({ jokers: 1, eight: true, revolution: true, stairs: true, s
 //   dealer "manual"：管理者がディーラー。配る・保険を締め切る・ディーラーのカードを開ける・交換を締め切る・次の回へ は管理者がボタンで進める
 //   dealerTimer：手動のときに参加者の持ち時間を付けるか（false なら時間切れはなく、ディーラーが締め切るまで待つ）
 const cardManual = (o) => o?.dealer === "manual";
-const cardEnds = (o, sec) => (cardManual(o) && o?.dealerTimer === false ? null : Date.now() + sec * 1000);
+const cardEnds = (o, sec) => (cardManual(o) && o?.dealerTimer === false ? null : nowS() + sec * 1000);
 const cardNeed = (g) => (g.kind === "bj" ? [DEALER] : g.dfg?.seats ?? []);
 // いまの強さの向き（革命と11バックが両方かかると元に戻る）
 const dfgRevNow = (st) => !!st.rev !== !!st.jback;
@@ -11851,7 +11921,7 @@ function dfgStartPlay(g, st, log) {
 // お金持ちが返すカードを決める（選ばなかった人は一番弱いカード）
 function dfgExchangeDone(g, secs, force = false) {
   const st = structuredClone(g.dfg), r = st.round;
-  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
+  const timeUp = force || (g.endsAt && nowS() >= g.endsAt + 1000);
   const ready = st.exchange.every((x) => cardAct(g, "x", x.to, `x${r}`) != null);
   if (!ready && !timeUp) return null;
   const hands = new Map(st.seats.map((u) => [u, [...(secs.get(u)?.hand ?? [])]]));
@@ -11878,7 +11948,7 @@ function dfgMove(g, secs, force = false) {
   const hands = new Map(st.seats.map((x) => [x, [...(secs.get(x)?.hand ?? [])]]));
   const hand = hands.get(u) ?? [];
   const a = cardAct(g, "t", u, st.tseq); // force（ディーラーが進める）でも、届いている操作があればそれを使う
-  const timeUp = force || (g.endsAt && Date.now() >= g.endsAt + 1000);
+  const timeUp = force || (g.endsAt && nowS() >= g.endsAt + 1000);
   const revBefore = dfgRevNow(st);
   let play = null, wantGive = [], wantDisc = [];
   if (a === "pass") play = st.field ? [] : null;
@@ -11983,7 +12053,7 @@ function dfgRoundEnd(g, st, log) {
   dfgFlow(st); st.turn = null;
   log = [...log, gLog(`第${st.round}回の結果：${order.map((u, k) => `${T[k]} ${memberName(u)}`).join("・")}`, null, { type: "dfgRound", round: st.round, order, titles: st.titles, points: { ...st.points } })];
   if (st.round >= o.rounds) return dfgEndUpdate(g, st, log);
-  return { dfg: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? Date.now() + o.resultSec * 1000 : null, log };
+  return { dfg: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 : null, log };
 }
 function dfgNextRound(g) {
   if (g.phase !== "result") return null;
@@ -12012,7 +12082,7 @@ function cardStartState(kind, players, o) {
 }
 // 自動で進める（1秒ごと・操作が届いたとき）。進めることがなければ何もしない
 function cardTick(g) {
-  const now = Date.now();
+  const now = nowS();
   const timeUp = g.endsAt && now >= g.endsAt + 1000;
   const acted = (key, pre) => g.actors.every((u) => cardAct(g, key, u, pre) != null);
   const manual = cardManual(g.opts); // 管理者がディーラー：場面の切り替えは管理者が押す（参加者の操作の反映と、持ち時間切れだけ自動）
@@ -12486,7 +12556,7 @@ function demoPut(coll, id, data, merge = false) {
   if (GV.demoAdmin) scheduleRender(); // 管理者の画面で見ているデモは、その画面も描き直す
 }
 function demoAct(g, key, uid, target) {
-  demoPut("gameActs", `${g.id}_${key}_${uid}`, { uid, gameId: g.id, key, target, at: null, atMs: Date.now() });
+  demoPut("gameActs", `${g.id}_${key}_${uid}`, { uid, gameId: g.id, key, target, at: null, atMs: nowS() });
   setTimeout(gameAutoTick, 30);
 }
 const DEMO_CPU = ["ハル", "ソラ", "リク", "ミオ", "ユイ", "カイ", "レン"];
@@ -12598,8 +12668,9 @@ setInterval(demoBots, 500);
 
 // ---- 自動の司会（管理者の端末で1秒ごと）
 function gameAutoTick() {
-  if (!S.isAdmin || !S.user) return;
-  const now = Date.now();
+  // 時計のずれを測り終えるまでは進めない（時計が進んでいる PC が、開いた直後の一瞬に「時間切れ」と判断して先へ進めないように）
+  if (!S.isAdmin || !S.user || !CLOCK.ready) return;
+  const now = nowS();
   for (const g of S.games.values()) {
     if (isCardKind(g.kind) && gLive(g) && !GBUSY.has(g.id)) { cardTick(g); continue; }
     if (!g.opts?.auto || !gLive(g) || GBUSY.has(g.id)) continue;
@@ -12640,7 +12711,7 @@ async function gameUndo(g) {
     const up = { ...e.keys, step: (cur.step ?? 0) + 1, undo: cur.undo.slice(0, -1),
       log: [...(cur.log ?? []).slice(0, e.logLen), gLog("管理者が1つ前の場面に戻しました。", null, { type: "undo" })] };
     const ends = "endsAt" in e.keys ? e.keys.endsAt || e.rem != null : cur.endsAt || cur.paused != null;
-    if (ends) { up.endsAt = Date.now() + Math.max(e.rem ?? 0, 30000); up.paused = null; } // 戻した直後に時間切れで進まないよう、少なくとも30秒
+    if (ends) { up.endsAt = nowS() + Math.max(e.rem ?? 0, 30000); up.paused = null; } // 戻した直後に時間切れで進まないよう、少なくとも30秒
     return up;
   };
   const secUp = (sd) => {
@@ -12745,7 +12816,7 @@ async function gameForward(g) {
   if (isCardKind(g.kind) && cardManual(g.opts)) { const f = cardForwardFn(g); if (f) await gameStep(g.id, g.step ?? 0, f, cardNeed(g)); return; }
   const fn = gameForwardFn(g);
   if (fn) { await gameStep(g.id, g.step ?? 0, fn); return; }
-  if (isCardKind(g.kind)) await gameSetEnds(g, Date.now() - 1500, null); // 時間切れの扱い（賭けなし・自動でパス など）で次へ
+  if (isCardKind(g.kind)) await gameSetEnds(g, nowS() - 1500, null); // 時間切れの扱い（賭けなし・自動でパス など）で次へ
 }
 async function gameSetEnds(g, endsAt, paused = null) {
   if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), endsAt, paused });
@@ -12756,14 +12827,14 @@ function gameAddTime(g, sec) {
   if (!gLive(g)) return;
   if (g.paused != null) return gameSetEnds(g, null, g.paused + sec * 1000);
   if (!g.endsAt) return;
-  return gameSetEnds(g, Math.max(g.endsAt, Date.now()) + sec * 1000);
+  return gameSetEnds(g, Math.max(g.endsAt, nowS()) + sec * 1000);
 }
 // タイマーを止める・動かす。止めている間は endsAt をなくして残り時間（paused）だけを持つので、時間切れで進むことはない
 function gamePause(g) {
   if (!gLive(g)) return;
-  if (g.paused != null) return gameSetEnds(g, Date.now() + Math.max(1000, g.paused), null);
+  if (g.paused != null) return gameSetEnds(g, nowS() + Math.max(1000, g.paused), null);
   if (!g.endsAt) return;
-  return gameSetEnds(g, null, Math.max(0, g.endsAt - Date.now()));
+  return gameSetEnds(g, null, Math.max(0, g.endsAt - nowS()));
 }
 const GAME_CTL_NOTE = "◀ 戻す：1つ前の場面に戻します（最大5回まで。戻した場面の投票・操作はやり直しになります。ポイントを反映したあとは戻せません）。進める ▶：時間が残っていても、いまの場面を締め切って強制的に次へ進めます。時間：「止める」で止めている間は時間切れで進みません（全員の画面にも「一時停止」と出ます）。+10秒などで残り時間を足せます。";
 function gameCtlBar(g, compact = false) {
@@ -12799,9 +12870,9 @@ const gTimer = (g) => (g.endsAt ? h("span", { class: `g-timer${gUrgent(g.endsAt)
   : g.paused != null && gLive(g) ? h("span", { class: "g-timer paused" }, gPausedText(g.paused)) : null);
 const gPausedText = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `一時停止中 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 // 残り5秒からは赤く光らせる（0秒＝「時間です」の間も、進むまで赤のまま）
-const gUrgent = (endsAt) => endsAt - Date.now() <= 5000;
+const gUrgent = (endsAt) => endsAt - nowS() <= 5000;
 function gTimeText(endsAt) {
-  const s = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  const s = Math.max(0, Math.ceil((endsAt - nowS()) / 1000));
   return s ? `残り ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "時間です";
 }
 setInterval(() => { for (const el of document.querySelectorAll("[data-endsat]")) { const e = Number(el.dataset.endsat); el.textContent = gTimeText(e); el.classList.toggle("urgent", gUrgent(e)); } }, 250);
@@ -12913,7 +12984,7 @@ function gRevealList(g) {
 function myGame() {
   if (S.isAdmin || !S.user) return null;
   const uid = S.user.uid;
-  return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || Date.now() - gStart(g) < 6 * 3600000)) ?? null;
+  return sortedGames().find((g) => g.players?.includes(uid) && (gLive(g) || nowS() - gStart(g) < 6 * 3600000)) ?? null;
 }
 // 観戦できるゲーム（遊ぶ人ではない参加者だけ）。進行中のもの。開いて見ている間は、終わってもそのまま出す
 const WATCH_NOTE = "オンにすると、遊ぶ人に選ばれていない参加者のスマホに「観戦する」ボタンが出て、いまの場面・残り時間・席（脱落した人）・ログを見られます。役職・お題・手札などの秘密は出ません。ログは「参加者へのログ」の設定に従います。ゲーム中に変えてもすぐ反映されます。";
@@ -12970,7 +13041,9 @@ function gameGoHome(g) {
 function paintGameLive() {
   let el = document.querySelector(".game-live");
   let fab = document.querySelector(".game-fab");
-  const mine0 = S.isAdmin ? null : myGame(), w0 = S.isAdmin ? null : watchGame();
+  const picked = !S.isAdmin && GV.pick ? S.games.get(GV.pick) : null; // 左上のボタンで開いたゲーム（進行中の間だけ優先）
+  if (GV.pick && !(picked && gLive(picked) && picked.players?.includes(S.user?.uid))) GV.pick = null;
+  const mine0 = S.isAdmin ? null : GV.pick ? picked : myGame(), w0 = S.isAdmin ? null : watchGame();
   const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : null) : mine0 && (gLive(mine0) || !w0) ? mine0 : w0;
   // 観戦：遊ぶ人ではないので、「観戦する」ボタンを押したときだけ表示用の画面（秘密なし）を開く
   const spect = !!g && !S.isAdmin && !g.players?.includes(S.user.uid);
@@ -13301,7 +13374,7 @@ function quizArchive(qz, rows, partial) {
   });
   const uids = new Set([...rows.map((r) => r.uid), ...answers.map((a) => a.uid)]);
   return {
-    kind: "quiz", title: qz.title || "クイズ", quizId: qz.id, run: L.run ?? null, startedAt: L.run ?? null, endedAt: Date.now(), partial: !!partial,
+    kind: "quiz", title: qz.title || "クイズ", quizId: qz.id, run: L.run ?? null, startedAt: L.run ?? null, endedAt: nowS(), partial: !!partial,
     names: Object.fromEntries([...uids].map((u) => [u, memberName(u)])),
     questions: qz.questions.map((q, i) => ({
       i, type: q.type, text: q.text ?? "", points: Number(q.points ?? 10) || 0, session: sessionAt(L, i)?.name ?? "",
@@ -13325,7 +13398,7 @@ function gameArchive(g) {
   }
   const acts = [...S.gameActs.values()].filter((a) => a.gameId === g.id).map((a) => ({ key: a.key, uid: a.uid, target: a.target ?? null, t: ts(a.at) || null }));
   return {
-    kind: "game", game: g.kind, title: g.title, startedAt: g.no ?? null, endedAt: Date.now(), players: g.players ?? [],
+    kind: "game", game: g.kind, title: g.title, startedAt: g.no ?? null, endedAt: nowS(), players: g.players ?? [],
     names: Object.fromEntries((g.players ?? []).map((u) => [u, memberName(u)])), opts: g.opts ?? {}, theme: g.theme ?? null,
     log: g.log ?? [], result: g.result ?? null, reveal: g.reveal ?? null, minors: g.minors ?? null, outs: g.outs ?? null, secrets, acts: isCardKind(g.kind) ? [] : acts,
     settled: g.settled ?? null,
@@ -14357,6 +14430,7 @@ const MEMBER_TABS = [
   { key: "notes", icon: "note", label: "表・メモ", view: () => notesView() },
   { key: "money", icon: "check", label: "出欠・集金", view: memberMoney, sheet: true, desktopOnly: true }, // スマホは1ページの中の欄
   { key: "checklist", icon: "list", label: "チェック", view: checklistMember, sheet: true, desktopOnly: true },
+  { key: "allocs", icon: "bed", label: "部屋・車", view: memberAllocsView, sheet: true }, // v96 公開前は灰色（押すと「まだ公開されていません」）
   { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
@@ -14527,6 +14601,7 @@ const DESK_SIDE_KEYS = new Set(["points", "money", "videos", "archives", "checkl
 let deskSideCurrent = null; // { key, view } | null
 let deskSideOpen = null; // buildDesktopShell が設定する（右の欄に出したら true を返す）
 function openSheet(tab) {
+  if (tab.key === "allocs" && !S.isAdmin && !allocAnyShown()) return toast("部屋割り・車割りは、まだ公開されていません");
   if (deskSideOpen?.(tab)) return;
   const view = tab.view({ withTitle: false });
   S.sheet = { key: tab.key, title: tab.label, view };
@@ -14548,6 +14623,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.sheet 
 let sheetKey = null;
 function paintSheet() {
   if (S.sheet?.key === "map" && !mapAllowed()) closeSheet();
+  if (S.sheet?.key === "allocs" && !S.isAdmin && !allocAnyShown()) closeSheet(); // 発表を取り消したとき
   if (!S.sheet) { sheetKey = null; return; }
   if (sheetKey !== S.sheet.key || !document.querySelector(".sheet-backdrop")) {
     document.querySelector(".sheet-backdrop")?.remove();
@@ -14572,7 +14648,7 @@ function buildDesktopShell(tabs) {
   const title = profileSwitcher("desk-title");
   const status = statusBar();
   const chip = S.isAdmin || inLobby() ? null : meChip();
-  const actions = h("div", { class: "desk-actions" },
+  const actions = h("div", { class: "desk-actions" }, S.isAdmin || inLobby() ? null : h("span", { class: "live-btns desk" }),
     topTabs.map((t) => h("button", { class: "desk-btn", "data-sheet": t.key, onclick: () => openSheet(t) }, icon(t.icon), t.label)), refreshButton("desk"));
   const header = h("header", { class: "desk-bar" },
     h("img", { class: "desk-icon", src: "icon-192.png", alt: "" }), title,
@@ -14660,7 +14736,7 @@ function buildMemberPageShell() {
   const summary = memberSummary();
   const chip = lobby ? null : meChip();
   const navTitle = h("div", { class: "nav-title" });
-  const gear = h("div", { class: "nav-left" }, (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS).filter((t) => t.sheet && !t.desktopOnly).map((t) =>
+  const gear = h("div", { class: "nav-left" }, lobby ? null : h("span", { class: "live-btns" }), (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS).filter((t) => t.sheet && !t.desktopOnly).map((t) =>
     h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const switcher = profileSwitcher("big");
@@ -14707,6 +14783,66 @@ function buildMemberPageShell() {
   };
 }
 
+// v96 設定の「受信の確認」：ゲーム・クイズが画面に出ないときに、この端末が何を受け取れているかを見る
+function recvCheck() {
+  const body = h("div");
+  const el = group("受信の確認（ゲーム・クイズ）", [body], "ゲームやクイズが画面に出ないときは、この欄を管理者に見せてください（管理者の端末の同じ欄と見比べると、原因がわかります）。");
+  let sig = null;
+  const errText = (c) => (c === "permission-denied" ? "読む権限がありません（Firebase のルールが古い・旅行が未確定 など）" : c === "unavailable" ? "電波がありません" : c);
+  return {
+    el,
+    update() {
+      const uid = S.user?.uid;
+      const gs = sortedGames();
+      const live = gs.filter(gLive), mine = live.filter((g) => g.players?.includes(uid));
+      const ge = S.listenErr.games, gm = S.meta.games;
+      const gameTxt = !subs.has("games") ? "受け取っていません（確定前ページではゲームは使いません）"
+        : ge ? `受け取れません：${errText(ge)}`
+          : !gm ? "受け取り中…"
+            : `${gs.length}件（進行中 ${live.length}件${S.isAdmin ? "" : `・あなたが遊ぶ人 ${mine.length}件`}）${gm.cache ? "・サーバーにつながっていません（端末の保存分）" : ""}`;
+      const newest = gs[0];
+      const newTxt = newest ? `${newest.title}（${gLive(newest) ? "進行中" : "終了"}・${fmtDate(newest.createdAt)}${S.isAdmin ? "" : newest.players?.includes(uid) ? "・あなたも遊ぶ人" : "・あなたは遊ぶ人ではない"}）` : "なし";
+      const qe = S.listenErr.live;
+      const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
+      const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v97"]];
+      const s2 = JSON.stringify(rows);
+      if (s2 === sig) return;
+      sig = s2;
+      setKids(body, rows.map(([k, v]) => h("div", { class: "cell recv-row" }, h("span", { class: "recv-k" }, k), h("span", { class: "recv-v" }, v))));
+    },
+  };
+}
+
+// v96 参加者：ゲーム・クイズが始まったら、左上（スマホはチャットの左・PC は上部ボタンの左）にボタンを出す。押すとその画面を開く。
+// 自分が遊ぶ人に入っている進行中のゲームを直接探すので、自動で画面が開かなかったときもここから入れる
+function liveEntries() {
+  if (S.isAdmin || !S.user || inLobby()) return [];
+  const uid = S.user.uid, out = [];
+  const g = sortedGames().find((x) => gLive(x) && x.players?.includes(uid)) ?? watchGame();
+  if (g && gLive(g)) out.push({ key: `g:${g.id}`, icon: "people", label: g.players?.includes(uid) ? g.title : `観戦 ${g.title}`, go: () => openGameFromTop(g) });
+  const L = S.live;
+  if (L && L.phase !== "off" && quizActiveForMe(L)) out.push({ key: "quiz", icon: "quiz", label: "クイズ", go: () => { QZ.hidden = false; QZ.lastPaint = null; paintMemberQuiz(); } });
+  return out;
+}
+function openGameFromTop(g) {
+  if (g.players?.includes(S.user.uid)) { GV.pick = g.id; GV.hidden.delete(`${g.id}:false`); }
+  else { GV.watchOpen = g.id; GV.pk = null; }
+  closeSheet();
+  paintGameLive();
+}
+function paintLiveButtons() {
+  const es = liveEntries();
+  const sig = es.map((e) => `${e.key}|${e.label}`).join(",");
+  for (const box of document.querySelectorAll(".live-btns")) {
+    if (box.dataset.sig === sig) continue;
+    box.dataset.sig = sig;
+    const desk = box.classList.contains("desk");
+    setKids(box, es.map((e) => h("button", { class: desk ? "desk-btn live-go" : "nav-gear live-go", "data-live": e.key, "aria-label": `${e.label}を開く`, title: `${e.label}を開く`, onclick: e.go },
+      icon(e.icon), desk ? e.label : null)));
+  }
+}
+
 function paintMapButtons() {
   for (const b of document.querySelectorAll("[data-sheet=map]")) b.hidden = !mapAllowed();
 }
@@ -14722,6 +14858,7 @@ function render(kinds) {
     if (kinds.has("game")) paintGameLive();
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
+    if (kinds.has("game") || kinds.has("quiz")) paintLiveButtons();
     if (kinds.has("status")) document.querySelectorAll(".status").forEach(paintStatus);
     return;
   }
@@ -14769,6 +14906,8 @@ function render(kinds) {
   document.title = S.config.title || APP_TITLE;
   shell.update();
   paintMapButtons();
+  paintAllocButtons();
+  paintLiveButtons();
   paintChatBadges();
   paintQuizLive();
   paintGameLive();

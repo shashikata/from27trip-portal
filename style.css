@@ -3753,3 +3753,16 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .q-img-thumb .qimg { width: 96px; height: 72px; object-fit: cover; border-radius: 10px; }
 .q-img-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 180px; }
 .q-img-acts .cell-sub { flex-basis: 100%; }
+
+/* v96 参加者の左上：ゲーム・クイズが進行中の間だけ出るボタン（薄紫で光る）と、公開前の「部屋・車」（灰色） */
+.live-btns { display: contents; }
+.nav-gear.live-go { color: var(--on-accent); background-color: var(--accent); animation: liveGo 1.8s ease-in-out infinite; }
+.nav-gear.live-go:active { background-color: var(--accent); filter: brightness(.85); }
+.desk-btn.live-go { background: var(--accent); color: var(--on-accent); font-weight: 800; animation: liveGo 1.8s ease-in-out infinite; }
+@keyframes liveGo { 0%, 100% { box-shadow: 0 0 0 0 rgba(162, 158, 255, .55); } 50% { box-shadow: 0 0 0 6px rgba(162, 158, 255, 0), 0 0 16px rgba(162, 158, 255, .55); } }
+.nav-gear.is-off, .desk-btn.is-off { opacity: .35; }
+@media (prefers-reduced-motion: reduce) { .live-go { animation: none; } }
+/* v96 設定の「受信の確認」 */
+.recv-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between; }
+.recv-k { flex: none; color: var(--label-2); font-size: 14px; }
+.recv-v { text-align: right; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; min-width: 0; }
