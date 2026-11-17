@@ -3608,6 +3608,9 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer .cx-fan.bj-slow .pc.deal { animation-name: cxDealBJd; }
+/* v105 ディーラーは、もっとゆっくりめくる */
+.cx-dealer .cx-fan.bj-slow.bj-dl .pc.deal, .cx-dealer .cx-fan.bj-slow.bj-dl .pc.flipup, .cx-fan.bj-slow.bj-dl .pc.deal, .cx-fan.bj-slow.bj-dl .pc.flipup { animation-duration: 2.4s; }
+.cx-fan.bj-slow.bj-dl .pc.deal:not(.back)::after, .cx-fan.bj-slow.bj-dl .pc.flipup:not(.back)::after { animation-duration: 2.4s; }
 @media (prefers-reduced-motion: reduce) {
   .cx-fan.bj-slow .pc.deal, .cx-fan.bj-slow .pc.flipup, .cx-mini.bj-slow .pc.flipup, .cx-hand.is-bj .cx-fan.bj-slow .pc.deal, .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: none; }
   .cx-fan.bj-slow .pc.deal::after, .cx-fan.bj-slow .pc.flipup::after { display: none; }
@@ -4389,6 +4392,49 @@ button.rl-cell:active { transform: scale(.94); }
 .rp-rl-n.bc { background: none; box-shadow: none; }
 @media (prefers-reduced-motion: reduce) { .bc-badge.big { animation: none; } }
 .bc-card[data-m="down"] .bc-back { transform: translateZ(.5px); }
+/* v105 スクイーズ：真ん中に大きなカードを出し、端を紙のようにしならせて持ち上げる */
+.bc-card.sq { filter: brightness(.55) drop-shadow(0 1.2cqw 1.4cqw rgba(0, 0, 0, .45)); }
+.bc-stage { position: absolute; left: 3%; right: 3%; top: 21%; bottom: 3.5%; z-index: 6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2.2cqw;
+  border-radius: 4cqw; pointer-events: none; color: #7FA6FF;
+  background: radial-gradient(ellipse 70% 80% at 50% 58%, rgba(22, 112, 78, .97), rgba(8, 52, 36, .98) 70%, rgba(4, 30, 21, .98));
+  box-shadow: inset 0 0 0 .45cqw currentColor, inset 0 0 6cqw rgba(0, 0, 0, .55), 0 2cqw 6cqw rgba(0, 0, 0, .55); }
+.bc-stage[hidden] { display: none; }
+.bc-stage.b { color: #FF7C88; }
+.bc-stage::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: .5;
+  background: repeating-radial-gradient(circle at 30% 20%, rgba(255, 255, 255, .025) 0 1px, transparent 1px 3px); }
+.bc-st-lab { position: relative; font-size: 3cqw; font-weight: 800; letter-spacing: .16em; }
+.bc-st-cards { position: relative; display: flex; align-items: center; justify-content: center; gap: 7cqw; perspective: 95cqw; perspective-origin: 50% 35%; }
+.bq { position: relative; width: 25cqw; aspect-ratio: 5 / 7; transform-style: preserve-3d; --bw: 25cqw; --br: calc(var(--bw) * .07); }
+.bc-stage.one .bq { width: 28cqw; --bw: 28cqw; }
+.bq[hidden] { display: none; }
+.bq-base, .bq-b { background: linear-gradient(90deg, #F6F2E8 0 4.5%, rgba(0, 0, 0, .25) 4.5% 5.2%, transparent 5.2% 94.8%, rgba(0, 0, 0, .25) 94.8% 95.5%, #F6F2E8 95.5%),
+  linear-gradient(180deg, #F6F2E8 0 3.2%, rgba(0, 0, 0, .25) 3.2% 3.7%, transparent 3.7% 96.3%, rgba(0, 0, 0, .25) 96.3% 96.8%, #F6F2E8 96.8%),
+  repeating-linear-gradient(45deg, rgba(255, 255, 255, .15) 0 calc(var(--bw) * .035), transparent calc(var(--bw) * .035) calc(var(--bw) * .1)),
+  radial-gradient(ellipse at 50% 50%, transparent 55%, rgba(0, 0, 0, .22)), linear-gradient(160deg, #A8162C, #5E0916);
+  background-size: var(--bw) calc(var(--bw) * 1.4); }
+.bq-base { position: absolute; inset: 0; border-radius: var(--br); -webkit-backface-visibility: hidden; backface-visibility: hidden;
+  box-shadow: 0 calc(var(--bw) * .03) calc(var(--bw) * .06) rgba(0, 0, 0, .35); }
+.bq-front { position: absolute; inset: 0; overflow: hidden; border-radius: var(--br); transform: rotateY(180deg); -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+.bq-fx { position: absolute; left: 0; top: 0; width: calc(var(--bw) * 100 / 12); height: calc(var(--bw) * 1.4); container-type: inline-size; pointer-events: none; }
+.bq-fx > .bc-face { right: auto; bottom: auto; width: var(--bw); height: calc(var(--bw) * 1.4); border-radius: var(--br); }
+.bq-fold, .bq-cast { position: absolute; display: block; pointer-events: none; opacity: 0; }
+.bq-fold { transform: translateZ(.6px); }
+.bq.el .bq-fold { background: linear-gradient(90deg, rgba(0, 0, 0, .5), transparent); }
+.bq.er .bq-fold { background: linear-gradient(270deg, rgba(0, 0, 0, .5), transparent); }
+.bq.eb .bq-fold { background: linear-gradient(0deg, rgba(0, 0, 0, .5), transparent); }
+.bq.el .bq-cast { background: linear-gradient(270deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, .1)); border-radius: var(--br) 0 0 var(--br); }
+.bq.er .bq-cast { background: linear-gradient(90deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, .1)); border-radius: 0 var(--br) var(--br) 0; }
+.bq.eb .bq-cast { background: linear-gradient(180deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, .1)); border-radius: 0 0 var(--br) var(--br); }
+.bq-flap { position: absolute; display: none; transform-style: preserve-3d; }
+.bq-s { position: absolute; transform-style: preserve-3d; }
+.bq-b, .bq-u { position: absolute; inset: 0; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+.bq-u { overflow: hidden; background: #FFFEFA; }
+.bq.el .bq-u, .bq.er .bq-u { transform: rotateY(180deg); }
+.bq.eb .bq-u { transform: rotateX(180deg); }
+.bq.eb .bq-u .bc-face { transform: rotate(180deg); }
+.bq.el .bq-s.last > .bq-b { border-radius: var(--br) 0 0 var(--br); } .bq.el .bq-s.last > .bq-u { border-radius: 0 var(--br) var(--br) 0; }
+.bq.er .bq-s.last > .bq-b { border-radius: 0 var(--br) var(--br) 0; } .bq.er .bq-s.last > .bq-u { border-radius: var(--br) 0 0 var(--br); }
+.bq.eb .bq-s.last > .bq-b { border-radius: 0 0 var(--br) var(--br); } .bq.eb .bq-s.last > .bq-u { border-radius: var(--br) var(--br) 0 0; }
 .bc-card[data-m="down"] .bc-curl { transform: translateZ(1px); }
 
 /* ================= v104 クラッシュ（倍率のグラフ・CASH OUT・賭けの盤） */
@@ -4411,7 +4457,15 @@ button.rl-cell:active { transform: scale(.94); }
 .cr-big b { font-size: clamp(34px, 13cqw, 64px); font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 2px 16px rgba(0, 0, 0, .6); }
 .cr-box { container-type: inline-size; }
 .cr-big small { font-size: 12px; letter-spacing: .2em; color: var(--label-2, #aaa); min-height: 1em; }
-.cr-box.crashed .cr-big b { color: #FF5D6C; animation: crShake .45s ease-out both; }
+.cr-box.crashed .cr-big b { color: #FF5D6C; }
+/* v105 落ちて底に当たった瞬間：台ごと揺れて、下から赤く光る */
+.cr-box.boom { animation: crBoom .55s cubic-bezier(.2, .8, .3, 1) both; }
+.cr-box.boom .cr-big b { animation: crShake .45s ease-out both; }
+.cr-box::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  background: radial-gradient(ellipse 80% 55% at 50% 100%, rgba(255, 60, 80, .55), rgba(255, 60, 80, 0) 70%); }
+.cr-box.boom::after { animation: crFlash .9s ease-out both; }
+@keyframes crBoom { 0% { transform: translateY(0); } 12% { transform: translateY(7px) scale(1.012); } 28% { transform: translate(-4px, -3px); } 44% { transform: translate(3px, 2px); } 62% { transform: translate(-2px, -1px); } 80% { transform: translate(1px, 0); } 100% { transform: none; } }
+@keyframes crFlash { 0% { opacity: 1; } 100% { opacity: 0; } }
 .cr-box.crashed .cr-big small { color: #FF8C97; font-weight: 700; }
 @keyframes crShake { 0% { transform: scale(1.25); } 30% { transform: translateX(-6px) scale(1.1); } 55% { transform: translateX(5px); } 80% { transform: translateX(-2px); } 100% { transform: none; } }
 .rl-wheel.cr.tense .cr-big b { color: #FFE58A; }
@@ -4438,7 +4492,7 @@ button.rl-cell:active { transform: scale(.94); }
 .cr-auto.on { background: #F4F4F6; color: #111; }
 .rl-flash.rl-num.cr b { color: #FF8C97; }
 .rp-rl-n.cr { background: none; box-shadow: none; }
-@media (prefers-reduced-motion: reduce) { .cr-box.crashed .cr-big b, .cr-badge.big { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .cr-box.crashed .cr-big b, .cr-box.boom .cr-big b, .cr-box.boom, .cr-box.boom::after, .cr-badge.big { animation: none; } }
 
 /* ===== v105 チンチロ：机の上の丼（CSS の 3D。サイコロは大小と同じ作り） ===== */
 .rl-wheel.cc .cc-box { position: relative; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 22px;
@@ -4530,3 +4584,62 @@ button.rl-cell:active { transform: scale(.94); }
 /* v104 大富豪：いまの場に出せないカードはグレー（押しても選ばれない） */
 .dfg-card.dim { cursor: not-allowed; }
 .dfg-card.dim .pc { filter: grayscale(1) brightness(.5); }
+
+/* ================= v105：カジノ系のゲームを BJ の配色にそろえる =================
+   黒い台・薄い円の線・白いカード（裏は BJ と同じ白い斜線）・差し色は薄紫。赤や青は暗く沈めて、目立たせたい所だけ明るく */
+/* --- ルーレットの賭けの盤：緑のフェルト → 黒 */
+.rl-board { background: radial-gradient(120% 80% at 50% 0%, #1A1A1E, #0C0C0E 70%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), inset 0 0 40px rgba(0, 0, 0, .6); }
+.rl-cell { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14); }
+.rl-cell.num.r { background: linear-gradient(160deg, #9A1C26, #6E1219); }
+.rl-cell.num.b { background: linear-gradient(160deg, #26262B, #121214); }
+.rl-cell.num.g { background: linear-gradient(160deg, #0F7040, #08482A); }
+/* --- 大小：赤いフェルトと金のふち → 黒い台と銀のふち */
+.rl-wheel.dc .dc-box { background: radial-gradient(circle at 50% 42%, #1B1B1F 0%, #0E0E10 62%, #050506 100%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 10px 30px rgba(0, 0, 0, .55); }
+.dc-floor { background: radial-gradient(circle at 46% 40%, #2C2C32 0%, #1C1C21 52%, #0F0F12 100%); box-shadow: inset 0 0 calc(var(--k, 3px) * 7) rgba(0, 0, 0, .7); }
+.dc-floor::after { border-color: rgba(162, 158, 255, .28); }
+.dc-ring { border-color: #8A8A94; box-shadow: inset 0 0 0 calc(var(--k, 3px) * .5) rgba(0, 0, 0, .45), inset 0 calc(var(--k, 3px) * .6) 0 rgba(255, 255, 255, .25), 0 0 0 calc(var(--k, 3px) * .6) #2A2A30; }
+.rl-cell.dc-cell.sm { background: rgba(70, 96, 170, .3); }
+.rl-cell.dc-cell.bg { background: rgba(150, 44, 54, .32); }
+.rl-cell.dc-cell.tri, .rl-cell.dc-cell.any { background: rgba(162, 158, 255, .12); }
+/* --- バカラ：緑のフェルトと金 → 黒い台と薄い線。プレイヤー（青）・バンカー（赤）は暗く */
+.bc-felt { background: radial-gradient(120% 90% at 50% 12%, #1D1D22 0%, #121215 55%, #08080A 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16), inset 0 0 0 9px rgba(255, 255, 255, .018), inset 0 0 50px rgba(0, 0, 0, .6), 0 12px 30px rgba(0, 0, 0, .55); }
+.bc-arc { color: rgba(255, 255, 255, .42); }
+.bc-area { background: rgba(255, 255, 255, .025); }
+.bc-area.p { color: #7F95D6; box-shadow: inset 0 0 0 1px rgba(127, 149, 214, .3); }
+.bc-area.b { color: #B65D69; box-shadow: inset 0 0 0 1px rgba(182, 93, 105, .3); }
+.bc-area.p .bc-tot { background: #7F95D6; } .bc-area.b .bc-tot { background: #B65D69; }
+.bc-area.win { box-shadow: 0 0 0 .5cqw currentColor, 0 0 5cqw color-mix(in srgb, currentColor 60%, transparent); }
+.bc-back { background: repeating-linear-gradient(-45deg, rgba(255, 255, 255, .85) 0 .35cqw, transparent .35cqw 1.1cqw) content-box, linear-gradient(160deg, #2E2E33, #1A1A1D);
+  padding: .9cqw; box-sizing: border-box; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16); }
+.bc-stage { color: #7F95D6; background: radial-gradient(ellipse 70% 80% at 50% 55%, rgba(30, 30, 36, .97), rgba(12, 12, 14, .98) 72%, rgba(6, 6, 7, .98));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 45%, transparent), inset 0 0 6cqw rgba(0, 0, 0, .6), 0 2cqw 6cqw rgba(0, 0, 0, .6); }
+.bc-stage.b { color: #B65D69; }
+.bq-base, .bq-b { background: linear-gradient(90deg, #232327 0 5%, rgba(255, 255, 255, .16) 5% 5.5%, transparent 5.5% 94.5%, rgba(255, 255, 255, .16) 94.5% 95%, #232327 95%),
+  linear-gradient(180deg, #232327 0 3.6%, rgba(255, 255, 255, .16) 3.6% 3.95%, transparent 3.95% 96.05%, rgba(255, 255, 255, .16) 96.05% 96.4%, #232327 96.4%),
+  repeating-linear-gradient(-45deg, rgba(255, 255, 255, .86) 0 calc(var(--bw) * .02), transparent calc(var(--bw) * .02) calc(var(--bw) * .065)),
+  linear-gradient(160deg, #2E2E33, #18181B);
+  background-size: var(--bw) calc(var(--bw) * 1.4); }
+.rl-cell.bc-cell.p { background: linear-gradient(160deg, rgba(70, 96, 170, .42), rgba(26, 34, 66, .6)); }
+.rl-cell.bc-cell.b { background: linear-gradient(160deg, rgba(150, 44, 54, .42), rgba(60, 18, 24, .6)); }
+.rl-cell.bc-cell.t { background: linear-gradient(160deg, rgba(30, 130, 84, .36), rgba(10, 50, 32, .6)); }
+.rl-wheel.bc.tense .bc-felt { box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .6), inset 0 0 50px rgba(0, 0, 0, .6), 0 0 26px rgba(162, 158, 255, .25); }
+/* --- チンチロ：木の机と白い丼 → 黒い台と黒い釉薬の丼（輪ごとに色を少しずつ変えて、縞に見えないように） */
+.rl-wheel.cc .cc-box { background: radial-gradient(circle at 50% 40%, #18181B 0%, #0D0D0F 60%, #050506 100%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 10px 30px rgba(0, 0, 0, .55); }
+.cc-table { background: radial-gradient(circle at 50% 50%, #26262B 0%, #17171A 28%, #0B0B0D 58%); }
+.cc-foot { background: radial-gradient(closest-side, rgba(0, 0, 0, .85) 70%, rgba(0, 0, 0, 0)); }
+.cc-ly { background: radial-gradient(circle at 44% 36%, rgba(255, 255, 255, .07), rgba(255, 255, 255, 0) 55%),
+  rgb(calc(22 + var(--lv, 0) * 30) calc(22 + var(--lv, 0) * 30) calc(26 + var(--lv, 0) * 34)); }
+.cc-ly.bottom { background: radial-gradient(circle at 46% 40%, #2A2A30 0%, #1C1C21 60%, #141417 100%); }
+.cc-ly.ai { background: rgb(92 88 170); }
+.cc-rim { border-color: #3A3A42; box-shadow: inset 0 calc(var(--k, 3px) * .7) 0 rgba(255, 255, 255, .22), inset 0 0 0 calc(var(--k, 3px) * .6) rgba(0, 0, 0, .3), 0 0 0 calc(var(--k, 3px) * .8) rgba(162, 158, 255, .35); }
+.rl-wheel.cc.done .cc-box, .rl-wheel.dc.done .dc-box { box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .6), 0 0 26px rgba(162, 158, 255, .22); }
+.rl-cell.cc-cell > small, .cc-pay i { color: rgba(200, 196, 255, .85); }
+/* v105 クラッシュ：落ちる確率 */
+.cr-prob { margin-top: 4px; padding: 3px 10px; border-radius: 999px; background: rgba(0, 0, 0, .45); font-size: 11.5px; font-weight: 700; letter-spacing: .02em; color: rgba(255, 255, 255, .78); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cr-prob:empty { display: none; }
+.rl-wheel.cr.tense .cr-prob { color: #FFD27A; }
+.cr-box.crashed .cr-prob { color: #FF9AA4; }
+.rl-wheel.cr.mini .cr-prob { display: none; }
+.cr-auto { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; line-height: 1.1; }
+.cr-auto b { font-size: 13px; font-weight: 700; } .cr-auto small { font-size: 9.5px; font-weight: 600; opacity: .7; white-space: nowrap; }

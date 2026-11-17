@@ -2434,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v104"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v105"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11887,16 +11887,24 @@ function bjPending(g, st, u) {
   return a && a.no === bjNo(key) && a.n === st.hands[key].cards.length ? { key, ...a } : null;
 }
 // ヒット・スタンド・ダブル・スプリット・降りる（届いた操作をまとめて反映）。時間切れの人は残りの手をすべてスタンド
+// v105 全員の番が終わってから、ディーラーがカードを開けるまでの間（ミリ秒）。最後の操作でカードがめくれたときは、めくり終わってから数える
+const BJ_DEALER_WAIT = 2000;
 function bjPlay(g, secs) {
   const st = structuredClone(g.bj), o = bjO(g.opts);
   const dsec = secs.get(DEALER) ?? {};
   const shoe = [...(dsec.shoe ?? [])];
+  // v105 全員終わって待っている間：時間になったらディーラーが開ける
+  if (st.dWait) {
+    if (nowS() < st.dWait) return null;
+    delete st.dWait;
+    return { update: bjSettle(g, st, dsec.hole, shoe, g.log ?? []), secrets: [[DEALER, { shoe, hole: null }]] };
+  }
   const timeUp = g.endsAt && nowS() >= g.endsAt + 1000;
   const lines = [];
-  let changed = false;
+  let changed = false, flip = false; // flip：この処理でカードがめくれた（引いた・開いた）
   const owners = [...new Set(Object.keys(st.hands).map(bjOwn))];
   for (const u of owners) {
-    if (bjApplyOpen(st, u, cardAct(g, "p", u, `r${st.round}`))) changed = true;
+    if (bjApplyOpen(st, u, cardAct(g, "p", u, `r${st.round}`))) { changed = true; flip = true; }
     const act = bjPending(g, st, u);
     if (!act) {
       if (timeUp && bjCur(st, u)) { for (const k of bjHandsOf(st, u)) st.hands[k].done = true; changed = true; lines.push(`${memberName(u)}：時間切れのためスタンド`); }
@@ -11911,6 +11919,7 @@ function bjPlay(g, secs) {
     if ((op === "p" && !can.p) || (op === "r" && !can.r)) op = "s";
     if (op === "s") { hd.done = true; lines.push(`${nm}：スタンド（${bjValue(hd.cards).total}）`); continue; }
     if (op === "r") { hd.done = true; hd.surr = true; lines.push(`${nm}：降りました（賭けの半分が戻ります）`); continue; }
+    if (op === "d" || op === "p" || op === "h") flip = true;
     if (op === "d") { hd.bet *= 2; hd.doubled = true; hd.cards.push(bjDraw(shoe, o.decks)); hd.done = true; lines.push([`${nm}：ダブル → ${cardText(hd.cards.at(-1))}（${bjValue(hd.cards).total}）`, `${nm}：ダブル`]); continue; }
     if (op === "p") {
       const nk = `${u}~${Math.max(...bjHandsOf(st, u).map(bjNo)) + 1}`;
@@ -11941,7 +11950,10 @@ function bjPlay(g, secs) {
   if (allDone && (!unop.length || timeUp)) {
     // 管理者がディーラーのときは、ディーラーが「カードを開ける」を押すまで待つ
     if (cardManual(g.opts)) return { update: { bj: st, actors: [], log }, secrets: [[DEALER, { shoe }]] };
-    return { update: bjSettle(g, st, dsec.hole, shoe, log), secrets: [[DEALER, { shoe, hole: null }]] };
+    // v105 すぐには開けない：最後のカードがめくり終わってから約2秒待つ（cardTick が時間を見て、もう一度ここへ来る）
+    st.dWait = nowS() + BJ_DEALER_WAIT + (flip ? BJ_FLIP_MS : 0);
+    setTimeout(gameAutoTick, st.dWait - nowS() + 60);
+    return { update: { bj: st, actors: [], log }, secrets: [[DEALER, { shoe }]] };
   }
   return { update: { bj: st, actors: owners.filter((u) => bjCur(st, u) || unop.includes(u)), log }, secrets: [[DEALER, { shoe }]] };
 }
@@ -11981,6 +11993,7 @@ function bjSettle(g, st, hole, shoe, log) {
   for (const [u, amt] of Object.entries(st.ins ?? {})) { ins[u] = dBJ ? amt * 2 : -amt; sum[u] = (sum[u] ?? 0) + ins[u]; }
   for (const [u, d] of Object.entries(sum)) st.chips[u] = Math.max(0, (st.chips[u] ?? 0) + d);
   st.dealer = dealer; st.insRes = ins;
+  st.dAnim = BJ_DEALER_FLIP_MS + Math.max(0, dealer.length - 2) * BJ_DEALER_STEP; // v105 ディーラーがめくり終わるまで（ミリ秒）
   const dText = dBJ ? "ブラックジャック" : dv > 21 ? `${dv}（バースト）` : String(dv);
   log = [...log, gLog(`第${r}回の結果：ディーラーは ${cardsText(dealer)}（${dText}）。${Object.keys(sum).map((u) => `${memberName(u)} ${signed(sum[u])}`).join("・")}`,
     Object.entries(res).map(([k, x]) => `${memberName(x.own)}${bjHandsOf(st, x.own).length > 1 ? `（${bjNo(k)}つ目）` : ""}：${BJ_RES[x.res]}（${signed(x.delta)}）`).concat(Object.entries(ins).map(([u, d]) => `${memberName(u)}：保険 ${signed(d)}`)).join("\n"),
@@ -11991,7 +12004,7 @@ function bjAfterRound(g, st, log) {
   const o = bjO(g.opts);
   const last = st.round >= o.rounds || g.players.every((u) => (st.chips[u] ?? 0) < Math.max(1, o.betMin));
   if (last) return bjEndUpdate(g, st, log);
-  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 : null, log };
+  return { bj: st, phase: "result", actKey: null, actors: [], endsAt: o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 + (st.dAnim ?? 0) : null, log };
 }
 function bjNext(g) {
   if (g.phase !== "result") return null;
@@ -12213,6 +12226,15 @@ function dfgExchangeDone(g, secs, force = false) {
 }
 // 場を流す
 function dfgFlow(st) { st.field = null; st.passes = []; st.lock = null; st.jback = false; st.stop8 = false; st.nlock = false; }
+// v105 場が流れる（8切り・全員パスなど）ときは、場のカードを少し見せてから流す。その間はだれの番でもない
+const DFG_FLOW_MS = 1600;
+function dfgFlowNow(g) {
+  if (g.phase !== "play" || !g.dfg?.flowAt) return null;
+  const st = structuredClone(g.dfg), o = dfgO(g.opts);
+  delete st.flowAt;
+  dfgFlow(st);
+  return { update: { dfg: st, actors: [st.turn], endsAt: cardEnds(g.opts, o.turnSec), log: g.log ?? [] } };
+}
 // 12ボンバーで選ばなかったとき：自分の手札で一番多い数字（同じなら弱いほう）。手札がなければ3
 function dfgBombPick(hand) {
   const cnt = new Map();
@@ -12239,6 +12261,7 @@ function dfgMove(g, secs, force = false) {
   const log = [...(g.log ?? [])];
   let secrets = [];
   let skip = 0;
+  let flow = false; // v105 場が流れる（すぐには消さず、DFG_FLOW_MS 見せてから dfgFlowNow で流す）
   if (!play.length) {
     st.passes = [...st.passes, u];
     log.push(gLog(`${memberName(u)}：パス${a ? "" : "（時間切れ）"}`, null, { type: "dfgPass", uid: u, quiet: true }));
@@ -12334,25 +12357,30 @@ function dfgMove(g, secs, force = false) {
     if (bombR) for (const x of cxAfter(st.seats, u)) if (dfgActive(st).includes(x) && (hands.get(x) ?? []).length === 0) { st.done = [...st.done, x]; notes.push(`${memberName(x)}さんもあがり（${st.done.length}番目）`); }
     log.push(gLog(`${memberName(u)}：${cardsText(play)}${!a ? "（時間切れのため自動）" : ""}${notes.length ? `　${notes.join("　")}` : ""}${cut8 && !wait4 ? "　8切り！" : wait4 ? "　8切り（4止めの番）" : ""}`,
       null, { type: "dfgPlay", uid: u, cards: play, rev: revNow, cut: cut8 && !wait4, wait4, fin: fin && !foul, foul, place: fin && !foul ? st.done.length : null, notes, given: given.length, to, thrown: thrown.length, quiet: !(revNow || fin || fell) }));
-    if (cut) { dfgFlow(st); log.push(gLog(`${sand ? "砂嵐" : qq ? "救急車" : rokuro ? "ろくろ首" : "8切り"}で場が流れました。`, null, { type: "dfgFlow", quiet: true })); }
+    if (cut) { flow = true; log.push(gLog(`${sand ? "砂嵐" : qq ? "救急車" : rokuro ? "ろくろ首" : "8切り"}で場が流れました。`, null, { type: "dfgFlow", quiet: true })); }
   }
   // 次の番
   const active = dfgActive(st);
   secrets = [...new Map(secrets)];
   if (active.length <= 1) return { update: dfgRoundEnd(g, st, log), secrets };
   const dir = st.dir ?? 1;
-  if (!st.field) {
+  if (!st.field || flow) {
     st.turn = active.includes(u) ? u : dfgNextAfter(st.seats, u, active, dir);
   } else {
     const cands = active.filter((x) => x !== st.field.by && !st.passes.includes(x));
     if (!cands.length) {
       const by = st.field.by;
-      dfgFlow(st);
+      flow = true;
       st.turn = active.includes(by) ? by : dfgNextAfter(st.seats, by, active, dir);
       log.push(gLog(`場が流れました。${memberName(st.turn)}さんの番です。`, null, { type: "dfgFlow", quiet: true }));
     } else st.turn = dfgNextAfter(st.seats, u, cands, dir, skip);
   }
   st.tseq += 1;
+  if (flow) {
+    st.flowAt = nowS() + DFG_FLOW_MS;
+    setTimeout(gameAutoTick, DFG_FLOW_MS + 60);
+    return { update: { dfg: st, actors: [], endsAt: null, log }, secrets };
+  }
   return { update: { dfg: st, actors: [st.turn], endsAt: cardEnds(g.opts, o.turnSec), log }, secrets };
 }
 function dfgRoundEnd(g, st, log) {
@@ -12632,15 +12660,17 @@ function dcPlate(pops, t, x, y) {
   }
   return { z: 0, vz: 0, vx: 0, vy: 0 };
 }
-const dcPop = (rnd, t, v0, dv) => ({ t, v: v0 + rnd() * dv, vx: (rnd() - 0.5) * 300, vy: (rnd() - 0.5) * 300, kx: (rnd() - 0.5) * 0.04, ky: (rnd() - 0.5) * 0.04 });
+// v105 台を傾ける量（kx・ky）と横へ押す速さ（vx・vy）を大きくして、跳ねるだけでなく、よく転がるようにした
+const dcPop = (rnd, t, v0, dv, side = 1) => ({ t, v: v0 + rnd() * dv, vx: (rnd() - 0.5) * 560 * side, vy: (rnd() - 0.5) * 560 * side, kx: (rnd() - 0.5) * 0.075 * side, ky: (rnd() - 0.5) * 0.075 * side });
 // init：前の回に止まった位置と向き（[x, y, z, qw, qx, qy, qz] × 3 の21個）。ないときは、はじめの並べ方を種から決める
 function dcSim(seed, init = null) {
   const rnd = rlRng(seed ^ 0x5bd1e995);
   // 突き上げの回数・間隔・強さ（機械の振動。毎回ちがう）
   const pops = [];
-  let tp = 0.25;
-  const K = 7 + Math.floor(rnd() * 4);
-  for (let k = 0; k < K; k++) { pops.push(dcPop(rnd, tp, 430, 300)); tp += 0.2 + rnd() * 0.16; }
+  // v105 回数を増やし（11〜14回）、最後の3回は弱くして、転がりながら落ち着くようにする
+  let tp = 0.3;
+  const K = 11 + Math.floor(rnd() * 4);
+  for (let k = 0; k < K; k++) { const w = k >= K - 3 ? 0.55 + 0.15 * (K - 1 - k) : 1; pops.push(dcPop(rnd, tp, 470 * w, 330 * w, w)); tp += 0.22 + rnd() * 0.14; }
   // はじめは台の上に止まっている（前の回の続き。1回目は、重ならない位置・ばらばらの向き）
   const D = [];
   if (init?.length === 21) for (let i = 0; i < 3; i++) { const x = init.slice(i * 7, i * 7 + 7); D.push({ p: [x[0], x[1], x[2]], v: [0, 0, 0], q: dcNorm4([x[3], x[4], x[5], x[6]]), w: [0, 0, 0] }); }
@@ -12808,7 +12838,7 @@ const dcBadge = (n, cls = "") => h("span", { class: `dc-badge ${dcTriple(n) ? "t
 // 目と、サイコロの自分の向きの軸：[軸][+側の目, −側の目]（+z が 1、+x が 2、+y が 3。画面の座標では中国式＝左手系に見える）
 const DC_AXV = [[2, 5], [3, 4], [1, 6]];
 const dcFaceVal = (f) => DC_AXV[f.ax][f.sg > 0 ? 0 : 1];
-const DC_ZOOM_AT = 0.7, DC_ZOOM_DUR = 1.1, DC_REVEAL = DC_ZOOM_AT + DC_ZOOM_DUR; // 止まってからズームを始めるまで・ズームの長さ
+const DC_ZOOM_AT = 0.95, DC_ZOOM_DUR = 1.2, DC_REVEAL = DC_ZOOM_AT + DC_ZOOM_DUR; // 止まってからズームを始めるまで・ズームの長さ
 // 立方体の向きを変える24とおり（記録と計算の目が違ったときだけ使う。ふつうは使わない）
 const DC_ROTS = (() => {
   const out = [];
@@ -13034,19 +13064,20 @@ function bacShoe() {
 
 // ---- 配る・めくる（スクイーズ）の時間割。全員の端末が同じ結果 n から同じ時間割を作る（秒）
 //   P1→B1→P2→B2 の順に裏で配る → プレイヤーの2枚を絞る → バンカーの2枚を絞る → （決まりで）プレイヤーの3枚目 → バンカーの3枚目
-const BAC_DEAL = 0.55, BAC_GAP = 0.32, BAC_SQ = 2.9, BAC_SQ3 = 3.2, BAC_PAUSE = 0.55, BAC_REVEAL = 1.0;
+// v105 ゆっくり絞る（2枚 5.6秒・3枚目 6.2秒）。配る・間もゆとりを持たせる
+const BAC_DEAL = 0.7, BAC_GAP = 0.45, BAC_SQ = 5.6, BAC_SQ3 = 6.2, BAC_PAUSE = 0.9, BAC_REVEAL = 1.2;
 function bacPlan(n) {
   const { p, b } = bacCards(n);
   const slots = [];
   let t = 0;
   for (const [side, i] of [["p", 0], ["b", 0], ["p", 1], ["b", 1]]) { slots.push({ side, i, c: (side === "p" ? p : b)[i], deal: t, sq: 0 }); t += BAC_GAP; }
-  t += BAC_DEAL + 0.5;
+  t += BAC_DEAL + 0.8;
   for (const side of ["p", "b"]) { for (const s of slots) if (s.side === side) s.sq = t; t += BAC_SQ + BAC_PAUSE; }
   for (const side of ["p", "b"]) {
     const cs = side === "p" ? p : b;
     if (cs.length < 3) continue;
-    slots.push({ side, i: 2, c: cs[2], deal: t, sq: t + BAC_DEAL + 0.25 });
-    t += BAC_DEAL + 0.25 + BAC_SQ3 + BAC_PAUSE;
+    slots.push({ side, i: 2, c: cs[2], deal: t, sq: t + BAC_DEAL + 0.4 });
+    t += BAC_DEAL + 0.4 + BAC_SQ3 + BAC_PAUSE;
   }
   return { slots, D: t - BAC_PAUSE + 0.2 };
 }
@@ -13085,49 +13116,116 @@ function bacBuild() {
   };
   const P = area("p", "PLAYER"), B = area("b", "BANKER");
   const shoe = h("div", { class: "bc-shoe", "aria-hidden": "true" }, h("i"));
-  const felt = h("div", { class: "bc-felt" }, h("div", { class: "bc-arc" }, h("span", null, "BANKER PAYS 0.95 ・ TIE PAYS 8 TO 1")), shoe, h("div", { class: "bc-areas" }, P.el, B.el));
-  return { box: felt, P, B, shoe };
+  // v105 絞る場所（大きなカード2枚まで）
+  const big = [bqBuild(), bqBuild()], stLab = h("div", { class: "bc-st-lab" });
+  const stage = h("div", { class: "bc-stage", hidden: true, "aria-hidden": "true" }, stLab, h("div", { class: "bc-st-cards" }, big.map((x) => x.el)));
+  const felt = h("div", { class: "bc-felt" }, h("div", { class: "bc-arc" }, h("span", null, "BANKER PAYS 0.95 ・ TIE PAYS 8 TO 1")), shoe, h("div", { class: "bc-areas" }, P.el, B.el), stage);
+  return { box: felt, P, B, shoe, stage, stLab, big };
 }
 // 0〜1 を、なめらかに
 const bacEase = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
-// 1枚のカードの、いまの見た目。q：絞りの進み（0〜1）
-//   0〜0.12 持ち上げる → 0.12〜0.46 長い辺（横）を少しずつ曲げて、真ん中の列のマークをのぞく（角は指で押さえる）→ 戻す
-//   → 0.5〜0.8 短い辺（下）をのぞく → 戻す → 0.86〜1 一気に表にする
-function bacCardPose(q) {
-  if (q <= 0) return { flip: 0, side: 0, end: 0, lift: 0 };
-  if (q >= 1) return { flip: 1, side: 0, end: 0, lift: 0 };
-  const lift = bacEase(q / 0.12) * (1 - bacEase((q - 0.9) / 0.1));
-  let side = 0, end = 0;
-  if (q < 0.48) side = q < 0.4 ? bacEase((q - 0.12) / 0.28) * (0.85 + 0.15 * Math.sin(q * 70)) : 1 - bacEase((q - 0.4) / 0.08);
-  else if (q < 0.84) end = q < 0.76 ? bacEase((q - 0.5) / 0.26) * (0.85 + 0.15 * Math.sin(q * 64)) : 1 - bacEase((q - 0.76) / 0.08);
-  const flip = bacEase((q - 0.86) / 0.14);
-  return { flip, side: Math.max(0, side), end: Math.max(0, end), lift };
+// ---- v105 スクイーズ：絞る間は、テーブルの真ん中に大きなカードを出し、端を紙のようにしならせて少しずつ持ち上げる
+//   カードの端（横の長い辺、そのあと下の短い辺）を BQ_N 本の細い帯に分け、帯ごとに少しずつ角度を足していく（曲がった紙に見える）
+//   持ち上がった帯の裏側には、そこにある表の絵（マーク）が見える。持ち上がったあとの下はテーブル
+const BQ_N = 6;
+function bqBuild() {
+  const fx = () => h("div", { class: "bq-fx" });
+  const front = h("div", { class: "bq-front" }, fx());
+  const base = h("div", { class: "bq-base" }), fold = h("i", { class: "bq-fold" }), cast = h("i", { class: "bq-cast" });
+  const flap = h("div", { class: "bq-flap" });
+  const strips = [];
+  let parent = flap;
+  for (let k = 0; k < BQ_N; k++) {
+    const b = h("div", { class: "bq-b" }), u = h("div", { class: "bq-u" }, fx());
+    const el = h("div", { class: `bq-s${k === BQ_N - 1 ? " last" : ""}` }, b, u);
+    parent.append(el); strips.push({ el, b, u }); parent = el;
+  }
+  const el = h("div", { class: "bq", hidden: true }, cast, base, fold, front, flap);
+  return { el, front, base, fold, cast, flap, strips, c: null, edge: "" };
 }
-const bacClip = (side, end) => {
-  if (side > 0.001) { const x = (side * 34).toFixed(1); return `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 76%, ${x}% 76%, ${x}% 24%, 0 24%)`; }
-  if (end > 0.001) { const y = (100 - end * 30).toFixed(1); return `polygon(0 0, 100% 0, 100% 100%, 78% 100%, 78% ${y}%, 22% ${y}%, 22% 100%, 0 100%)`; }
-  return "none";
-};
-function bacRenderSlot(s, st, slot, t) {
+// 少しずつ力を入れる（3回に分けて曲げる。途中で止まる・わずかに震える）
+const bqTense = (x) => (x <= 0 ? 0 : 0.34 * bacEase(x / 0.26) + 0.33 * bacEase((x - 0.36) / 0.24) + 0.33 * bacEase((x - 0.7) / 0.24) + (x > 0.05 && x < 0.97 ? 0.012 * Math.sin(x * 47) : 0));
+// 大きなカードの、いまの姿。q：絞りの進み（0〜1）。v：2枚目は少し遅れて動く（両手で1枚ずつ）
+//   本物と同じく、いつも手前の辺を曲げてのぞく。座った人の目線（手前に倒した向き）で見る
+//   0〜0.06 持ち上げて手前に寄せる → 0.06〜0.13 横に回す → 0.13〜0.46 長い辺を少しずつ曲げて、端の列のマークをのぞく → 戻す
+//   → 0.48〜0.55 縦に戻す → 0.55〜0.82 短い辺を曲げて、上下のマークをのぞく → 戻す → 0.86〜0.95 一気に表にする → 置く
+function bqPose(q, v = 0) {
+  const d = v * 0.02, dir = v ? 1 : -1;
+  let edge = "", x = 0, th = 0, f = 0;
+  if (q > 0.13 + d && q < 0.48) {
+    edge = v ? "r" : "l";
+    x = q < 0.44 ? bqTense((q - 0.13 - d) / (0.31 - d)) : bqTense(1) * (1 - bacEase((q - 0.44) / 0.04));
+    th = 150 * x; f = 0.1 + 0.32 * x;
+  } else if (q > 0.55 + d && q < 0.85) {
+    edge = "b";
+    x = q < 0.81 ? bqTense((q - 0.55 - d) / (0.26 - d)) : bqTense(1) * (1 - bacEase((q - 0.81) / 0.04));
+    th = 155 * x; f = 0.08 + 0.3 * x;
+  }
+  const rz = dir * 90 * bacEase((q - 0.06 - d) / 0.07) * (1 - bacEase((q - 0.48 - d) / 0.07));
+  const flip = bacEase((q - 0.86 - d) / 0.09);
+  const lift = bacEase(q / 0.06) * (1 - bacEase((q - 0.95) / 0.05));
+  // 手前に倒す角度：絞っている間は深く（のぞき込む）、表にするときは浅く（みんなに見せる）
+  const tilt = lift * (40 - 30 * bacEase((q - 0.85) / 0.08));
+  // 横にしたとき、2枚がぶつからないよう左右に離す
+  const sx = (v ? 1 : -1) * 0.2 * Math.abs(rz) / 90;
+  return { edge, th, f, flip, lift, rz, tilt, sx };
+}
+function bqRender(B, c, ps) {
+  if (B.c !== c) { B.c = c; for (const x of [B.front, ...B.strips.map((y) => y.u)]) setKids(x.firstChild, bacFront(c)); }
+  const W = B.el.clientWidth || B.W || 100, H = W * 1.4;
+  if (B.W !== W) { B.W = W; B.el.style.setProperty("--bw", `${W}px`); }
+  // 全体：手前に起こして（傾けて）持ち上げる。表にするときは横に回す
+  const fl = ps.flip;
+  B.el.style.transform = `translateX(${rlF((ps.sx ?? 0) * W)}px) translateZ(${rlF(W * (0.05 * ps.lift + 0.28 * Math.sin(Math.PI * fl)))}px) rotateX(${rlF(ps.tilt)}deg) rotateZ(${rlF(ps.rz)}deg) rotateY(${rlF(-180 * fl)}deg)`;
+  const on = !!ps.edge && ps.th > 0.3 && fl === 0;
+  if (!on) {
+    if (B.edge) { B.edge = ""; B.flap.style.display = "none"; B.base.style.clipPath = "none"; B.fold.style.opacity = "0"; B.cast.style.opacity = "0"; }
+    return;
+  }
+  if (B.edge !== ps.edge) { B.el.classList.remove("el", "er", "eb"); B.el.classList.add(`e${ps.edge}`); B.edge = ps.edge; }
+  const vert = ps.edge === "b", L = (vert ? H : W) * ps.f, w = L / BQ_N, a = ps.th / BQ_N;
+  const px = (n) => `${rlF(n)}px`;
+  // 持ち上がっていないところ（テーブルに付いたまま）
+  B.base.style.clipPath = ps.edge === "l" ? `polygon(${px(L)} 0, 100% 0, 100% 100%, ${px(L)} 100%)` : ps.edge === "r" ? `polygon(0 0, ${px(W - L)} 0, ${px(W - L)} 100%, 0 100%)` : `polygon(0 0, 100% 0, 100% ${px(H - L)}, 0 ${px(H - L)})`;
+  // 曲げ目の影・持ち上がった下のテーブルに落ちる影
+  const sh = Math.sin(Math.min(Math.PI / 2, (ps.th * Math.PI) / 180));
+  B.fold.style.cssText = `opacity:${rlF(sh * 0.9)};${ps.edge === "l" ? `left:${px(L)};top:0;width:${px(W * 0.12)};height:100%` : ps.edge === "r" ? `left:${px(W - L - W * 0.12)};top:0;width:${px(W * 0.12)};height:100%` : `left:0;top:${px(H - L - H * 0.09)};width:100%;height:${px(H * 0.09)}`}`;
+  B.cast.style.cssText = `opacity:${rlF(sh * 0.75)};${ps.edge === "l" ? `left:0;top:0;width:${px(L)};height:100%` : ps.edge === "r" ? `left:${px(W - L)};top:0;width:${px(L)};height:100%` : `left:0;top:${px(H - L)};width:100%;height:${px(L)}`}`;
+  B.flap.style.cssText = "display:block;" + (ps.edge === "l" ? `left:${px(L)};top:0;width:0;height:${px(H)}` : ps.edge === "r" ? `left:${px(W - L)};top:0;width:0;height:${px(H)}` : `left:0;top:${px(H - L)};width:${px(W)};height:0`);
+  B.strips.forEach((S, k) => {
+    const phi = ((k + 1) * a * Math.PI) / 180, lit = Math.abs(Math.cos(phi));
+    let pos, rot, x0, y0, x1, y1;
+    if (ps.edge === "l") { x1 = L - k * w; x0 = x1 - w; y0 = 0; y1 = H; pos = `${k ? "right:100%" : "right:0"};top:0;width:${px(w)};height:${px(H)};transform-origin:100% 50%`; rot = `rotateY(${rlF(a)}deg)`; }
+    else if (ps.edge === "r") { x0 = W - L + k * w; x1 = x0 + w; y0 = 0; y1 = H; pos = `${k ? "left:100%" : "left:0"};top:0;width:${px(w)};height:${px(H)};transform-origin:0 50%`; rot = `rotateY(${rlF(-a)}deg)`; }
+    else { y0 = H - L + k * w; y1 = y0 + w; x0 = 0; x1 = W; pos = `${k ? "top:100%" : "top:0"};left:0;width:${px(W)};height:${px(w)};transform-origin:50% 0`; rot = `rotateX(${rlF(a)}deg)`; }
+    S.el.style.cssText = `${pos};transform:${rot}`;
+    S.b.style.backgroundPosition = `${px(-x0)} ${px(-y0)}`;
+    S.b.style.filter = `brightness(${rlF(0.55 + 0.45 * lit)})`;
+    // 裏側（表の絵）：横を曲げたときは左右が逆、下を曲げたときは上下が逆に見える位置の絵を出す
+    const fx = S.u.firstChild;
+    fx.style.left = vert ? "0" : px(-(W - x1));
+    fx.style.top = vert ? px(-(H - y1)) : "0";
+    S.u.style.filter = `brightness(${rlF(0.62 + 0.38 * lit)})`;
+  });
+}
+// 小さいカード（テーブルの上の6枚の場所）。絞っている間は裏のまま、表になったら表
+function bacRenderSlot(s, st, slot, t, mini = false) {
   if (!slot || t < slot.deal) { if (!s.el.hidden) s.el.hidden = true; return; }
   if (s.el.hidden) s.el.hidden = false;
   if (s.c !== slot.c) { s.c = slot.c; setKids(s.front, bacFront(slot.c)); }
   const dp = bacEase((t - slot.deal) / BAC_DEAL);
   const q = slot.sq ? (t - slot.sq) / (slot.i === 2 ? BAC_SQ3 : BAC_SQ) : 0;
-  const ps = bacCardPose(q);
-  // 配る：シュー（右上）から滑ってくる。3枚目は横向きに置く（本物のテーブルと同じ）
+  // 配る：シュー（右上）から、少し回りながら滑ってきて、最後にふわっと置かれる。3枚目は横向き（本物のテーブルと同じ）
   const rot = slot.i === 2 ? 90 : 0;
-  const tx = (1 - dp) * 160, ty = (1 - dp) * -120, tr = (1 - dp) * -24;
-  // 裏のまま（down）：表の上に裏を重ね、絞っているところだけ裏を切り取る（下の表がのぞく）／めくる途中（flip）：立体で裏返す／表（up）
-  const m = ps.flip >= 1 ? "up" : ps.flip > 0 ? "flip" : "down";
+  const tx = (1 - dp) * 160, ty = (1 - dp) * -120, tr = (1 - dp) * -28, hop = Math.sin(Math.PI * dp) * 8;
+  // mini（小さい表示）は大きなカードを出さないので、ここでめくる
+  const flip = mini ? bacEase((q - 0.85) / 0.1) : q >= 0.95 ? 1 : 0;
+  const m = flip >= 1 ? "up" : flip > 0 ? "flip" : "down";
   if (s.el.dataset.m !== m) s.el.dataset.m = m;
-  const rotY = m === "flip" ? 180 - ps.flip * 180 : -ps.side * 9;
-  s.el.style.transform = `translate(${tx.toFixed(1)}px, ${(ty - ps.lift * 6).toFixed(1)}px) rotate(${(rot + tr).toFixed(1)}deg) rotateX(${(ps.lift * 12 + ps.end * 16).toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) scale(${(1 + ps.lift * 0.08).toFixed(3)})`;
+  const rotY = m === "flip" ? 180 - flip * 180 : 0;
+  s.el.style.transform = `translate(${(tx).toFixed(1)}px, ${(ty).toFixed(1)}px) translateZ(${hop.toFixed(1)}px) rotate(${(rot + tr).toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg)`;
   s.el.style.opacity = String(Math.min(1, dp * 2.5));
-  const peek = m === "down" && (ps.side > 0 || ps.end > 0);
-  s.back.style.clipPath = peek ? bacClip(ps.side, ps.end) : "none";
-  s.curl.style.cssText = peek ? (ps.side > 0 ? `left:${(ps.side * 34).toFixed(1)}%;top:24%;bottom:24%;width:${(4 + ps.side * 9).toFixed(1)}%` : `top:${(100 - ps.end * 30).toFixed(1)}%;left:22%;right:22%;height:${(4 + ps.end * 8).toFixed(1)}%`) : "display:none";
-  s.curl.className = `bc-curl${ps.side > 0 ? " v" : " h"}`;
+  s.el.classList.toggle("sq", !mini && q > 0 && q < 0.95);
 }
 // いまの時刻のテーブルを描く。合計は、その側のカードが全部表になってから出す
 function bacDraw(e, g, sp, now, loud) {
@@ -13141,11 +13239,27 @@ function bacDraw(e, g, sp, now, loud) {
   }
   const P = bacPlanOf(sp.n), D = P.D, t = (now - sp.at) / 1000, { p, b } = bacCards(sp.n);
   for (const [A, side] of [[e.P, "p"], [e.B, "b"]]) {
-    for (let i = 0; i < 3; i++) bacRenderSlot(A.slots[i], null, P.slots.find((x) => x.side === side && x.i === i), t);
+    for (let i = 0; i < 3; i++) bacRenderSlot(A.slots[i], null, P.slots.find((x) => x.side === side && x.i === i), t, e.mini);
     const mine = P.slots.filter((x) => x.side === side);
-    const upN = mine.filter((x) => x.sq && t >= x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.93).length;
+    const upN = mine.filter((x) => x.sq && t >= x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.95).length;
     const cs = side === "p" ? p : b;
     A.tot.textContent = upN >= 2 ? String(bacTot(cs.slice(0, upN))) : "";
+  }
+  // v105 絞っているカード（同じ側の2枚、または3枚目）を大きく出す
+  const now2 = e.mini ? [] : P.slots.filter((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ));
+  if (e.stage) {
+    e.stage.hidden = !now2.length;
+    if (now2.length) {
+      const sd = now2[0].side, dur = now2[0].i === 2 ? BAC_SQ3 : BAC_SQ, q = (t - now2[0].sq) / dur;
+      e.stage.className = `bc-stage ${sd}${now2.length === 1 ? " one" : ""}`;
+      e.stage.style.opacity = rlF(bacEase(q / 0.05) * (1 - bacEase((q - 0.965) / 0.035)));
+      e.stLab.textContent = `${sd === "p" ? "PLAYER" : "BANKER"} · SQUEEZE`;
+      e.big.forEach((B, i) => {
+        const sl = now2[i];
+        B.el.hidden = !sl;
+        if (sl) bqRender(B, sl.c, bqPose((t - sl.sq) / (sl.i === 2 ? BAC_SQ3 : BAC_SQ), now2.length > 1 ? i : 0));
+      });
+    }
   }
   const done = t >= D, shown = t >= D + BAC_REVEAL, w = bacWinner(sp.n);
   e.P.el.classList.toggle("win", shown && w === "P"); e.B.el.classList.toggle("win", shown && w === "B");
@@ -13167,7 +13281,7 @@ function bacSound(e, g, sp, P, t, D) {
   for (const x of P.slots) {
     const k = `${x.side}${x.i}`, dur = x.i === 2 ? BAC_SQ3 : BAC_SQ;
     if (!s.deal.has(k) && t >= x.deal) { s.deal.add(k); rlSfx("bcDeal", 0.8); }
-    if (x.sq && !s.up.has(k) && t >= x.sq + dur * 0.88) { s.up.add(k); rlSfx("bcFlip", 0.9); }
+    if (x.sq && !s.up.has(k) && t >= x.sq + dur * 0.87) { s.up.add(k); rlSfx("bcFlip", 0.9); }
   }
   const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.86);
   const bt = Math.floor(t / 0.7);
@@ -13192,7 +13306,8 @@ function bacBoard(mine, opt = {}) {
 //   ルーレットと同じ仕組み（賭け→締め切り→結果）で動かす。出た結果 n は「x＋はじけた倍率×100」の文字（例 "x231" ＝ 2.31x）
 //   賭けの場所は cx＋自動で降りる倍率×100（0＝自動なし）。精算のときに、降りた倍率を後ろに付ける（例 cx200c185 ＝ 自動2.00x・1.85xで降りた、c0＝降りられなかった）
 //   倍率は時間とともに m(t) = e^(k t)（6秒で2倍）。はじける倍率は 0.99÷(1−一様乱数)の小数第2位までの切り捨て（約2% は 1.00x ですぐはじける。上限 100x）
-const CR_K = Math.LN2 / 6, CR_MAX = 10000, CR_HOLD = 1.6;
+// v105 はじけたら、線の先が真下へ落ちる（CR_FALL 秒）。落ちたのを見せてから精算する（CR_HOLD 秒）
+const CR_K = Math.LN2 / 6, CR_MAX = 10000, CR_HOLD = 2.4, CR_FALL = 0.42;
 const crIs = (n) => typeof n === "string" && /^x\d+$/.test(n);
 const crX = (n) => Number(String(n).slice(1)) / 100;
 const crAt = (t) => Math.floor(100 * Math.exp(CR_K * Math.max(0, t)) + 1e-9); // 経過 t 秒の倍率×100（切り捨て）
@@ -13204,6 +13319,13 @@ function crPoint() {
 const crKey = (k) => { const m = /^cx(\d+)(?:c(\d+))?$/.exec(k); return m ? { auto: Number(m[1]), cash: m[2] == null ? null : Number(m[2]) } : null; };
 const crValidSpot = (s) => { const k = crKey(s); return !!k && k.cash == null && (k.auto === 0 || (k.auto >= 101 && k.auto <= CR_MAX)) && s === `cx${k.auto}`; };
 const crFmt = (x100) => `${(x100 / 100).toFixed(2)}x`;
+// v105 倍率 x100（×100 の整数）までに落ちる確率・そこまで行ける確率（%）。crPoint：x = 0.99 ÷ (1 − u) なので、x ≥ m となる確率は 0.99 ÷ m
+const crReach = (x100) => (x100 <= 100 ? 100 : 9900 / x100);
+const crProbText = (x100) => `${(100 - crReach(x100)).toFixed(1)}%`;
+// v105 いまの倍率 c まで生き残っているとき、倍率 a まで行ける確率（%）＝ P(はじける倍率 ≥ a) ÷ P(はじける倍率 ≥ c)。上限 CR_MAX より先へは行けない
+const crReachFrom = (c, a) => (a <= c ? 100 : a > CR_MAX ? 0 : (100 * crReach(a)) / crReach(c));
+// いまから1秒の間に落ちる確率（%）。ゲーム中は毎フレーム、いまの倍率と1秒後の倍率から計算する
+const crRiskNext = (tt, c) => 100 - crReachFrom(c, crAt(tt + 1));
 // 降りた倍率（精算のあと）。精算の前は、自動で降りる倍率に届いたかどうかだけで決める
 function crCashOf(k, n) {
   const c = crKey(k), X = Math.round(crX(n) * 100);
@@ -13267,7 +13389,8 @@ function crBuild() {
   const area = mk("path", { class: "cr-area", d: "" });
   const line = mk("path", { class: "cr-line", d: "" });
   const dot = mk("circle", { class: "cr-dot", r: "5", cx: "-20", cy: "-20" });
-  const big = h("div", { class: "cr-big" }, h("b", null, "1.00x"), h("small", null, ""));
+  // v105 いまの倍率までに落ちる確率（crPoint の式から：倍率 m までに落ちる確率 = 1 − 0.99 ÷ m）
+  const big = h("div", { class: "cr-big" }, h("b", null, "1.00x"), h("small", null, ""), h("span", { class: "cr-prob" }, ""));
   const cash = h("button", { type: "button", class: "cr-cash", hidden: true }, h("b", null, "CASH OUT"), h("small", null, ""));
   const box = h("div", { class: "cr-box" }, svg, big, cash);
   return { box, svg, grid, area, line, dot, big, cash, NS };
@@ -13288,35 +13411,43 @@ function crGrid(e, tMax, mMax) {
   const ts0 = tMax > 40 ? 20 : tMax > 20 ? 10 : 5;
   for (let t = ts0; t < tMax; t += ts0) { const tx = document.createElementNS(e.NS, "text"); tx.setAttribute("x", X(t)); tx.setAttribute("y", "196"); tx.setAttribute("class", "t"); tx.textContent = `${t}s`; e.grid.append(tx); }
 }
-function crRender(e, t, crashed) {
+function crRender(e, t, crashed, fall = 0) {
   const m = Math.exp(CR_K * t);
   const tMax = Math.max(10, Math.ceil((t * 1.15) / 5) * 5), mMax = Math.max(2, m * 1.25);
   crGrid(e, tMax, Math.round(mMax * 10) / 10);
   const mm = Math.round(mMax * 10) / 10, X = (x) => 34 + (x / tMax) * 276, Y = (v) => 182 - ((v - 1) / (mm - 1)) * 168;
   const N = 48, pts = [];
   for (let i = 0; i <= N; i++) { const x = (t * i) / N; pts.push(`${X(x).toFixed(1)},${Y(Math.exp(CR_K * x)).toFixed(1)}`); }
+  // はじけたあと：線の先が重力で加速しながら真下（1.00x の線）へ落ちる。少し前へ流れながら落ちる
+  const f = Math.max(0, Math.min(1, fall)), fy = Y(m) + (182 - Y(m)) * f * f, fx = X(t) + 6 * f;
+  if (f > 0) pts.push(`${fx.toFixed(1)},${fy.toFixed(1)}`);
   e.line.setAttribute("d", `M${pts.join("L")}`);
-  e.area.setAttribute("d", `M34,182L${pts.join("L")}L${X(t).toFixed(1)},182Z`);
-  e.dot.setAttribute("cx", X(t).toFixed(1)); e.dot.setAttribute("cy", Y(m).toFixed(1));
+  e.area.setAttribute("d", `M34,182L${pts.join("L")}L${(f > 0 ? fx : X(t)).toFixed(1)},182Z`);
+  e.dot.setAttribute("cx", (f > 0 ? fx : X(t)).toFixed(1)); e.dot.setAttribute("cy", (f > 0 ? fy : Y(m)).toFixed(1));
   e.box.classList.toggle("crashed", crashed);
+  e.box.classList.toggle("boom", f >= 1);
 }
 function crDraw(e, g, sp, now, loud) {
   const live = sp && g.phase !== "bet" && g.phase !== "ended";
   const me = S.user?.uid, my = rlMyBets(g);
   if (!live) {
     crRender(e, 0, false);
-    e.big.firstChild.textContent = "1.00x"; e.big.lastChild.textContent = g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "";
+    e.big.children[0].textContent = "1.00x"; e.big.children[1].textContent = g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "";
     e.cash.hidden = true;
+    e.big.children[2].textContent = g.phase === "bet" ? "倍率 m までに落ちる確率は 1 − 0.99 ÷ m" : "";
     rlState(e, "");
     rlWait(e, "");
     return false;
   }
   const t = (now - sp.at) / 1000, D = sp.dur / 1000, X100 = Math.round(crX(sp.n) * 100);
   const crashed = t >= D, tt = Math.max(0, Math.min(t, D));
-  crRender(e, tt, crashed);
+  crRender(e, tt, crashed, crashed ? (t - D) / CR_FALL : 0);
   const cur = crashed ? X100 : crAt(tt);
-  e.big.firstChild.textContent = t < 0 ? "1.00x" : crFmt(cur);
-  e.big.lastChild.textContent = t < 0 ? "NO MORE BETS" : crashed ? "CRASHED" : "";
+  e.big.children[0].textContent = t < 0 ? "1.00x" : crFmt(cur);
+  e.big.children[1].textContent = t < 0 ? "NO MORE BETS" : crashed ? "CRASHED" : "";
+  // v105 ゲーム中は、いまの倍率まで生き残った前提で「いまから1秒の間に落ちる確率」を毎フレーム計算して出す
+  //   始まる前は「1.00x ですぐ落ちる確率」、落ちたあとは「この倍率以下で落ちる確率」（= 次の 0.01x まで行けない確率）
+  e.big.children[2].textContent = t < 0 ? `1.00x ですぐ落ちる確率 ${crProbText(101)}` : crashed ? `この倍率以下で落ちる確率 ${crProbText(X100 + 1)}` : `いまから1秒で落ちる確率 ${crRiskNext(tt, cur).toFixed(1)}%`;
   // 自分の CASH OUT（参加者の画面だけ）
   const k = my && Object.keys(my).find((x) => crKey(x));
   const a = k ? my[k] : 0, auto = k ? crKey(k).auto : 0;
@@ -13331,10 +13462,11 @@ function crDraw(e, g, sp, now, loud) {
     e.cash.classList.toggle("done", !!myCash);
     e.cash.classList.toggle("lost", crashed && !myCash);
     e.cash.firstChild.textContent = myCash ? `${crFmt(myCash)} で降りた` : crashed ? "降りられず" : "CASH OUT";
-    e.cash.lastChild.textContent = myCash ? `+${Math.floor((a * (myCash - 100)) / 100)} ${chU(g)}` : crashed ? `−${a} ${chU(g)}` : `+${Math.floor((a * (cur - 100)) / 100)} ${chU(g)}${auto ? ` ・ 自動 ${crFmt(auto)}` : ""}`;
+    e.cash.lastChild.textContent = myCash ? `+${Math.floor((a * (myCash - 100)) / 100)} ${chU(g)}` : crashed ? `−${a} ${chU(g)}` : `+${Math.floor((a * (cur - 100)) / 100)} ${chU(g)}${auto ? ` ・ 自動 ${crFmt(auto)} まで ${crReachFrom(cur, auto).toFixed(1)}%` : ""}`;
+    // ↑ AUTO を決めているとき：いまの倍率から AUTO の倍率まで行ける確率（毎フレーム計算。倍率が上がるほど高くなる）
   } else e.cash.hidden = true;
   rlState(e, t < 0 ? "spinning" : crashed ? "done" : cur >= 200 ? "spinning tense" : "spinning");
-  if (crashed && t >= D + 0.3) rlRead(e, `x:${sp.n}`, () => [crBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, X100 <= 100 ? "すぐはじけた" : "CRASHED")]);
+  if (crashed && t >= D + CR_FALL + 0.35) rlRead(e, `x:${sp.n}`, () => [crBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, X100 <= 100 ? "すぐはじけた" : "CRASHED")]);
   else rlWait(e, t < 0 ? "NO MORE BETS" : "", false);
   if (loud) crSound(e, g, sp, t, D, myCash, a);
   return t < D + 14;
@@ -13353,13 +13485,14 @@ function crCashOut(g) {
 }
 function crSound(e, g, sp, t, D, myCash, a) {
   const s = (e.snds ??= {});
-  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, tick: Math.floor(Math.max(0, t) * 2), boom: t >= D, fx: t >= D + 0.3 }; return; }
+  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, tick: Math.floor(Math.max(0, t) * 2), boom: t >= D + CR_FALL, fx: t >= D + CR_FALL + 0.35 }; return; }
   if (t >= 0 && t < D) {
     const k = Math.floor(t * (2 + t * 0.15));
     if (k !== s.tick) { s.tick = k; rlSfx("tick", Math.min(1, 0.3 + t * 0.03)); }
   }
-  if (!s.boom && t >= D) { s.boom = true; rlSfx("crBoom", 1); navigator.vibrate?.(60); }
-  if (!s.fx && t >= D + 0.3) { s.fx = true; if (t - D < 2.5) rlResultFx(g, sp); }
+  // 「ドーン」は、落ちて底に当たったときに鳴らす
+  if (!s.boom && t >= D + CR_FALL) { s.boom = true; rlSfx("crBoom", 1); navigator.vibrate?.([70, 40, 30]); }
+  if (!s.fx && t >= D + CR_FALL + 0.35) { s.fx = true; if (t - D < 3) rlResultFx(g, sp); }
 }
 // 賭けの盤（クラッシュ）：賭ける額（チップを押す）と、自動で降りる倍率
 const CR_AUTOS = [0, 120, 150, 200, 300, 500, 1000, 2000];
@@ -13370,7 +13503,7 @@ function crBoard(g, d) {
     h("button", { type: "button", class: `rl-cell cr-bet${sum ? " bet" : ""}`, "aria-label": `賭ける${sum ? `（${sum}枚）` : ""}`, onclick: () => rlPlace(g, `cx${auto}`) },
       h("b", null, "BET"), h("span", null, sum ? `${sum} ${chU(g)}` : "タップでチップを置く"), sum ? h("i", { class: "rl-chip-on" }, rlAbbr(sum)) : null),
     h("div", { class: "cr-autos", role: "radiogroup", "aria-label": "自動で降りる倍率" }, h("small", null, "AUTO（自動で降りる）"),
-      h("div", { class: "cr-auto-row" }, CR_AUTOS.map((A) => h("button", { type: "button", role: "radio", "aria-checked": String(A === auto), class: `cr-auto${A === auto ? " on" : ""}`, onclick: () => setAuto(A) }, A ? crFmt(A) : "なし")))),
+      h("div", { class: "cr-auto-row" }, CR_AUTOS.map((A) => h("button", { type: "button", role: "radio", "aria-checked": String(A === auto), class: `cr-auto${A === auto ? " on" : ""}`, "aria-label": A ? `${crFmt(A)}（降りられる確率 ${crReach(A).toFixed(1)}%）` : "なし", onclick: () => setAuto(A) }, A ? [h("b", null, crFmt(A)), h("small", null, `成功 ${crReach(A).toFixed(1)}%`)] : "なし")))),
     h("p", { class: "dc-note" }, "倍率が上がっていく間に CASH OUT を押すと、賭けた額×その倍率がもらえます（もうけは賭けた額×(倍率−1)）。押す前にはじけると、賭けた分は負け。AUTO を決めておくと、その倍率で自動で降ります"));
 }
 // 自分の増減（この端末で分かる分：押した時刻と自動の倍率から）。精算のあとは games の res を使う
@@ -13397,23 +13530,31 @@ function crMyD(g, sp) {
 // ふちを越えて外に出たサイコロは、丼の外側の壁・ふち・机に当たる（外に止まったらションベン）
 const CC_RB = 80, CC_HR = 58, CC_TH = 5, CC_TZ = -CC_TH - 6; // 丼の厚み 5mm・高台（足）6mm
 const CC_RIM = Math.sqrt(CC_RB * CC_RB - (CC_RB - CC_HR) * (CC_RB - CC_HR)); // ふちの半径（内側）
-const CC_E = { bowl: 0.65, rim: 0.5, out: 0.5, table: 0.35, die: 0.5 }, CC_MU = { bowl: 0.1, rim: 0.25, out: 0.25, table: 0.4, die: 0.2 }; // 釉薬の丼はよく滑る
-// 投げる：手の中（丼の手前の上）から、3個を少しばらけて放す。強さ・向き・回転は種から決める
+// v105 はね返りを少し下げ（0.65→0.5）、摩擦を少し上げた（0.1→0.13）。滑るより、角で引っかかって転がるようになる
+const CC_E = { bowl: 0.5, rim: 0.5, out: 0.5, table: 0.35, die: 0.5 }, CC_MU = { bowl: 0.13, rim: 0.25, out: 0.25, table: 0.4, die: 0.25 };
+const CC_PW = 300, CC_PR = 250, CC_HZ = 95, CC_DAMP = 0.04, CC_SPIN = 160; // 押し出す速さ・ばらつき（mm/秒）・手の高さ（丼の底から mm）・回転の減り・手首のひねり（rad/秒）
+// v105 投げる：丼の上（ふちより 12〜17cm 上）で手を開いて、3個を上から落とす。少し前へ押し出し、手首のひねりで回転をかける
+//   丼の斜面に当たると、横へはじかれて丼の中をぐるぐる転がる。強さ・向き・回転は種から決める
 function ccSim(seed) {
   const rnd = rlRng(seed ^ 0x2f6b9a3d);
   const g = (s) => (rnd() + rnd() + rnd() - 1.5) * s; // おおよそ正規分布
-  // 投げる速さ（mm/秒）：ふつうは 0.35〜0.75 m/秒くらい。ときどき（約3.5%）力が入りすぎて 1.1〜1.9 m/秒で投げてしまう
+  // 押し出す速さ（mm/秒）：ふつうは 0.3〜0.6 m/秒。ときどき（約3.5%）力が入りすぎて 0.95〜1.5 m/秒で投げてしまう（ションベンしやすい）
   const strong = rnd() < 0.035;
-  const power = strong ? 1100 + rnd() * 800 : 350 + rnd() * 400;
+  const power = strong ? 950 + rnd() * 550 : CC_PW + rnd() * CC_PR;
   const D = [];
-  const hx = g(10), hy = 52 + g(6), hz = 112 + g(10);
-  const offs = [[-9, 2, 0], [9, 3, 1], [0, -8, 6]];
-  // 向き：おおむね奥（-y）へ。横へのずれ（丼の中をぐるっと回る分）を少し混ぜる
-  const side = (rnd() - 0.5) * 0.9, vx0 = power * side, vy0 = -power * Math.sqrt(1 - side * side), vz0 = -(80 + rnd() * 160);
+  // 手の位置：丼の真ん中から少し外（どの方向かは種から。三角関数を使わず、ばらばらな向きのベクトルを長さ1にする）
+  let ux = rnd() - 0.5, uy = rnd() - 0.5; const ul = Math.sqrt(ux * ux + uy * uy) || 1; ux /= ul; uy /= ul;
+  const r0 = 18 + rnd() * 16, hx = ux * r0, hy = uy * r0, hz = CC_HZ + rnd() * 30;
+  // 手の中の3個の位置（はじめから重ならないよう、中心どうしを 29mm 以上離す）
+  const offs = [[-16, 2, 0], [16, 4, 5], [0, -19, 14]];
+  // 向き：丼のふちに沿う向き（右回り・左回りは種から）に、少し内向きを混ぜる → 丼の中をぐるっと回りながら転がる
+  const turn = rnd() < 0.5 ? 1 : -1, tin = 0.25 + rnd() * 0.3, tt = Math.sqrt(1 - tin * tin);
+  const vx0 = power * (-uy * turn * tt - ux * tin), vy0 = power * (ux * turn * tt - uy * tin), vz0 = -(60 + rnd() * 160);
+  const spin = [g(CC_SPIN), g(CC_SPIN), g(CC_SPIN)]; // 手首のひねり（rad/秒）
   for (let i = 0; i < 3; i++) {
     const o = offs[i];
-    D.push({ p: [hx + o[0] + g(1.5), hy + o[1] + g(1.5), hz + o[2]], v: [vx0 + g(40), vy0 + g(50), vz0 + g(40)],
-      q: dcNorm4([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]), w: [g(60), g(60), g(60)] });
+    D.push({ p: [hx + o[0] + g(1.5), hy + o[1] + g(1.5), hz + o[2]], v: [vx0 + g(60), vy0 + g(60), vz0 + g(50)],
+      q: dcNorm4([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]), w: [spin[0] + g(40), spin[1] + g(40), spin[2] + g(40)] });
   }
   const c = [0, 0, CC_RB];
   const frames = [], ev = [], hist = [];
@@ -13492,9 +13633,28 @@ function ccSim(seed) {
     }
     for (const d of D) {
       // 転がる抵抗（陶器の丼の上を転がると少しずつ止まる）
-      for (let k = 0; k < 3; k++) { d.p[k] += d.v[k] * DC_DT; d.w[k] *= 1 - 0.25 * DC_DT; }
+      for (let k = 0; k < 3; k++) { d.p[k] += d.v[k] * DC_DT; d.w[k] *= 1 - CC_DAMP * DC_DT; }
       const [w0, w1, w2] = d.w, q = d.q;
       d.q = dcNorm4([q[0] + 0.5 * DC_DT * (-w0 * q[1] - w1 * q[2] - w2 * q[3]), q[1] + 0.5 * DC_DT * (w0 * q[0] + w1 * q[3] - w2 * q[2]), q[2] + 0.5 * DC_DT * (w1 * q[0] + w2 * q[1] - w0 * q[3]), q[3] + 0.5 * DC_DT * (w2 * q[0] + w0 * q[2] - w1 * q[1])]);
+    }
+    // v105 めり込みを位置で直す：角・辺の真ん中がほかのサイコロに 0.3mm 以上入っていたら、2個を半分ずつ押し離す
+    //   （速さの直しだけだと、丼の底へ押し付け合った2個がめり込んだまま止まることがあった）
+    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) {
+      const A = D[i], B = D[j], dx = A.p[0] - B.p[0], dy = A.p[1] - B.p[1], dz = A.p[2] - B.p[2], dd = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dd > 1.8 * DC_S) continue;
+      let best = 0, n = null;
+      if (dd < DC_S - 0.3) { best = DC_S - 0.3 - dd; n = dd > 1e-6 ? [dx / dd, dy / dd, dz / dd] : [1, 0, 0]; }
+      for (const [P, Q, sg] of [[A, B, 1], [B, A, -1]]) {
+        const RP = dcRot(P.q), RQ = dcRot(Q.q);
+        for (const cr of DC_PTS) {
+          const r = dcMul(RP, cr), x = [P.p[0] + r[0] - Q.p[0], P.p[1] + r[1] - Q.p[1], P.p[2] + r[2] - Q.p[2]], l = dcMulT(RQ, x);
+          if (Math.abs(l[0]) >= DC_H || Math.abs(l[1]) >= DC_H || Math.abs(l[2]) >= DC_H) continue;
+          let ax = 0, m = DC_H - Math.abs(l[0]);
+          for (const k of [1, 2]) { const mm = DC_H - Math.abs(l[k]); if (mm < m) { m = mm; ax = k; } }
+          if (m > best) { const nl = [0, 0, 0]; nl[ax] = l[ax] < 0 ? -1 : 1; const nw = dcMul(RQ, nl); best = m; n = nw.map((v) => v * sg); }
+        }
+      }
+      if (best > 0.3 && n) { const s2 = (best - 0.2) / 2; for (let k = 0; k < 3; k++) { A.p[k] += n[k] * s2; B.p[k] -= n[k] * s2; } }
     }
     // 止まったか：0.3秒のあいだ3個とも位置・向きがほとんど変わらない
     if (t > 0.6 && end == null && it % 100 === 0) {
@@ -13630,7 +13790,7 @@ function ccNextRound(g, st) {
 }
 
 // ---- v105 チンチロの絵（CSS の 3D）：机の上の丼。内側は球の一部なので、高さごとの輪を重ねて曲面に見せる
-const CC_ZOOM_AT = 0.55, CC_ZOOM_DUR = 0.9, CC_REVEAL = CC_ZOOM_AT + CC_ZOOM_DUR, CC_HOLD = 1.6; // 役が出てから次へ進むまで（読めるように）
+const CC_ZOOM_AT = 0.8, CC_ZOOM_DUR = 1.0, CC_REVEAL = CC_ZOOM_AT + CC_ZOOM_DUR, CC_HOLD = 2.0; // 役が出てから次へ進むまで（読めるように）
 const CC_RZ = (z) => Math.sqrt(Math.max(0, CC_RB * CC_RB - (CC_RB - z) * (CC_RB - z))); // 高さ z での丼の内側の半径
 const CC_LAYERS = 24;
 const CC_PLANS = new Map();
@@ -13845,7 +14005,7 @@ function ccTable(g, slot = "a", big = false) {
 
 const RL_POCKET = 360 / 37;
 // v103 玉が止まってから、入ったポケットへズームし始めるまで・ズームにかかる時間（秒）。数字はズームし終わってから出す
-const RL_ZOOM_AT = 0.9, RL_ZOOM_DUR = 1.3, RL_REVEAL = RL_ZOOM_AT + RL_ZOOM_DUR, RL_ZOOM_X = 2.7;
+const RL_ZOOM_AT = 1.1, RL_ZOOM_DUR = 1.4, RL_REVEAL = RL_ZOOM_AT + RL_ZOOM_DUR, RL_ZOOM_X = 2.7;
 // 数字が分かる（結果を見せてよい）瞬間：止まった時刻＋ズームの分（抽選は止まった瞬間）
 const rlRevealD = (g, sp) => (rlLottery(g) ? rlPlanOf(sp, rlLotPlan).D : rlDice(g) ? dcPlanOf(sp).D + DC_REVEAL : rlBac(g) ? bacPlanOf(sp.n).D + BAC_REVEAL : rlCrash(g) ? sp.dur / 1000 + CR_HOLD : rlCc(g) ? ccPlanOf(sp).D + CC_REVEAL : rlPlanOf(sp, rlCasinoPlan).D + RL_REVEAL);
 const RL_RT = 0.885, RL_RP = 0.612; // 玉が縁を転がる半径・ポケットの半径（円盤の絵の半径 100 に対する割合）
@@ -13885,7 +14045,7 @@ function rlCasinoSim(seed) {
     let L = r * r * omC * RAD; // 回る勢い（半径²×角速度）
     const G = rT * (omC * RAD) ** 2; // 内側へ落ちようとする力（縁で、遠心力とちょうどつり合う）
     const fr = 0.03 + rnd() * 0.05; // 外側の坂を転がる摩擦（小さいほど、ゆっくり渦を巻いて落ちる）
-    const fl = 0.4 + rnd() * 0.5; // ポケットの底の摩擦（毎回少しちがう。小さいほど長く跳ね回る）
+    const fl = 0.28 + rnd() * 0.4; // ポケットの底の摩擦（毎回少しちがう。小さいほど長く跳ね回る）。v105 少し下げて、長く跳ね回るように
     let head = false, wb = 0, cap = -1, capC = 0, capV = 0, lastSlot = null, cool = -1, tHead = -1, tSlow = -1;
     const ev = [], sm = []; // ev：{t, k 種類, s 強さ}／sm：[円盤に対する玉の角度, 半径, 高さ]
     const lastHit = new Array(8).fill(-9);
@@ -13914,11 +14074,11 @@ function rlCasinoSim(seed) {
           const a = ((th - 22.5) % 45 + 45) % 45, near = a < 22.5 ? a : a - 45, idx = ((Math.round((th - 22.5 - near) / 45) % 8) + 8) % 8;
           if (Math.abs(near) < 3.2 && t - lastHit[idx] > 0.25) {
             lastHit[idx] = t;
-            if (rnd() < 0.42) { /* 上をかすめて通り過ぎた */ } else {
+            if (rnd() < 0.3) { /* 上をかすめて通り過ぎた */ } else {
             const strong = rnd() < 0.6;
             const keep = strong ? 0.42 + rnd() * 0.3 : 0.84 + rnd() * 0.1;
             L *= keep;
-            vz = strong ? 2.8 + rnd() * 2.6 : 0.9 + rnd() * 0.9;
+            vz = strong ? 3.6 + rnd() * 3.2 : 1.2 + rnd() * 1.1;
             vr += strong ? -(0.05 + rnd() * 0.25) : (rnd() - 0.5) * 0.08;
             ev.push({ t, k: "defl", s: strong ? 1 : 0.5 });
             }
@@ -13937,17 +14097,17 @@ function rlCasinoSim(seed) {
         const slot = Math.floor(phi / P + 0.5), slot0 = lastSlot ?? Math.floor(phi0 / P + 0.5);
         if (slot !== slot0 && z < zF && t > cool) {
           // 仕切りに当たった
-          const u = Math.abs(rel), over = u > 80 && rnd() < Math.min(0.72, u / 560);
+          const u = Math.abs(rel), over = u > 70 && rnd() < Math.min(0.8, u / 430);
           if (over) {
             rel *= 0.55 + rnd() * 0.3;
-            vz = Math.max(vz, Math.min(8.5, 2.4 + u * 0.012 * (0.6 + rnd() * 0.8)));
+            vz = Math.max(vz, Math.min(10.5, 3.0 + u * 0.016 * (0.6 + rnd() * 0.8)));
             ev.push({ t, k: "fret", s: Math.min(1, u / 500) });
           } else {
-            const e = u > 35 ? 0.42 + rnd() * 0.3 : 0.14 + rnd() * 0.16;
+            const e = u > 35 ? 0.5 + rnd() * 0.3 : 0.18 + rnd() * 0.18;
             const edge = (slot0 + (slot > slot0 ? 0.5 : -0.5)) * P;
             phi = edge - (slot > slot0 ? 0.02 : -0.02);
             rel = -rel * e;
-            if (u > 35) vz = Math.max(vz, Math.min(7, 1.2 + u * 0.0115 * (0.5 + rnd())));
+            if (u > 30) vz = Math.max(vz, Math.min(9, 1.8 + u * 0.015 * (0.5 + rnd())));
             ev.push({ t, k: "fret", s: Math.min(1, u / 500) });
           }
           cool = t + 0.012;
@@ -13963,7 +14123,7 @@ function rlCasinoSim(seed) {
       // 高さ（跳ね）
       if (z > 0 || vz > 0) {
         vz -= 32 * dt; z += vz * dt;
-        if (z <= 0) { z = 0; if (vz < -1.1) { vz = -vz * (0.46 + rnd() * 0.16); if (head) ev.push({ t, k: "bounce", s: Math.min(1, vz / 3) }); } else vz = 0; }
+        if (z <= 0) { z = 0; if (vz < -0.9) { vz = -vz * (0.52 + rnd() * 0.18); if (head) ev.push({ t, k: "bounce", s: Math.min(1, vz / 3) }); } else vz = 0; }
       }
       t += dt; step++;
       if (step % RL_SAMPLE === 0) sm.push(th - wAt(t), r, z);
@@ -14083,25 +14243,26 @@ function rlSector(a0, a1, r0, r1) {
   const [x2, y2] = rlXY(a1, r0), [x3, y3] = rlXY(a0, r0);
   return `M${rlF(x0)} ${rlF(y0)}A${r1} ${r1} 0 ${big} 1 ${rlF(x1)} ${rlF(y1)}L${rlF(x2)} ${rlF(y2)}A${r0} ${r0} 0 ${big} 0 ${rlF(x3)} ${rlF(y3)}Z`;
 }
-const RL_COLS = { r: ["#C0262F", "#7A141B"], b: ["#161616", "#0A0A0A"], g: ["#0F8A45", "#085A2C"] };
+// v105 BJ に合わせて、少し深い色に（赤は深紅・緑は深緑）
+const RL_COLS = { r: ["#A81F2A", "#5E0F16"], b: ["#17171A", "#0A0A0B"], g: ["#0D6E3B", "#064424"] };
 // カジノの円盤（木の器・玉の道・ひし形の邪魔板・37のポケット・真ん中のつまみ）
 function rlBuildCasino(id) {
   const s = svgEl("svg", { viewBox: "-100 -100 200 200", class: "rl-svg", "aria-hidden": "true" });
   const defs = svgEl("defs");
-  defs.innerHTML = `<radialGradient id="rlw${id}" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse"><stop offset=".79" stop-color="#2B170A"/><stop offset=".86" stop-color="#5E3819"/><stop offset=".95" stop-color="#3A210E"/><stop offset="1" stop-color="#120802"/></radialGradient>`
-    + `<radialGradient id="rlc${id}" cx="-16" cy="-20" r="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F2E2B3"/><stop offset=".42" stop-color="#A88340"/><stop offset="1" stop-color="#3A2A0F"/></radialGradient>`
+  defs.innerHTML = `<radialGradient id="rlw${id}" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse"><stop offset=".79" stop-color="#141418"/><stop offset=".86" stop-color="#2E2E35"/><stop offset=".95" stop-color="#1C1C21"/><stop offset="1" stop-color="#060607"/></radialGradient>`
+    + `<radialGradient id="rlc${id}" cx="-16" cy="-20" r="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F4F4F8"/><stop offset=".42" stop-color="#8E8E98"/><stop offset="1" stop-color="#26262C"/></radialGradient>`
     + `<radialGradient id="rlb${id}" cx="-1.1" cy="-1.3" r="3.8" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".55" stop-color="#ECECF2"/><stop offset="1" stop-color="#8E8E9A"/></radialGradient>`
     + `<radialGradient id="rlg${id}" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".38"/></radialGradient>`
     + `<linearGradient id="rls${id}" x1="0" y1="-100" x2="0" y2="100" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>`;
   s.append(defs);
-  s.append(svgEl("circle", { r: 99.5, fill: "#100702" }), svgEl("circle", { r: 98, fill: `url(#rlw${id})` }),
+  s.append(svgEl("circle", { r: 99.5, fill: "#050506" }), svgEl("circle", { r: 98, fill: `url(#rlw${id})` }),
     svgEl("circle", { r: 88.5, fill: "none", stroke: "rgba(0,0,0,.28)", "stroke-width": 15 }),
-    svgEl("circle", { r: 96.2, fill: "none", stroke: "rgba(255,214,150,.28)", "stroke-width": 0.8 }),
-    svgEl("circle", { r: 80.6, fill: "none", stroke: "rgba(255,214,150,.4)", "stroke-width": 1 }));
+    svgEl("circle", { r: 96.2, fill: "none", stroke: "rgba(255,255,255,.16)", "stroke-width": 0.8 }),
+    svgEl("circle", { r: 80.6, fill: "none", stroke: "rgba(255,255,255,.24)", "stroke-width": 1 }));
   // ひし形の邪魔板（玉が当たって跳ねる）
   for (let k = 0; k < 8; k++) {
     const [x, y] = rlXY(k * 45 + 22.5, 84.5);
-    s.append(svgEl("polygon", { points: k % 2 ? "0,-3.6 1.5,0 0,3.6 -1.5,0" : "0,-2 3.4,0 0,2 -3.4,0", fill: "#D9C48A", stroke: "#6B5525", "stroke-width": 0.4,
+    s.append(svgEl("polygon", { points: k % 2 ? "0,-3.6 1.5,0 0,3.6 -1.5,0" : "0,-2 3.4,0 0,2 -3.4,0", fill: "#D8D8E0", stroke: "#55555E", "stroke-width": 0.4,
       transform: `translate(${rlF(x)} ${rlF(y)}) rotate(${k * 45 + 22.5})` }));
   }
   const rot = svgEl("g", { class: "rl-rot" });
@@ -14115,17 +14276,17 @@ function rlBuildCasino(id) {
   rot.append(hit);
   RL_ORDER.forEach((n, i) => {
     const [x0, y0] = rlXY((i - 0.5) * A, 56), [x1, y1] = rlXY((i - 0.5) * A, 78);
-    rot.append(svgEl("line", { x1: rlF(x0), y1: rlF(y0), x2: rlF(x1), y2: rlF(y1), stroke: "#D8C48E", "stroke-width": 0.7 }));
+    rot.append(svgEl("line", { x1: rlF(x0), y1: rlF(y0), x2: rlF(x1), y2: rlF(y1), stroke: "#C4C4CE", "stroke-width": 0.7 }));
     const t = svgEl("text", { class: "rl-num", "text-anchor": "middle", "dominant-baseline": "central", transform: `rotate(${rlF(i * A)}) translate(0 -72)` });
     t.textContent = String(n);
     rot.append(t);
   });
-  for (const [r, w] of [[78, 1.1], [66, 0.6], [56, 0.9]]) rot.append(svgEl("circle", { r, fill: "none", stroke: "#D8C48E", "stroke-width": w }));
+  for (const [r, w] of [[78, 1.1], [66, 0.6], [56, 0.9]]) rot.append(svgEl("circle", { r, fill: "none", stroke: "#C4C4CE", "stroke-width": w }));
   rot.append(svgEl("circle", { r: 55.4, fill: `url(#rlc${id})` }), svgEl("circle", { r: 40, fill: "none", stroke: "rgba(0,0,0,.22)", "stroke-width": 0.8 }));
   for (let k = 0; k < 4; k++) {
     const [x, y] = rlXY(k * 90, 30);
-    rot.append(svgEl("line", { x1: 0, y1: 0, x2: rlF(x), y2: rlF(y), stroke: "#EADBAA", "stroke-width": 3.2, "stroke-linecap": "round" }),
-      svgEl("circle", { cx: rlF(x), cy: rlF(y), r: 3.8, fill: "#F4E6B8", stroke: "#7A6128", "stroke-width": 0.5 }));
+    rot.append(svgEl("line", { x1: 0, y1: 0, x2: rlF(x), y2: rlF(y), stroke: "#E2E2EA", "stroke-width": 3.2, "stroke-linecap": "round" }),
+      svgEl("circle", { cx: rlF(x), cy: rlF(y), r: 3.8, fill: "#F2F2F6", stroke: "#5E5E68", "stroke-width": 0.5 }));
   }
   rot.append(svgEl("circle", { r: 9.5, fill: "#E9D8A2", stroke: "#7A6128", "stroke-width": 0.6 }), svgEl("circle", { r: 4, fill: "#FFF7DD" }));
   s.append(rot);
@@ -14298,8 +14459,8 @@ function rlDrawCasino(e, g, sp, now, loud) {
   const [x, y] = rlXY(pose.ball, R);
   const fade = Math.min(1, t / 0.25);
   e.ball.setAttribute("opacity", rlF(fade));
-  e.ball.setAttribute("transform", `translate(${rlF(x)} ${rlF(y)}) scale(${rlF(1 + z * 0.55)})`);
-  e.shadow.setAttribute("opacity", rlF(fade * (0.5 - z * 0.3)));
+  e.ball.setAttribute("transform", `translate(${rlF(x)} ${rlF(y)}) scale(${rlF(1 + Math.min(z, 2) * 0.42)})`);
+  e.shadow.setAttribute("opacity", rlF(fade * Math.max(0.1, 0.5 - z * 0.22)));
   e.shadow.setAttribute("transform", `translate(${rlF(x + 0.8 + z * 4)} ${rlF(y + 1.4 + z * 6)})`);
   const done = t >= D, shown = t >= D + RL_REVEAL;
   e.hit.setAttribute("d", shown ? rlSector((idx - 0.5) * RL_POCKET, (idx + 0.5) * RL_POCKET, 56, 78) : "");
@@ -14769,6 +14930,22 @@ function cardStartState(kind, players, o) {
   return null;
 }
 // 自動で進める（1秒ごと・操作が届いたとき）。進めることがなければ何もしない
+// v105 全員の操作がそろってから次の場面へ進むまでの間（ミリ秒）。人狼などと同じ3秒。押したことが全員の画面に出てから進む（時間切れのときは待たない）
+const CARD_GRACE_MS = 3000;
+const CARD_GRACE = new Map();
+function cardGrace(g, ms = CARD_GRACE_MS) {
+  const k = `${g.id}|${g.step ?? 0}|${g.phase}`, now = nowS();
+  if (!CARD_GRACE.has(k)) { if (CARD_GRACE.size > 300) CARD_GRACE.clear(); CARD_GRACE.set(k, now); setTimeout(gameAutoTick, ms + 60); }
+  return now - CARD_GRACE.get(k) >= ms;
+}
+// v105 全員が操作し終えて、3秒の待ちに入っているか（案内に「まもなく」を出すため）
+function cardAllReady(g) {
+  if (cardManual(g.opts) || !g.actors?.length) return false;
+  if (g.kind === "bj") { const r = `r${g.bj?.round}`; return (g.phase === "bet" || g.phase === "insure") && g.actors.every((u) => cardAct(g, g.phase === "bet" ? "b" : "i", u, r) != null); }
+  if (g.kind === "rl") return g.phase === "bet" && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, `r${g.rl?.round}`))?.ready);
+  if (g.kind === "dfg") return g.phase === "exchange" && g.dfg.exchange.every((x) => cardAct(g, "x", x.to, `x${g.dfg.round}`) != null);
+  return false;
+}
 function cardTick(g) {
   const now = nowS();
   const timeUp = g.endsAt && now >= g.endsAt + 1000;
@@ -14777,21 +14954,23 @@ function cardTick(g) {
   let fn = null;
   if (g.kind === "bj") {
     const st = g.bj, r = `r${st.round}`;
-    if (g.phase === "bet" && !manual && (timeUp || acted("b", r))) fn = bjDeal;
-    else if (g.phase === "insure" && !manual && (timeUp || acted("i", r))) fn = bjInsure;
+    if (g.phase === "bet" && !manual && (timeUp || (acted("b", r) && cardGrace(g)))) fn = bjDeal;
+    else if (g.phase === "insure" && !manual && (timeUp || (acted("i", r) && cardGrace(g)))) fn = bjInsure;
+    else if (g.phase === "play" && st.dWait) { if (now >= st.dWait) fn = bjPlay; }
     else if (g.phase === "play" && (g.actors.some((u) => bjPending(g, st, u)) || (bjTap(g) && g.actors.some((u) => bjOpenFresh(g, st, u))) || (timeUp && (!manual || g.actors.some((u) => bjCur(st, u)))))) fn = bjPlay;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = bjNext;
   } else if (g.kind === "rl") {
     // v100 ルーレット：賭けの締め切り（時間切れ・全員が準備OK）→ 回す → 全員の画面で止まってから精算 → 次の回
     const st = g.rl, r = `r${st.round}`;
-    if (g.phase === "bet" && !manual && (timeUp || (g.actors.length > 0 && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready)))) fn = rlSpin;
+    if (g.phase === "bet" && !manual && (timeUp || (g.actors.length > 0 && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready) && cardGrace(g)))) fn = rlSpin;
     else if (g.phase === "ready" && g.actKey === "s" && (timeUp || cardAct(g, "s", rlSpinner(g), r) != null)) fn = rlSpin;
     else if (g.phase === "roll" && rlCc(g) && (timeUp || cardAct(g, "t", g.actors[0], `${r}t${st.cc?.seq ?? 0}`) != null)) fn = rlSpin;
     else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + (rlLottery(g) ? 0 : (rlDice(g) ? DC_REVEAL : rlBac(g) ? BAC_REVEAL : rlCrash(g) ? CR_HOLD : rlCc(g) ? CC_REVEAL + CC_HOLD : RL_REVEAL) * 1000) + 400) fn = rlSettle;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = rlNext;
   } else {
     const st = g.dfg;
-    if (g.phase === "exchange" && !manual && (timeUp || st.exchange.every((x) => cardAct(g, "x", x.to, `x${st.round}`) != null))) fn = dfgExchangeDone;
+    if (g.phase === "exchange" && !manual && (timeUp || (st.exchange.every((x) => cardAct(g, "x", x.to, `x${st.round}`) != null) && cardGrace(g)))) fn = dfgExchangeDone;
+    else if (g.phase === "play" && st.flowAt) { if (now >= st.flowAt) fn = dfgFlowNow; }
     else if (g.phase === "play" && (timeUp || cardAct(g, "t", st.turn, st.tseq) != null)) fn = dfgMove;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = dfgNextRound;
   }
@@ -14827,6 +15006,7 @@ function cardPhaseShort(g) {
 }
 function cardPrompt(g) {
   if (g.phase === "ended") return g.result?.text ?? "";
+  if (cardAllReady(g)) return g.phase === "exchange" ? "全員の交換がそろいました。まもなく始まります。" : g.phase === "insure" ? "全員が選びました。まもなくディーラーがカードを確かめます。" : "全員が準備OKです。まもなく始まります。";
   if (g.kind === "rl") {
     const man = cardManual(g.opts);
     if (g.phase === "ready") { const sp = rlSpinner(g); return sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"; }
@@ -14845,6 +15025,7 @@ function cardPrompt(g) {
   const manual = cardManual(g.opts), auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !manual;
   const after = auto ? "まもなく次の回が始まります。" : manual ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
   if (g.kind === "bj" && manual && g.phase === "play" && !g.actors.length) return "全員の番が終わりました。ディーラー（管理者）がカードを開けるのを待っています。";
+  if (g.kind === "bj" && g.phase === "play" && g.bj?.dWait) return "全員の番が終わりました。まもなくディーラーがカードを開けます。";
   if (g.kind === "bj") return g.phase === "bet" ? `賭けるチップの枚数を選んでください。${manual ? "ディーラー（管理者）が締め切ると配られます。" : ""}` : g.phase === "insure" ? "ディーラーの表向きのカードが A です。保険（賭けの半分。ディーラーがブラックジャックなら2倍で戻る）をかけるか選んでください。"
     : g.phase === "play" ? "ヒットでカードを1枚引き、スタンドでそこまでにします。21を超えると負けです。" : `この回の結果です。${after}`;
   if (g.phase === "exchange") return "カードを交換しています。大富豪・富豪の人は、渡すカードを選んでください。";
@@ -14887,7 +15068,7 @@ const dfgSeatsEl = (g, me = null) => {
   const st = g.dfg;
   return h("div", { class: "dfg-seats" }, st.seats.map((u) => {
     const place = st.done.indexOf(u), down = (st.down ?? []).includes(u);
-    return h("div", { class: `dfg-seat${u === st.turn && g.phase === "play" ? " turn" : ""}${place >= 0 || down ? " out" : ""}${u === me ? " me" : ""}` },
+    return h("div", { class: `dfg-seat${u === st.turn && g.phase === "play" && !st.flowAt ? " turn" : ""}${place >= 0 || down ? " out" : ""}${u === me ? " me" : ""}` },
       h("b", null, memberName(u), pcYou(u, me)),
       h("span", null, down ? (st.fallen === u ? "都落ち" : "反則上がり") : place >= 0 ? `${place + 1}番であがり` : `${st.counts?.[u] ?? 0}枚`),
       st.passes?.includes(u) && g.phase === "play" ? h("em", null, "パス") : null,
@@ -14951,6 +15132,8 @@ function deathCutin(g, uids) {
     setTimeout(() => el.remove(), DEATH_MS + 100);
   }, calm ? 0 : DEATH_AT);
 }
+// v105 ディーラーのカードは、もっとゆっくり（1枚 2.4秒かけてめくり、次の1枚まで 2.2秒あける）
+const BJ_DEALER_FLIP_MS = 2400, BJ_DEALER_STEP = 2200;
 const BJ_FLIP_MS = 1500; // v94 ブラックジャックは、配る・めくるを約1.5秒かけて（わくわく感を出す）。cls に " bj-slow" を付けたときに使う
 const BJ_RING_MAX = 7; // 丸テーブルに並べるのは、ほかの人が7人まで（8人まで）。それより多いときは上の帯に小さく並べる
 // v103 配る・めくるの動きは「始めた時刻」を覚えておく。動きの途中で画面が描き直されても、続きから動かす（遅れた分だけ animation-delay を負にする）
@@ -14967,7 +15150,7 @@ function cxAnim(el, key, isNew, kind, dur, wait = 0) {
 }
 const cxFan = (cs, cls = "", zone = null, step = 300) => {
   let d = 0, t = 0;
-  const slow = cls.includes("bj-slow"), dealMs = slow ? BJ_FLIP_MS : CX_DEAL_MS, flipMs = slow ? BJ_FLIP_MS : CX_FLIP_MS;
+  const slow = cls.includes("bj-slow"), dl = cls.includes("bj-dl"), dealMs = dl ? BJ_DEALER_FLIP_MS : slow ? BJ_FLIP_MS : CX_DEAL_MS, flipMs = dl ? BJ_DEALER_FLIP_MS : slow ? BJ_FLIP_MS : CX_FLIP_MS;
   const fan = h("div", { class: `cx-fan${cls}` }, cs.map((c, i) => {
     const el = cardEl(c, { big: true });
     if (zone) {
@@ -15097,7 +15280,7 @@ function cardMemberBody(g) {
     const settled = keys.filter((k) => st.hands[k].res);
     const sum = settled.reduce((x, k) => x + (Number(st.hands[k].delta) || 0), 0) + (Number(st.insRes?.[uid]) || 0);
     // ディーラーのカードは先に作って、めくり終わるまでの時間を知る（勝ち負けは、めくり終わってから出す）
-    const dFan = dealer.length ? cxFan(dealer, " bj-slow", `d${g.id}.${st.round}`, 1000) : cxFan([null, null], " ghost");
+    const dFan = dealer.length ? cxFan(dealer, " bj-slow bj-dl", `d${g.id}.${st.round}`, BJ_DEALER_STEP) : cxFan([null, null], " ghost");
     const late = Number(dFan.dataset.t) || 0;
     const lateA = late ? { style: `--late:${late}ms` } : {};
     const lateC = late ? " late" : "";
@@ -15220,7 +15403,7 @@ function cardMemberBody(g) {
   // 大富豪
   const st = g.dfg;
   const hand = sortHand(gSecret(g, uid)?.hand ?? []);
-  const myTurn = g.phase === "play" && st.turn === uid;
+  const myTurn = g.phase === "play" && st.turn === uid && !st.flowAt;
   const exTo = g.phase === "exchange" ? (st.exchange ?? []).find((x) => x.to === uid) : null;
   const exSent = exTo ? cardAct(g, "x", uid, `x${st.round}`) : null;
   const sel = GC.sel.get(g.id) ?? new Set();
@@ -15284,7 +15467,7 @@ function cardMemberBody(g) {
   if (flags.length) out.unshift(h("div", { class: "cx-flags" }, flags.map((x) => h("span", null, x)), rev ? h("span", { class: "hot" }, "強さ逆転 ⇅") : null));
   const seats = cxAfter(st.seats, uid).map((u) => {
     const place = st.done.indexOf(u), down = (st.down ?? []).includes(u), n = st.counts?.[u] ?? 0;
-    return cxSeat(u, `${u === st.turn && g.phase === "play" ? " turn" : ""}${place >= 0 || down ? " out" : ""}`,
+    return cxSeat(u, `${u === st.turn && g.phase === "play" && !st.flowAt ? " turn" : ""}${place >= 0 || down ? " out" : ""}`,
       st.passes?.includes(u) && g.phase === "play" ? "PASS" : null,
       place >= 0 || down || !n ? null : h("div", { class: "cx-mini backs" }, Array.from({ length: Math.min(n, 6) }, () => cardEl(null, { small: true }))),
       h("div", { class: "cx-meta" }, down ? (st.fallen === u ? "都落ち" : "反則上がり") : place >= 0 ? `✓ ${place + 1}位` : `×${n}`, st.titles?.[u] ? h("em", null, ` ${st.titles[u]}`) : null));
@@ -15293,7 +15476,7 @@ function cardMemberBody(g) {
     cxFelt(seats, h("div", { class: "cx-field" },
       h("div", { class: "cx-total" }, g.phase !== "play" ? "場" : f ? `場：${memberName(f.by)}` : "場は空"),
       g.phase === "play" && f ? cxFan(f.cards, "", `f${g.id}.${st.tseq}.${f.by}`, 160) : cxFan([], " ghost blank"),
-      g.phase === "play" ? h("div", { class: `cx-turn${myTurn ? " me" : ""}` }, myTurn ? "あなたの番" : `${memberName(st.turn)}の番`) : null)),
+      g.phase === "play" ? h("div", { class: `cx-turn${myTurn ? " me" : ""}` }, st.flowAt ? "場が流れます" : myTurn ? "あなたの番" : `${memberName(st.turn)}の番`) : null)),
     h("div", { class: `cx-me dfg-hand${myTurn ? " turn" : ""}${myTurn && sentT == null ? " need" : ""}` },
     h("div", { class: "gl-label" }, step ? "PLAY" : myTurn ? "YOUR TURN" : `HAND ×${hand.length}`),
     step ? h("div", { class: "dfg-cards fixed" }, cardRow(step.play)) : null,
@@ -15433,7 +15616,7 @@ function demoBotMove(g, u) {
       if (!ex || cardAct(g, "x", u, `x${st.round}`) != null) return null;
       return ["x", `x${st.round}:${hand.slice(0, ex.cards.length).join(".")}`];
     }
-    if (g.phase !== "play" || st.turn !== u || cardAct(g, "t", u, st.tseq) != null || !hand.length) return null;
+    if (g.phase !== "play" || st.flowAt || st.turn !== u || cardAct(g, "t", u, st.tseq) != null || !hand.length) return null;
     const n = st.field?.n ?? 1;
     const groups = [];
     for (const c of hand) { const same = hand.filter((x) => cardSv(x) === cardSv(c)); if (same.length >= n && same[0] === c) groups.push(same.slice(0, n)); }
@@ -15580,7 +15763,7 @@ function gameForwardFn(g) {
 function cardForwardFn(g) {
   if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" || g.phase === "roll" ? rlSpin : g.phase === "result" ? rlNext : null;
   if (g.kind === "bj") return g.phase === "bet" ? bjDeal : g.phase === "insure" ? (x, s) => bjInsure(x, s, true) : g.phase === "play" ? bjReveal : g.phase === "result" ? bjNext : null;
-  return g.phase === "exchange" ? (x, s) => dfgExchangeDone(x, s, true) : g.phase === "play" ? (x, s) => dfgMove(x, s, true) : g.phase === "result" ? dfgNextRound : null;
+  return g.phase === "exchange" ? (x, s) => dfgExchangeDone(x, s, true) : g.phase === "play" ? (g.dfg?.flowAt ? dfgFlowNow : (x, s) => dfgMove(x, s, true)) : g.phase === "result" ? dfgNextRound : null;
 }
 // 管理者の画面の「ディーラーの操作」（大きいボタン1つと、いまの状況）
 function cardDealerBox(g) {
@@ -18179,7 +18362,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v104"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v105"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
