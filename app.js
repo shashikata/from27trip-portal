@@ -2433,7 +2433,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v99"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v100"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11029,6 +11029,7 @@ const GAME_KINDS = {
   num: { label: "数字ならべ", min: 2, desc: "1〜100の数字がこっそり配られます。お題（例：人気の食べ物）に合わせて、自分の数字の大きさを例えで伝え合い、話し合って小さい順に並びます。最後に答え合わせをします。" },
   bj: { label: "ブラックジャック", min: 1, max: 20, desc: "管理者の端末がディーラーになり、全員がディーラーと勝負します。カードの合計を21に近づけ、21を超えたら負けです（絵札は10、Aは1か11）。毎回チップを賭け、最後に一番多くチップを残した人の勝ちです。" },
   dfg: { label: "大富豪", min: 2, max: 8, desc: "全部のカードを配り、場より強いカードを順番に出していきます（強さは 3 が一番弱く、2 が一番強い。ジョーカーはさらに強い）。出せないときや出したくないときはパス。早く手札をなくした人ほど上位で、何回か遊んだ合計点で順位を決めます。" },
+  rl: { label: "ルーレット", min: 1, max: 20, desc: "カジノ式（ヨーロッパ式・0〜36）：全員がチップを数字や赤・黒などに置き、管理者の端末（ディーラー）が玉を投げます。数字1つに当たればもうけ35倍、1〜12などは2倍、赤・黒などは1倍。最後に一番多くチップを残した人の勝ちです。抽選式：好きな項目を円盤に並べて回し、1つを選びます（罰ゲーム・順番決めなど）。" },
 };
 const WOLF_ROLES = {
   wolf: { label: "人狼", side: "wolf", desc: "夜に人間を1人襲います。仲間の人狼が誰かはわかります。人狼の数が人間と同じになれば勝ちです。" },
@@ -11239,6 +11240,9 @@ async function startGame(kind, players, o, demo = false) {
     const r = dfgDealRound({ id: gid, opts: o }, st, [gLog(`大富豪を始めます（${players.length}人・全${o.rounds}回）。座る順番：${gNames(order)}`, null, { type: "dfgStart" })]);
     for (const [u, data] of r.secrets) sec(u, { hand: data.hand });
     g = { ...base, ...r.update };
+  } else if (kind === "rl") {
+    // v100 ルーレット（秘密の札は使わない。止まる場所は回すときに決める）
+    g = { ...base, ...(rlO(o).mode === "lottery" ? { title: "抽選ルーレット" } : {}), ...rlStartState(players, o) };
   } else {
     const max = Math.max(players.length, o.max ?? 100);
     const nums = gShuffle(Array.from({ length: max }, (_, i) => i + 1)).slice(0, players.length);
@@ -11257,7 +11261,7 @@ async function startGame(kind, players, o, demo = false) {
 //   opts.pt = { pay: "user"|"team", setId, chips: "real"|"virtual"（ブラックジャック）, bring（持ち込む上限。0＝持ち点すべて）,
 //               rank: [1位, 2位, …, 最下位]（トランプ）, win, lose（勝ち負けのゲーム） }
 //   ゲームが終わる段階（phase が ended になる処理）で、管理者の端末が pointLogs に書く
-const GAME_PT_KINDS = ["wolf", "word", "ng", "bj", "dfg"];
+const GAME_PT_KINDS = ["wolf", "word", "ng", "bj", "dfg", "rl"];
 // 勝ち負けのゲームの、勝った人・負けた人（決まらなかったときは null）
 function gWinLose(g) {
   if (g.kind === "wolf") {
@@ -11279,8 +11283,9 @@ function gPtRows(g) {
   const pt = g.opts?.pt, label = GAME_KINDS[g.kind]?.label ?? "ゲーム";
   if (!pt?.pay || g.phase !== "ended") return [];
   const rows = [];
-  if (g.kind === "bj" && pt.chips === "real") for (const u of g.players) {
-    const a = g.bj?.start?.[u] ?? 0, b = g.bj?.chips?.[u] ?? 0;
+  if ((g.kind === "bj" || g.kind === "rl") && pt.chips === "real") for (const u of g.players) {
+    const cs = g.kind === "rl" ? g.rl : g.bj;
+    const a = cs?.start?.[u] ?? 0, b = cs?.chips?.[u] ?? 0;
     if (b !== a) rows.push({ uid: u, key: "c", delta: b - a, reason: `${label}の勝ち負け（チップ ${a}枚 → ${b}枚）` });
   }
   if (isCardKind(g.kind) && pt.rank?.length && g.result?.ranking?.length) {
@@ -11307,7 +11312,7 @@ function gPtTags(g) {
   const pt = g.opts?.pt;
   if (!pt?.pay) return [];
   const out = [pt.pay === "team" ? "チームPT" : "個人PT"];
-  if (g.kind === "bj" && pt.chips === "real") out.push("CH＝PT");
+  if ((g.kind === "bj" || g.kind === "rl") && pt.chips === "real") out.push("CH＝PT");
   if (isCardKind(g.kind)) (pt.rank ?? []).forEach((x, i) => { if (Number(x)) out.push(`${i === pt.rank.length - 1 && i > 0 ? "最下位" : `${i + 1}位`} ${sgn(Number(x))}`); });
   else { if (Number(pt.win)) out.push(`WIN ${sgn(Number(pt.win))}`); if (Number(pt.lose)) out.push(`LOSE −${Math.abs(Number(pt.lose))}`); }
   return out;
@@ -11317,7 +11322,7 @@ function gPtText(g) {
   if (!pt?.pay) return null;
   const src = pt.pay === "team" ? "チームのポイント" : "個人のポイント";
   const parts = [];
-  if (g.kind === "bj" && pt.chips === "real") parts.push(`チップは${src}です（終わったときの増減がそのまま反映されます）`);
+  if ((g.kind === "bj" || g.kind === "rl") && pt.chips === "real") parts.push(`チップは${src}です（終わったときの増減がそのまま反映されます）`);
   if (isCardKind(g.kind) && pt.rank?.some((x) => Number(x))) parts.push(`終わったときの順位で ${pt.rank.map((x, i) => (Number(x) ? `${i === pt.rank.length - 1 && i > 0 ? "最下位" : `${i + 1}位`} ${signed(Number(x))}pt` : null)).filter(Boolean).join("・")}`);
   if (!isCardKind(g.kind) && (Number(pt.win) || Number(pt.lose))) parts.push([Number(pt.win) ? `勝った人に ${signed(Number(pt.win))}pt` : null, Number(pt.lose) ? `負けた人から −${Math.abs(Number(pt.lose))}pt` : null].filter(Boolean).join("・"));
   return parts.length ? `${src}を使います。${parts.join("。")}` : null;
@@ -11635,7 +11640,7 @@ const cardSv = (c) => (isJoker(c) ? 13 : CARD_RANKS.indexOf(c[1])); // 大富豪
 const cardRankText = (c) => (isJoker(c) ? "JOKER" : c[1] === "T" ? "10" : c[1]);
 const cardText = (c) => (isJoker(c) ? "JOKER" : `${CARD_SUITS[c[0]]}${cardRankText(c)}`);
 const cardsText = (cs) => (cs ?? []).map(cardText).join(" ");
-const isCardKind = (k) => k === "bj" || k === "dfg";
+const isCardKind = (k) => k === "bj" || k === "dfg" || k === "rl";
 // 順位（同じ枚数・点数なら同じ順位）
 const cardScore = (x) => x.chips ?? x.points ?? 0;
 const cardPlace = (rk, x) => 1 + (rk ?? []).filter((y) => cardScore(y) > cardScore(x)).length;
@@ -11930,7 +11935,10 @@ const dfgO = (o) => ({ jokers: 1, eight: true, revolution: true, stairs: true, s
 //   dealerTimer：手動のときに参加者の持ち時間を付けるか（false なら時間切れはなく、ディーラーが締め切るまで待つ）
 const cardManual = (o) => o?.dealer === "manual";
 const cardEnds = (o, sec) => (cardManual(o) && o?.dealerTimer === false ? null : nowS() + sec * 1000);
-const cardNeed = (g) => (g.kind === "bj" ? [DEALER] : g.dfg?.seats ?? []);
+const cardNeed = (g) => (g.kind === "bj" ? [DEALER] : g.kind === "rl" ? [] : g.dfg?.seats ?? []);
+// v100 トランプ・ルーレット共通：設定といまの回
+const cardO = (g) => (g.kind === "bj" ? bjO(g.opts) : g.kind === "rl" ? rlO(g.opts) : dfgO(g.opts));
+const cardRound = (g) => (g.kind === "bj" ? g.bj?.round : g.kind === "rl" ? g.rl?.round : g.dfg?.round);
 // いまの強さの向き（革命と11バックが両方かかると元に戻る）
 const dfgRevNow = (st) => !!st.rev !== !!st.jback;
 const dfgSuits = (cs) => cs.filter((c) => !isJoker(c)).map((c) => c[0]).sort().join("");
@@ -12260,6 +12268,911 @@ function dfgEndUpdate(g, st, log) {
     log: [...log, gLog(`ゲームが終了しました。${text}`, ranking.map((x) => `${cardPlace(ranking, x)}位 ${memberName(x.uid)}：${x.points}点`).join("\n"), { type: "end", ranking })] };
 }
 
+// ================= ルーレット（v100）
+//   opts.mode "casino"（既定）：ヨーロッパ式（0〜36 の37マス）。全員がチップを数字・赤黒などに置き、管理者の端末（ディーラー）が玉を投げる
+//   opts.mode "lottery"：抽選。管理者が入れた項目を大きな円盤に並べて回し、1つを選ぶ（賭けなし）
+//   どこで止まるか（rl.spin.n）は、回し始めるときに管理者の端末が決めて games に書く。
+//   全員の端末は、同じ時刻（rl.spin.at。時計のずれを直した時刻）から、同じ乱数の種（seed）で同じ動きを描くので、どの画面でも同じところで止まる
+const RL_ORDER = [0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10, 5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26]; // ヨーロッパ式の円盤の並び
+const RL_RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
+const rlColor = (n) => (n === 0 ? "g" : RL_RED.has(n) ? "r" : "b");
+const RL_CNAME = { r: "赤", b: "黒", g: "緑" };
+// 外側の賭け：[名前, 配当（賭けた額の何倍がもうけになるか）]
+const RL_SPOTS = { R: ["赤", 1], B: ["黒", 1], E: ["偶数", 1], O: ["奇数", 1], L: ["1〜18", 1], H: ["19〜36", 1],
+  D1: ["1〜12", 2], D2: ["13〜24", 2], D3: ["25〜36", 2], C1: ["左の列", 2], C2: ["真ん中の列", 2], C3: ["右の列", 2] };
+const rlValidSpot = (s) => /^n([0-9]|[12][0-9]|3[0-6])$/.test(s) || Object.hasOwn(RL_SPOTS, s);
+function rlWins(spot, n) {
+  if (spot[0] === "n") return Number(spot.slice(1)) === n;
+  if (n === 0) return false; // 0 は外側の賭けがすべて負け
+  switch (spot) {
+    case "R": return RL_RED.has(n); case "B": return !RL_RED.has(n); case "E": return n % 2 === 0; case "O": return n % 2 === 1;
+    case "L": return n <= 18; case "H": return n >= 19; case "D1": return n <= 12; case "D2": return n >= 13 && n <= 24; case "D3": return n >= 25;
+    case "C1": return n % 3 === 1; case "C2": return n % 3 === 2; case "C3": return n % 3 === 0;
+  }
+  return false;
+}
+const rlPay = (spot) => (spot[0] === "n" ? 35 : RL_SPOTS[spot]?.[1] ?? 0);
+const rlSpotName = (spot) => (spot[0] === "n" ? spot.slice(1) : RL_SPOTS[spot]?.[0] ?? spot);
+const rlEvenMoney = (spot) => RL_SPOTS[spot]?.[1] === 1;
+// 設定（古いゲームにない項目は既定値で補う）
+//   rounds 回数／chips はじめのチップ／betMin 1か所の最小／betMax 1か所の最大（0＝上限なし）／betSec 賭ける時間／partage 0のとき赤黒などは半分戻る
+//   autoNext・resultSec 結果のあと自動で次へ／items 抽選の項目／removeHit 当たった項目は次から外す／spinner "admin"|"turn"（遊ぶ人が順番に回す）／readySec 回す人の持ち時間（0＝なし）
+const rlO = (o) => ({ mode: "casino", rounds: 5, chips: 100, betMin: 1, betMax: 0, betSec: 30, partage: false, autoNext: true, resultSec: 8,
+  items: [], removeHit: false, spinner: "admin", readySec: 30, ...o });
+const rlLottery = (g) => rlO(g?.opts).mode === "lottery";
+const RL_CASINO_MS = 11500, RL_LOT_MS = 9000, RL_LEAD = 1400, RL_LOT_HOLD = 5000; // 回る長さ・回し始めるまでの間（全員の端末に届くのを待つ）
+const RL_CHIPS = [1, 5, 10, 25, 50, 100, 500, 1000];
+// 抽選の例（「例を入れる」と体験モードで使う）
+const RL_LOT_EXAMPLE = ["ジュースをおごる", "一発ギャグ", "セーフ", "変顔で写真", "モノマネ", "最近うれしかった話", "セーフ", "全員とハイタッチ"];
+// 賭けの送り方（gameActs の target の「r回:」のあと）："!n17.10,R.5"（! は「準備OK」）。締め切りまで何度でも送り直せる
+function rlParseBets(t) {
+  if (typeof t !== "string") return null;
+  const out = { ready: false, bets: {} };
+  let s = t;
+  if (s[0] === "!") { out.ready = true; s = s.slice(1); }
+  for (const p of s.split(",")) {
+    if (!p) continue;
+    const [k, v] = p.split(".");
+    const a = Math.floor(Number(v));
+    if (rlValidSpot(k) && a > 0) out.bets[k] = (out.bets[k] ?? 0) + a;
+  }
+  return out;
+}
+const rlEncBets = (bets, ready) => `${ready ? "!" : ""}${Object.entries(bets ?? {}).filter(([, a]) => a > 0).map(([k, a]) => `${k}.${a}`).join(",")}`;
+const rlSum = (bets) => Object.values(bets ?? {}).reduce((a, b) => a + (Number(b) || 0), 0);
+// 管理者の端末で、賭けを決まりに合わせる（1か所の最小・最大、持っているチップを超えた分は後ろから外す）
+function rlFixBets(o, chips, bets) {
+  const out = {};
+  let left = Math.max(0, chips);
+  for (const [k, a0] of Object.entries(bets ?? {})) {
+    let a = o.betMax ? Math.min(a0, o.betMax) : a0;
+    a = Math.min(a, left);
+    if (a < Math.max(1, o.betMin)) continue;
+    out[k] = a; left -= a;
+  }
+  return out;
+}
+// 1人の賭けの結果（delta：チップの増減、win：当たった場所ともうけ）
+function rlJudge(o, bets, n) {
+  let d = 0;
+  const win = {};
+  for (const [k, a] of Object.entries(bets ?? {})) {
+    if (rlWins(k, n)) { d += a * rlPay(k); win[k] = a * rlPay(k); }
+    else if (n === 0 && o.partage && rlEvenMoney(k)) d -= a - Math.floor(a / 2);
+    else d -= a;
+  }
+  return { d, win };
+}
+const rlBetText = (bets) => Object.entries(bets ?? {}).map(([k, a]) => `${rlSpotName(k)}に${a}`).join("・");
+const rlNumText = (n) => `${n}（${RL_CNAME[rlColor(n)]}）`;
+// 抽選で回す人（順番に回すときは、席の順に1人ずつ）
+const rlSpinner = (g, st = g.rl) => (rlO(g.opts).spinner === "turn" ? g.players[(st?.turn ?? 0) % g.players.length] : null);
+
+function rlStartState(players, o) {
+  const x = rlO(o);
+  if (x.mode === "lottery") {
+    const st = { round: 1, items: [...x.items], hist: [], spin: null, turn: 0 };
+    const sp = x.spinner === "turn" ? players[0] : null;
+    return { rl: st, phase: "ready", actKey: sp ? "s" : null, actors: sp ? [sp] : [], endsAt: sp && x.readySec ? nowS() + x.readySec * 1000 : null,
+      log: [gLog(`抽選ルーレットを始めます（項目 ${st.items.length}個・${x.rounds}回）。${sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"}`, st.items.join("・"), { type: "rlReady", round: 1 })] };
+  }
+  const chips = Object.fromEntries(players.map((u) => [u, Math.max(0, Math.floor(o.startChips?.[u] ?? x.chips))]));
+  const st = { round: 1, chips, start: { ...chips }, hist: [], spin: null, bets: null, res: null, prev: null };
+  const same = new Set(Object.values(chips)).size === 1;
+  return { rl: st, phase: "bet", actKey: "b", actors: players.filter((u) => chips[u] >= Math.max(1, x.betMin)), endsAt: cardEnds(o, x.betSec),
+    log: [gLog(`ルーレットを始めます。${o.pt?.chips === "real" ? "旅行のポイントをチップとして持ち込みました" : "全員にチップを配りました"}（${same ? `${Object.values(chips)[0]}枚ずつ` : players.map((u) => `${memberName(u)} ${chips[u]}枚`).join("・")}）。第1回の賭けを置いてください。`, null, { type: "rlBet", round: 1 })] };
+}
+// 締め切って、玉を投げる（抽選は回す）
+function rlSpin(g) {
+  if (!["bet", "ready"].includes(g.phase)) return null;
+  const st = structuredClone(g.rl), o = rlO(g.opts), r = st.round;
+  const seed = 1 + gRand(2 ** 31 - 2);
+  const at = nowS() + RL_LEAD;
+  if (rlLottery(g)) {
+    if (!st.items.length) return null;
+    const n = gRand(st.items.length);
+    const sp = rlSpinner(g, st);
+    st.spin = { n, at, dur: RL_LOT_MS, seed, items: [...st.items], by: sp, round: r };
+    return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null,
+      log: [...(g.log ?? []), gLog(`第${r}回：${sp ? `${memberName(sp)}さんが` : ""}ルーレットを回しました。`, null, { type: "rlSpin", round: r, quiet: true })] } };
+  }
+  const bets = {};
+  for (const u of g.players) {
+    const p = rlParseBets(cardAct(g, "b", u, `r${r}`));
+    if (!p) continue;
+    const b = rlFixBets(o, st.chips[u] ?? 0, p.bets);
+    if (rlSum(b)) bets[u] = b;
+  }
+  st.bets = bets; st.res = null;
+  st.spin = { n: gRand(37), at, dur: RL_CASINO_MS, seed, round: r };
+  const us = Object.keys(bets);
+  return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null,
+    log: [...(g.log ?? []), gLog(`第${r}回：ノーモアベット（賭けを締め切りました）。${us.length ? "" : "賭けた人はいません。"}`, us.map((u) => `${memberName(u)}：${rlBetText(bets[u])}（合計 ${rlSum(bets[u])}）`).join("\n") || null, { type: "rlSpin", round: r })] } };
+}
+// 回り終わったら、精算する（全員の画面で玉が止まってから）
+function rlSettle(g) {
+  if (g.phase !== "spin" || !g.rl?.spin) return null;
+  const st = structuredClone(g.rl), o = rlO(g.opts), r = st.round, n = st.spin.n;
+  if (rlLottery(g)) {
+    const item = st.spin.items?.[n] ?? "?";
+    st.hist = [...(st.hist ?? []), item];
+    if (o.removeHit) { const i = st.items.indexOf(item); if (i >= 0) st.items.splice(i, 1); }
+    const log = [...(g.log ?? []), gLog(`第${r}回：「${item}」に決まりました！`, null, { type: "rlHit", round: r, item, by: st.spin.by ?? null })];
+    // 当たった項目をしばらく見せてから、次の人の番にする（すぐ盤が描き変わると、止まった瞬間が見えない）
+    return { update: { rl: st, phase: "result", actKey: null, actors: [], endsAt: nowS() + RL_LOT_HOLD, log } };
+  }
+  const res = {}, sum = {};
+  for (const [u, b] of Object.entries(st.bets ?? {})) {
+    const j = rlJudge(o, b, n);
+    res[u] = j; sum[u] = j.d;
+    st.chips[u] = Math.max(0, (st.chips[u] ?? 0) + j.d);
+  }
+  st.res = res;
+  st.hist = [...(st.hist ?? []), n].slice(-60);
+  const log = [...(g.log ?? []), gLog(`第${r}回の結果：${rlNumText(n)}。${Object.keys(sum).length ? Object.keys(sum).map((u) => `${memberName(u)} ${signed(sum[u])}`).join("・") : "賭けた人はいませんでした。"}`,
+    Object.entries(res).map(([u, j]) => `${memberName(u)}：${Object.keys(j.win).length ? `当たり ${Object.keys(j.win).map(rlSpotName).join("・")}` : "はずれ"}（${signed(j.d)}）`).join("\n") || null,
+    { type: "rlRound", round: r, n, sum, bets: st.bets ?? {}, chips: { ...st.chips } })];
+  // 最後の回も、止まった数字をしばらく見せてから終える（すぐ終わりの画面にすると、止まった瞬間が見えない）
+  const last = rlIsLast(g, st);
+  return { update: { rl: st, phase: "result", actKey: null, actors: [], endsAt: last ? nowS() + Math.max(5000, o.autoNext && !cardManual(g.opts) ? o.resultSec * 1000 : 0) : o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 : null, log } };
+}
+// この回で終わりか（回数を終えた・全員のチップが最小に届かない・抽選の項目がなくなった）
+function rlIsLast(g, st = g.rl) {
+  const o = rlO(g.opts);
+  if (st.round >= o.rounds) return true;
+  return rlLottery(g) ? !(st.items?.length) : g.players.every((u) => (st.chips?.[u] ?? 0) < Math.max(1, o.betMin));
+}
+function rlNext(g) {
+  if (g.phase !== "result") return null;
+  const st = structuredClone(g.rl), o = rlO(g.opts);
+  if (rlIsLast(g, st)) return { update: rlEndUpdate(g, st, g.log ?? []) };
+  if (rlLottery(g)) {
+    st.round += 1; st.turn = (st.turn ?? 0) + 1;
+    const sp = rlSpinner(g, st);
+    return { update: { rl: st, phase: "ready", actKey: sp ? "s" : null, actors: sp ? [sp] : [], endsAt: sp && o.readySec ? nowS() + o.readySec * 1000 : null,
+      log: [...(g.log ?? []), gLog(`第${st.round}回です。${sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"}`, null, { type: "rlReady", round: st.round, quiet: true })] } };
+  }
+  st.round += 1; st.prev = st.bets ?? null; st.bets = null; st.res = null;
+  const actors = g.players.filter((u) => (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
+  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
+    log: [...(g.log ?? []), gLog(`第${st.round}回です。賭けを置いてください。`, null, { type: "rlBet", round: st.round })] } };
+}
+function rlEndUpdate(g, st, log) {
+  if (rlLottery(g)) {
+    const hits = st.hist ?? [];
+    const text = hits.length ? `当たり：${hits.map((x, i) => (hits.length > 1 ? `${i + 1}回目「${x}」` : `「${x}」`)).join("・")}` : "回さずに終わりました";
+    return { rl: { ...st, spin: g.phase === "spin" ? null : st.spin }, phase: "ended", actKey: null, actors: [], endsAt: null, result: { text, hits }, reveal: null,
+      log: [...log, gLog(`ゲームが終了しました。${text}`, null, { type: "end" })] };
+  }
+  const ranking = g.players.map((u) => ({ uid: u, chips: st.chips[u] ?? 0 })).sort((a, b) => b.chips - a.chips);
+  const top = ranking.filter((x) => x.chips === ranking[0].chips);
+  const text = `${gNames(top.map((x) => x.uid))} さんが${top.length > 1 ? "同点で" : ""}一番多くチップを残しました（${ranking[0].chips}枚）`;
+  // 回っている途中で終えたときは、その回は無効（玉の動きを止める）
+  return { rl: { ...st, spin: g.phase === "spin" ? null : st.spin }, phase: "ended", actKey: null, actors: [], endsAt: null, result: { text, ranking }, reveal: Object.fromEntries(ranking.map((x) => [x.uid, `${x.chips}枚`])),
+    log: [...log, gLog(`ゲームが終了しました。${text}`, ranking.map((x) => `${cardPlace(ranking, x)}位 ${memberName(x.uid)}：${x.chips}枚`).join("\n"), { type: "end", ranking })] };
+}
+
+// ---- 回転の動き（全員の端末で同じになるよう、時刻と種だけから決める）
+// 乱数の種から、同じ並びの乱数を作る（mulberry32）
+function rlRng(seed) {
+  let a = seed >>> 0;
+  return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const RL_POCKET = 360 / 37;
+const RL_RT = 0.885, RL_RP = 0.612; // 玉が縁を転がる半径・ポケットの半径（円盤の絵の半径 100 に対する割合）
+// 動きの計画は、同じ回転（種・数字）なら1回だけ作って覚えておく（ゲームのデータには書かない）
+const RL_PLANS = new Map();
+function rlPlanOf(spin, make) {
+  const k = `${make === rlCasinoPlan ? "c" : "l"}:${spin.seed}:${spin.n}:${spin.dur}:${spin.items?.length ?? 0}`;
+  let P = RL_PLANS.get(k);
+  if (!P) { if (RL_PLANS.size > 200) RL_PLANS.clear(); P = make(spin); RL_PLANS.set(k, P); }
+  return P;
+}
+// カジノ：玉の動きの計画（何秒にどこへ跳ねるか）。k は「止まるポケットまで、あと何マス手前か」
+function rlCasinoPlan(spin) {
+  const rnd = rlRng(spin.seed), D = (spin.dur ?? RL_CASINO_MS) / 1000;
+  const w0 = rnd() * 360, wv = 150 + rnd() * 40; // 円盤の向きと速さ（度/秒）
+  // 最後の数回は、隣のポケットに一度落ちて止まりそうになってから、跳ねて本当のポケットへ（止まりそうで止まらない）
+  const fakeType = rnd();
+  const fake = fakeType < 0.42 ? 1 : fakeType < 0.7 ? 2 : fakeType < 0.86 ? -1 : 3;
+  const K1 = 8 + rnd() * 3; // 玉が縁から落ちるときの位置（マス）
+  const marks = [];
+  let k = Math.round(K1 - 3 - rnd() * 1.5);
+  if (k <= Math.max(fake, 0) + 1) k = Math.max(fake, 0) + 2;
+  marks.push(k);
+  while (k - Math.max(fake, 1) > 2.5) { k = Math.max(Math.max(fake, 1) + 1, k - 1 - Math.round(rnd() * 2)); marks.push(k); }
+  marks.push(fake, 0);
+  const hops = [];
+  let from = K1;
+  marks.forEach((to, i) => {
+    const dist = Math.abs(from - to), last = i === marks.length - 1, isFake = i === marks.length - 2;
+    const dt = 0.2 + Math.sqrt(dist) * (i === 0 ? 0.24 : 0.17) + (last ? 0.12 : 0);
+    const h = Math.min(1, 0.32 + dist * 0.14) * (i === 0 ? 1.25 : 1);
+    const rest = last ? 0 : isFake ? 0.95 + rnd() * 0.45 : 0.05 + rnd() * 0.16;
+    hops.push({ from, to, dt, h, rest, fake: isFake });
+    from = to;
+  });
+  const tail = hops.reduce((a, x) => a + x.dt + x.rest, 0);
+  const T1 = Math.max(4.2, D - tail - 0.25); // 縁を転がる時間
+  const v1 = Math.max(4, (K1 - hops[0].to) / hops[0].dt * 0.9); // 縁から落ちる瞬間の速さ（マス/秒）
+  const v0 = 66 + rnd() * 12; // 投げた瞬間の速さ（マス/秒。円盤に対して）
+  const A = (v0 - v1) / (2 * T1);
+  return { D, w0, wv, K1, T1, v1, A, K0: K1 + v1 * T1 + A * T1 * T1, hops };
+}
+// 円盤の向き（度）。止まったあとも少しずつ遅くなって止まる
+function rlWheelAngle(P, t) {
+  const D = P.D;
+  if (t <= D) return P.w0 + P.wv * (t - (0.22 * t * t) / D);
+  const vD = P.wv * (1 - 0.44), tau = 3.2, u = t - D;
+  return P.w0 + P.wv * (D - 0.22 * D) + vD * tau * (1 - Math.exp(-u / tau));
+}
+// t 秒のときの玉と円盤：{ wheel 度, ball 度, r 半径の割合, z 跳ねの高さ 0〜1, k, phase, rest, fake }
+function rlCasinoPose(spin, t) {
+  const P = rlPlanOf(spin, rlCasinoPlan);
+  const idx = RL_ORDER.indexOf(spin.n);
+  const W = rlWheelAngle(P, Math.max(0, t));
+  const rT = RL_RT, rP = RL_RP; // 縁の玉の道・ポケットの半径（絵の座標 100 に対して）
+  let k, r, z = 0, phase = "rim", rest = false, fake = false, landed = -1;
+  if (t <= 0) { k = P.K0; r = rT; phase = "wait"; }
+  else if (t < P.T1) {
+    const s = P.T1 - t;
+    k = P.K1 + P.v1 * s + P.A * s * s;
+    // 縁の上で少しゆれる。最後の0.8秒で内側へ落ちていく
+    const fall = Math.max(0, 1 - s / 0.8);
+    r = rT - 0.006 * Math.sin(t * 9) * (1 - fall) - fall * fall * (rT - rP - 0.12);
+  } else {
+    phase = "hop";
+    let u = t - P.T1, i = 0;
+    for (; i < P.hops.length; i++) {
+      const hp = P.hops[i];
+      if (u < hp.dt) {
+        const f = u / hp.dt, e = 1 - (1 - f) * (1 - f) * 0.35 - 0.65 * (1 - f) ** 3; // 跳ねている間は少しずつ遅く
+        k = hp.from + (hp.to - hp.from) * Math.min(1, Math.max(0, e));
+        z = 4 * f * (1 - f) * hp.h;
+        r = rP + 0.11 * z + (i === 0 ? (1 - f) * 0.12 : 0);
+        break;
+      }
+      u -= hp.dt;
+      landed = i;
+      if (u < hp.rest) {
+        // ポケットの中で止まりそう（左右に小さくゆれる）
+        rest = true; fake = hp.fake;
+        const wob = hp.fake ? Math.sin(u * 16) * 0.07 * Math.exp(-u * 1.4) : Math.sin(u * 30) * 0.05;
+        k = hp.to + wob; r = rP + Math.abs(wob) * 0.05;
+        break;
+      }
+      u -= hp.rest;
+    }
+    if (i >= P.hops.length) { phase = "done"; k = 0; r = rP - 0.004; rest = true; }
+  }
+  const rel = idx * RL_POCKET + k * RL_POCKET;
+  return { wheel: W, ball: W + rel, r, z, k, phase, rest, fake, landed };
+}
+// 抽選：円盤の向き（度）と、針のしなり。針は真上で、円盤は時計回りに回る
+function rlLotPlan(spin) {
+  const rnd = rlRng(spin.seed), D = (spin.dur ?? RL_LOT_MS) / 1000, N = Math.max(1, spin.items?.length ?? 1), beta = 360 / N;
+  const kind = rnd(); // 止まり方：creep 境目でいったん止まりかけてから越える／edge 境目の手前でぎりぎり止まる／plain ふつう
+  const type = N < 2 ? "plain" : kind < 0.5 ? "creep" : kind < 0.8 ? "edge" : "plain";
+  const f = type === "creep" ? 0.9 + rnd() * 0.06 : type === "edge" ? 0.04 + rnd() * 0.05 : 0.3 + rnd() * 0.4; // 止まる位置（項目の中の割合）
+  // 針が指す位置 φ = −円盤の向き。止まる位置 φ_f = (n + f)β。φ は減っていく
+  const phiF = (spin.n + f) * beta;
+  // 最後のゆっくりの区間：creep は手前 0.45 項目分→境目の直前で止まりかけ→越える／edge は 0.6 項目分を、ぎりぎりまで
+  const Tc = type === "creep" ? 3.1 : type === "edge" ? 2.6 : 1.8;
+  const C = type === "creep" ? (1 - f + 0.45) * beta : type === "edge" ? 0.6 * beta : 0.55 * beta;
+  const T1 = D - Tc, v1 = (C / Tc) * 2.1, v0 = 760 + rnd() * 160;
+  const A = (v0 - v1) / (2 * T1);
+  const total = C + v1 * T1 + A * T1 * T1;
+  // 始めの向き：φ(0) = φ_f + total。円盤の向き θ = −φ
+  return { D, N, beta, type, f, phiF, Tc, C, T1, v1, A, total };
+}
+function rlLotPhi(P, t) {
+  if (t <= 0) return P.phiF + P.total;
+  if (t < P.T1) { const s = P.T1 - t; return P.phiF + P.C + P.v1 * s + P.A * s * s; }
+  const u = Math.min(P.Tc, t - P.T1), x = u / P.Tc, b = P.beta;
+  if (P.type === "creep") {
+    // 境目の 0.03 項目分手前まで、だんだん遅く（6割の時間）→ そこで針が引っかかって止まりかける（25%）→ 越えて止まる
+    const gap = (1 - P.f) * b, hold = gap + 0.03 * b;
+    if (x < 0.6) { const e = 1 - (1 - x / 0.6) ** 2.2; return P.phiF + P.C - (P.C - hold) * e; }
+    if (x < 0.85) { const y = (x - 0.6) / 0.25; return P.phiF + hold - 0.022 * b * y * y + Math.sin(y * Math.PI * 6) * 0.004 * b; }
+    const y = (x - 0.85) / 0.15, e = 1 - (1 - y) ** 3;
+    return P.phiF + (hold - 0.022 * b) * (1 - e) - Math.sin(y * Math.PI) * 0.03 * b;
+  }
+  if (P.type === "edge") {
+    const e = 1 - (1 - x) ** 3.4;
+    return P.phiF + P.C * (1 - e);
+  }
+  const e = 1 - (1 - x) ** 2.6;
+  return P.phiF + P.C * (1 - e);
+}
+function rlLotPose(spin, t) {
+  const P = rlPlanOf(spin, rlLotPlan);
+  const phi = rlLotPhi(P, t);
+  // 針は、次の境目（ピン）に近づくほど押されてしなる
+  const m = ((phi % P.beta) + P.beta) % P.beta; // 針の位置から、下の境目までの距離
+  const near = Math.max(0, 1 - m / Math.min(P.beta * 0.35, 14));
+  const flap = t >= P.D ? 0 : near * 26;
+  const cur = ((Math.floor(phi / P.beta) % P.N) + P.N) % P.N;
+  return { wheel: -phi, phi, flap, cur, done: t >= P.D, slow: t >= P.T1, plan: P };
+}
+
+// ---- ルーレットの絵（SVG）
+//   同じゲーム・同じ置き場所（slot）の絵は作り直さずに使い回す（画面を描き直しても、回っている円盤が途切れないように）
+//   動きは requestAnimationFrame の1本のループで、出ている円盤を全部まとめて動かす
+const RLW = new Map(); // `${slot}:${gid}` → 円盤の部品と、前の場面の状態
+let RL_RAF = 0, RL_UID = 0;
+const RL_LOT_COLORS = ["#A29EFF", "#FF6B63", "#FFC94D", "#4FD1A5", "#5AB4FF", "#FF8AD8", "#FF9F43", "#7BE07B"];
+const rlKick = () => { if (!RL_RAF) RL_RAF = requestAnimationFrame(rlFrame); };
+// 角度（真上から時計回り・度）と半径から、絵の座標
+const rlXY = (deg, r) => { const a = (deg * Math.PI) / 180; return [r * Math.sin(a), -r * Math.cos(a)]; };
+const rlF = (x) => x.toFixed(2);
+// 扇形（中心角 a0〜a1、半径 r0〜r1）の形
+function rlSector(a0, a1, r0, r1) {
+  const [x0, y0] = rlXY(a0, r1), [x1, y1] = rlXY(a1, r1), big = a1 - a0 > 180 ? 1 : 0;
+  if (!r0) return `M0 0L${rlF(x0)} ${rlF(y0)}A${r1} ${r1} 0 ${big} 1 ${rlF(x1)} ${rlF(y1)}Z`;
+  const [x2, y2] = rlXY(a1, r0), [x3, y3] = rlXY(a0, r0);
+  return `M${rlF(x0)} ${rlF(y0)}A${r1} ${r1} 0 ${big} 1 ${rlF(x1)} ${rlF(y1)}L${rlF(x2)} ${rlF(y2)}A${r0} ${r0} 0 ${big} 0 ${rlF(x3)} ${rlF(y3)}Z`;
+}
+const RL_COLS = { r: ["#C0262F", "#7A141B"], b: ["#161616", "#0A0A0A"], g: ["#0F8A45", "#085A2C"] };
+// カジノの円盤（木の器・玉の道・ひし形の邪魔板・37のポケット・真ん中のつまみ）
+function rlBuildCasino(id) {
+  const s = svgEl("svg", { viewBox: "-100 -100 200 200", class: "rl-svg", "aria-hidden": "true" });
+  const defs = svgEl("defs");
+  defs.innerHTML = `<radialGradient id="rlw${id}" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse"><stop offset=".79" stop-color="#2B170A"/><stop offset=".86" stop-color="#5E3819"/><stop offset=".95" stop-color="#3A210E"/><stop offset="1" stop-color="#120802"/></radialGradient>`
+    + `<radialGradient id="rlc${id}" cx="-16" cy="-20" r="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F2E2B3"/><stop offset=".42" stop-color="#A88340"/><stop offset="1" stop-color="#3A2A0F"/></radialGradient>`
+    + `<radialGradient id="rlb${id}" cx="-1.1" cy="-1.3" r="3.8" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".55" stop-color="#ECECF2"/><stop offset="1" stop-color="#8E8E9A"/></radialGradient>`
+    + `<radialGradient id="rlg${id}" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse"><stop offset=".5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".38"/></radialGradient>`
+    + `<linearGradient id="rls${id}" x1="0" y1="-100" x2="0" y2="100" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity=".16"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>`;
+  s.append(defs);
+  s.append(svgEl("circle", { r: 99.5, fill: "#100702" }), svgEl("circle", { r: 98, fill: `url(#rlw${id})` }),
+    svgEl("circle", { r: 88.5, fill: "none", stroke: "rgba(0,0,0,.28)", "stroke-width": 15 }),
+    svgEl("circle", { r: 96.2, fill: "none", stroke: "rgba(255,214,150,.28)", "stroke-width": 0.8 }),
+    svgEl("circle", { r: 80.6, fill: "none", stroke: "rgba(255,214,150,.4)", "stroke-width": 1 }));
+  // ひし形の邪魔板（玉が当たって跳ねる）
+  for (let k = 0; k < 8; k++) {
+    const [x, y] = rlXY(k * 45 + 22.5, 84.5);
+    s.append(svgEl("polygon", { points: k % 2 ? "0,-3.6 1.5,0 0,3.6 -1.5,0" : "0,-2 3.4,0 0,2 -3.4,0", fill: "#D9C48A", stroke: "#6B5525", "stroke-width": 0.4,
+      transform: `translate(${rlF(x)} ${rlF(y)}) rotate(${k * 45 + 22.5})` }));
+  }
+  const rot = svgEl("g", { class: "rl-rot" });
+  rot.append(svgEl("circle", { r: 78.5, fill: "#0B0B0B" }));
+  const A = RL_POCKET;
+  RL_ORDER.forEach((n, i) => {
+    const c = RL_COLS[rlColor(n)];
+    rot.append(svgEl("path", { d: rlSector((i - 0.5) * A, (i + 0.5) * A, 66, 78), fill: c[0] }), svgEl("path", { d: rlSector((i - 0.5) * A, (i + 0.5) * A, 56, 66), fill: c[1] }));
+  });
+  const hit = svgEl("path", { class: "rl-hit", d: "" });
+  rot.append(hit);
+  RL_ORDER.forEach((n, i) => {
+    const [x0, y0] = rlXY((i - 0.5) * A, 56), [x1, y1] = rlXY((i - 0.5) * A, 78);
+    rot.append(svgEl("line", { x1: rlF(x0), y1: rlF(y0), x2: rlF(x1), y2: rlF(y1), stroke: "#D8C48E", "stroke-width": 0.7 }));
+    const t = svgEl("text", { class: "rl-num", "text-anchor": "middle", "dominant-baseline": "central", transform: `rotate(${rlF(i * A)}) translate(0 -72)` });
+    t.textContent = String(n);
+    rot.append(t);
+  });
+  for (const [r, w] of [[78, 1.1], [66, 0.6], [56, 0.9]]) rot.append(svgEl("circle", { r, fill: "none", stroke: "#D8C48E", "stroke-width": w }));
+  rot.append(svgEl("circle", { r: 55.4, fill: `url(#rlc${id})` }), svgEl("circle", { r: 40, fill: "none", stroke: "rgba(0,0,0,.22)", "stroke-width": 0.8 }));
+  for (let k = 0; k < 4; k++) {
+    const [x, y] = rlXY(k * 90, 30);
+    rot.append(svgEl("line", { x1: 0, y1: 0, x2: rlF(x), y2: rlF(y), stroke: "#EADBAA", "stroke-width": 3.2, "stroke-linecap": "round" }),
+      svgEl("circle", { cx: rlF(x), cy: rlF(y), r: 3.8, fill: "#F4E6B8", stroke: "#7A6128", "stroke-width": 0.5 }));
+  }
+  rot.append(svgEl("circle", { r: 9.5, fill: "#E9D8A2", stroke: "#7A6128", "stroke-width": 0.6 }), svgEl("circle", { r: 4, fill: "#FFF7DD" }));
+  s.append(rot);
+  const shadow = svgEl("ellipse", { class: "rl-ballsh", rx: 3.7, ry: 2.6, fill: "#000", opacity: 0 });
+  const ball = svgEl("g", { class: "rl-ball", opacity: 0 });
+  ball.append(svgEl("circle", { r: 3.3, fill: `url(#rlb${id})` }));
+  s.append(shadow, ball, svgEl("circle", { r: 99, fill: `url(#rlg${id})`, "pointer-events": "none" }), svgEl("ellipse", { cx: -10, cy: -48, rx: 70, ry: 44, fill: `url(#rls${id})`, "pointer-events": "none" }));
+  return { svg: s, rot, ball, shadow, hit };
+}
+// 抽選の円盤（色分けした項目・ピン・まわりの電球・上の針）
+function rlBuildLot(id) {
+  const s = svgEl("svg", { viewBox: "-110 -118 220 228", class: "rl-svg lot", "aria-hidden": "true" });
+  const defs = svgEl("defs");
+  defs.innerHTML = `<radialGradient id="rlq${id}" cx="0" cy="0" r="96" gradientUnits="userSpaceOnUse"><stop offset=".3" stop-color="#fff" stop-opacity=".12"/><stop offset=".75" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".28"/></radialGradient>`;
+  s.append(defs, svgEl("circle", { r: 106, fill: "#0E0D18", stroke: "rgba(162,158,255,.55)", "stroke-width": 1.4 }));
+  const lights = svgEl("g", { class: "rl-lights" });
+  for (let k = 0; k < 28; k++) { const [x, y] = rlXY(k * (360 / 28), 101); lights.append(svgEl("circle", { cx: rlF(x), cy: rlF(y), r: 2, class: k % 2 ? "b" : "a" })); }
+  s.append(lights);
+  const rot = svgEl("g", { class: "rl-rot" });
+  const segs = svgEl("g"), pegs = svgEl("g"), hit = svgEl("path", { class: "rl-hit lot", d: "" });
+  rot.append(segs, hit, svgEl("circle", { r: 96, fill: `url(#rlq${id})`, "pointer-events": "none" }), pegs);
+  s.append(rot, svgEl("circle", { r: 17, fill: "#0B0B12", stroke: "#A29EFF", "stroke-width": 1.6 }), svgEl("circle", { r: 6, fill: "#A29EFF" }));
+  const ptr = svgEl("g", { class: "rl-ptr" });
+  ptr.append(svgEl("path", { d: "M-8 -6 L8 -6 L0 22 Z", fill: "#F5F5F7", stroke: "#0B0B12", "stroke-width": 1.4, "stroke-linejoin": "round" }), svgEl("circle", { r: 4.2, fill: "#A29EFF", stroke: "#0B0B12", "stroke-width": 1.2 }));
+  const ptrG = svgEl("g", { transform: "translate(0 -108)" });
+  ptrG.append(ptr);
+  s.append(ptrG);
+  return { svg: s, rot, segs, pegs, ptr, hit };
+}
+function rlSetItems(e, items) {
+  const N = Math.max(1, items.length), B = 360 / N;
+  const L = N % RL_LOT_COLORS.length === 1 ? RL_LOT_COLORS.length - 1 : RL_LOT_COLORS.length; // 最後と最初が同じ色で並ばないように
+  const segs = [], pegs = [];
+  items.forEach((it, i) => {
+    segs.push(svgEl("path", { d: N === 1 ? "M0 -94A94 94 0 1 1 -0.01 -94Z" : rlSector(i * B, (i + 1) * B, 0, 94), fill: RL_LOT_COLORS[i % L], stroke: "#0B0B12", "stroke-width": 0.8 }));
+    const len = [...String(it)].length || 1;
+    const chord = N > 1 ? 2 * 58 * Math.sin(Math.PI / N) : 100;
+    const f = Math.max(4.6, Math.min(13, chord * 0.62, 64 / Math.max(2, len)));
+    const max = Math.max(2, Math.floor(64 / f));
+    const label = len > max ? `${[...String(it)].slice(0, max - 1).join("")}…` : String(it);
+    const t = svgEl("text", { class: "rl-lab", x: 88, y: 0, "text-anchor": "end", "dominant-baseline": "central", "font-size": rlF(f), transform: `rotate(${rlF((i + 0.5) * B - 90)})` });
+    t.textContent = label;
+    segs.push(t);
+    const [x, y] = rlXY(i * B, 93);
+    pegs.push(svgEl("circle", { cx: rlF(x), cy: rlF(y), r: 2.3, fill: "#F5F5F7", stroke: "#0B0B12", "stroke-width": 0.6 }));
+  });
+  setKids(e.segs, ...segs);
+  setKids(e.pegs, ...pegs);
+  e.N = N; e.B = B; e.items = items;
+}
+// ルーレットの円盤（同じ slot なら使い回す）。opt.size：mini｜mid｜big。opt.loud：音・知らせを出す円盤
+function rlWheel(g, slot, opt = {}) {
+  const key = `${slot}:${g.id}`, lot = rlLottery(g);
+  let e = RLW.get(key);
+  if (!e || e.lot !== lot) {
+    const id = ++RL_UID;
+    const parts = lot ? rlBuildLot(id) : rlBuildCasino(id);
+    const read = h("div", { class: "rl-read", "aria-live": "off" });
+    const snd = h("button", { type: "button", class: "rl-snd", "aria-label": "音" });
+    snd.addEventListener("click", (ev) => { ev.stopPropagation(); rlSoundToggle(); });
+    const el = h("div", { class: `rl-wheel${lot ? " lot" : ""}` }, h("div", { class: "rl-disc" }, parts.svg, h("i", { class: "rl-vig", "aria-hidden": "true" })), read, snd);
+    e = { key, gid: g.id, lot, el, read, snd, ...parts, theta: null, seen: performance.now(), readTxt: "", sig: "" };
+    RLW.set(key, e);
+  }
+  e.g = g; e.loud = !!opt.loud; e.mini = opt.size === "mini";
+  e.el.className = `rl-wheel ${opt.size ?? "mid"}${lot ? " lot" : ""}${e.state ? ` ${e.state}` : ""}`;
+  e.snd.hidden = !!e.mini;
+  e.snd.textContent = RLA.on ? "♪" : "×";
+  e.snd.classList.toggle("off", !RLA.on);
+  e.snd.setAttribute("aria-label", RLA.on ? "音を消す" : "音を出す");
+  if (lot) {
+    const items = rlShownItems(g);
+    const sig = items.join("\u0001");
+    if (sig !== e.sig) { e.sig = sig; rlSetItems(e, items); e.hit.setAttribute("d", ""); }
+  }
+  rlDraw(e, nowS(), false);
+  rlKick();
+  return e.el;
+}
+// 抽選の円盤に出す項目：回っている間と終わったあとは、回したときの項目。それ以外はいまの項目
+function rlShownItems(g) {
+  const sp = g.rl?.spin;
+  return sp?.items && (g.phase === "spin" || g.phase === "result" || g.phase === "ended") ? sp.items : g.rl?.items ?? [];
+}
+function rlFrame() {
+  RL_RAF = 0;
+  const now = nowS(), pn = performance.now();
+  let more = false;
+  const loudDone = new Set();
+  for (const [k, e] of RLW) {
+    if (!e.el.isConnected) { if (pn - e.seen > 6000) RLW.delete(k); continue; }
+    e.seen = pn;
+    const loud = e.loud && !loudDone.has(e.gid);
+    if (loud) loudDone.add(e.gid);
+    if (rlDraw(e, now, loud)) more = true;
+  }
+  if (!loudDone.size) rlRoll(0);
+  if (more) rlKick();
+}
+// 回し始めの直前（spin.at まで）は、いま見えている向きから、回り始めの向きと速さへなめらかにつなぐ（端末ごとに見え方が違ってよいのはここだけ）
+function rlLead(e, seed, t, target, v1, v0 = 0) {
+  if (e.bl?.seed !== seed) e.bl = { seed, from: e.theta ?? target - v1 * 0.6, t0: t };
+  const L = -e.bl.t0;
+  if (L < 0.35 || t >= 0) return target + v1 * Math.min(0, t);
+  const want = ((v0 + v1) / 2) * L;
+  let d = target - e.bl.from;
+  d = (((d - want) % 360) + 360) % 360 + want;
+  const s = Math.min(1, Math.max(0, (t - e.bl.t0) / L)), s2 = s * s, s3 = s2 * s;
+  return e.bl.from * (2 * s3 - 3 * s2 + 1) + v0 * L * (s3 - 2 * s2 + s) + (e.bl.from + d) * (-2 * s3 + 3 * s2) + v1 * L * (s3 - s2);
+}
+// 1こま描く。まだ動いているなら true
+function rlDraw(e, now, loud) {
+  const g = S.games.get(e.gid) ?? e.g;
+  e.g = g;
+  const st = g.rl;
+  if (!st) return false;
+  const sp = st.spin;
+  return e.lot ? rlDrawLot(e, g, sp, now, loud) : rlDrawCasino(e, g, sp, now, loud);
+}
+function rlState(e, cls) {
+  if (e.state === cls) return;
+  e.state = cls;
+  for (const c of ["spinning", "tense", "done"]) e.el.classList.toggle(c, cls.split(" ").includes(c));
+}
+// 下の表示は、中身が変わったときだけ作り直す（key で比べる）
+function rlRead(e, key, make) {
+  if (e.readTxt === key) return;
+  e.readTxt = key;
+  const x = make();
+  setKids(e.read, ...(Array.isArray(x) ? x : [x]));
+}
+const rlWait = (e, text, roll = false) => rlRead(e, `w:${text}`, () => (text ? h("span", { class: `rl-r-wait${roll ? " roll" : ""}` }, text) : []));
+// 自分の賭け（締め切ったあとの、games に書かれた分）
+const rlMyBets = (g) => (S.user && !rlLottery(g) ? g.rl?.bets?.[S.user.uid] ?? null : null);
+function rlDrawCasino(e, g, sp, now, loud) {
+  const showSpin = sp && g.phase !== "bet";
+  if (!showSpin) {
+    // 賭けている間：玉は取り上げて、円盤だけゆっくり回す
+    const pn = performance.now();
+    if (e.theta == null) e.theta = (Number(String(g.id).length) * 37) % 360;
+    e.theta += Math.min(0.05, (pn - (e.lastPn ?? pn)) / 1000) * 14;
+    e.lastPn = pn;
+    e.rot.setAttribute("transform", `rotate(${rlF(e.theta)})`);
+    e.ball.setAttribute("opacity", 0); e.shadow.setAttribute("opacity", 0);
+    e.hit.setAttribute("d", "");
+    rlState(e, "");
+    rlWait(e, g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "");
+    if (loud) rlRoll(0);
+    return g.phase === "bet";
+  }
+  e.lastPn = performance.now();
+  const t = (now - sp.at) / 1000;
+  const P = rlPlanOf(sp, rlCasinoPlan);
+  const idx = RL_ORDER.indexOf(sp.n);
+  let wheel, pose = null;
+  if (t < 0) { wheel = rlLead(e, sp.seed, t, P.w0, P.wv, 14); }
+  else { pose = rlCasinoPose(sp, t); wheel = pose.wheel; e.bl = { seed: sp.seed, done: true }; }
+  e.theta = wheel;
+  e.rot.setAttribute("transform", `rotate(${rlF(wheel)})`);
+  const D = P.D;
+  if (!pose) {
+    e.ball.setAttribute("opacity", 0); e.shadow.setAttribute("opacity", 0); e.hit.setAttribute("d", "");
+    rlState(e, "spinning");
+    rlWait(e, "NO MORE BETS");
+    return true;
+  }
+  const R = pose.r * 100, z = pose.z;
+  const [x, y] = rlXY(pose.ball, R);
+  const fade = Math.min(1, t / 0.25);
+  e.ball.setAttribute("opacity", rlF(fade));
+  e.ball.setAttribute("transform", `translate(${rlF(x)} ${rlF(y)}) scale(${rlF(1 + z * 0.55)})`);
+  e.shadow.setAttribute("opacity", rlF(fade * (0.5 - z * 0.3)));
+  e.shadow.setAttribute("transform", `translate(${rlF(x + 0.8 + z * 4)} ${rlF(y + 1.4 + z * 6)})`);
+  const done = t >= D;
+  e.hit.setAttribute("d", done ? rlSector((idx - 0.5) * RL_POCKET, (idx + 0.5) * RL_POCKET, 56, 78) : "");
+  rlState(e, done ? "done" : pose.phase === "hop" ? "spinning tense" : "spinning");
+  // 下の表示：玉の下の数字（跳ねている間）と、そこで止まったときの自分のもうけ
+  const my = rlMyBets(g);
+  if (pose.phase !== "rim" || done) {
+    const n = done ? sp.n : RL_ORDER[(((idx + Math.round(pose.k)) % 37) + 37) % 37];
+    rlRead(e, `n:${n}:${done}:${my ? 1 : 0}`, () => rlNumBadge(n, my ? rlJudge(rlO(g.opts), my, n).d : null, done));
+  } else rlWait(e, "• • •", true);
+  if (loud) rlCasinoSound(e, g, sp, pose, t, D);
+  return t < D + 14;
+}
+// 数字の札（色つきの丸＋数字。d があれば、そこで止まったときの自分の増減）
+function rlNumBadge(n, d, final) {
+  const c = rlColor(n);
+  return [h("b", { class: `rl-nb ${c}${final ? " fin" : ""}` }, String(n)), h("span", { class: "rl-nb-c" }, RL_CNAME[c]),
+    d == null ? null : h("em", { class: `rl-nb-d${d > 0 ? " up" : d < 0 ? " down" : ""}` }, final ? sgn(d) : `${sgn(d)}?`)];
+}
+function rlDrawLot(e, g, sp, now, loud) {
+  const items = e.items ?? [];
+  const same = sp && sp.items && sp.items.join("\u0001") === e.sig;
+  // 回す前（次の回）は止まったまま。開いたばかりなら、前の回に止まった向きから
+  if (!same || g.phase === "ready") {
+    if (e.theta == null) e.theta = same ? rlLotPose(sp, 1e6).wheel : 0;
+    e.rot.setAttribute("transform", `rotate(${rlF(e.theta)})`);
+    e.ptr.setAttribute("transform", "rotate(0)");
+    e.hit.setAttribute("d", "");
+    rlState(e, "");
+    rlWait(e, g.phase === "ready" ? `${items.length} ITEMS` : g.phase === "ended" ? "GAME SET" : "");
+    return false;
+  }
+  const t = (now - sp.at) / 1000;
+  const P = rlPlanOf(sp, rlLotPlan);
+  let wheel, pose = null;
+  if (t < 0) wheel = rlLead(e, sp.seed, t, -(P.phiF + P.total), P.v1 + 2 * P.A * P.T1, 0);
+  else { pose = rlLotPose(sp, t); wheel = pose.wheel; e.bl = { seed: sp.seed, done: true }; }
+  e.theta = wheel;
+  e.rot.setAttribute("transform", `rotate(${rlF(wheel)})`);
+  e.ptr.setAttribute("transform", `rotate(${rlF(-(pose?.flap ?? 0))})`);
+  if (!pose) { rlState(e, "spinning"); rlWait(e, "SPIN!"); return true; }
+  const done = pose.done, B = P.beta;
+  e.hit.setAttribute("d", done ? (P.N === 1 ? "M0 -94A94 94 0 1 1 -0.01 -94Z" : rlSector(sp.n * B, (sp.n + 1) * B, 0, 94)) : "");
+  rlState(e, done ? "done" : pose.slow ? "spinning tense" : "spinning");
+  const cur = sp.items?.[done ? sp.n : pose.cur] ?? "";
+  if (pose.slow || done) rlRead(e, `l:${cur}:${done}`, () => h("b", { class: `rl-li${done ? " fin" : ""}` }, cur));
+  else rlWait(e, "• • •", true);
+  if (loud) rlLotSound(e, g, sp, pose, t, P);
+  return t < P.D + 1;
+}
+
+// ---- 音（WebAudio。ファイルは使わず、その場で作る）。オン・オフはこの端末に覚える
+const RLA = { ctx: null, on: (() => { try { return localStorage.getItem("rl-sound") !== "off"; } catch { return true; } })(), noise: null, roll: null };
+function rlSoundToggle() {
+  RLA.on = !RLA.on;
+  try { localStorage.setItem("rl-sound", RLA.on ? "on" : "off"); } catch {}
+  if (RLA.on) { rlAudio(); rlSfx("tick", 1); } else rlRoll(0);
+  for (const e of RLW.values()) { e.snd.textContent = RLA.on ? "♪" : "×"; e.snd.classList.toggle("off", !RLA.on); e.snd.setAttribute("aria-label", RLA.on ? "音を消す" : "音を出す"); }
+}
+function rlAudio() {
+  if (!RLA.on) return null;
+  try {
+    if (!RLA.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; RLA.ctx = new AC(); }
+    if (RLA.ctx.state === "suspended") RLA.ctx.resume().catch(() => {});
+    if (!RLA.noise) {
+      const n = RLA.ctx.sampleRate, b = RLA.ctx.createBuffer(1, n, n), d = b.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      RLA.noise = b;
+    }
+    return RLA.ctx;
+  } catch { return null; }
+}
+// iPhone などは、画面を触ったあとでないと音が出ない
+document.addEventListener("pointerdown", () => { if (RLW.size && RLA.on && RLA.ctx?.state !== "running") rlAudio(); }, { passive: true, capture: true });
+function rlEnv(ctx, node, t0, peak, dur) {
+  const gn = ctx.createGain();
+  gn.gain.setValueAtTime(0.0001, t0);
+  gn.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t0 + 0.004);
+  gn.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  node.connect(gn); gn.connect(ctx.destination);
+  return gn;
+}
+function rlSfx(type, vol = 1) {
+  const ctx = rlAudio();
+  if (!ctx || ctx.state !== "running") return;
+  try {
+    const t0 = ctx.currentTime + 0.005;
+    const osc = (wave, f0, f1, peak, dur, at = 0) => { const o = ctx.createOscillator(); o.type = wave; o.frequency.setValueAtTime(f0, t0 + at); if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t0 + at + dur); rlEnv(ctx, o, t0 + at, peak * vol, dur); o.start(t0 + at); o.stop(t0 + at + dur + 0.02); };
+    const noise = (freq, q, peak, dur, at = 0) => { const s = ctx.createBufferSource(); s.buffer = RLA.noise; const f = ctx.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = freq; f.Q.value = q; s.connect(f); rlEnv(ctx, f, t0 + at, peak * vol, dur); s.start(t0 + at, Math.random() * 0.5); s.stop(t0 + at + dur + 0.02); };
+    if (type === "tick") { noise(3800, 3, 0.35, 0.03); osc("square", 2100, 1500, 0.05, 0.025); }
+    else if (type === "chip") { noise(5200, 4, 0.25, 0.05); osc("triangle", 1900, 1700, 0.08, 0.05); }
+    else if (type === "clack") { noise(2600, 2.2, 0.6, 0.07); osc("triangle", 1300, 900, 0.12, 0.05); }
+    else if (type === "land") { noise(900, 1.4, 0.7, 0.16); osc("sine", 190, 80, 0.4, 0.22); }
+    else if (type === "beat") { osc("sine", 62, 44, 0.55, 0.2); osc("sine", 56, 40, 0.38, 0.18, 0.2); }
+    else if (type === "win") [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => osc("triangle", f, f, 0.22, 0.32, i * 0.09));
+    else if (type === "lose") osc("sawtooth", 196, 98, 0.08, 0.5);
+    else if (type === "fan") [392, 523.25, 659.25, 783.99, 1046.5].forEach((f, i) => osc("triangle", f, f, 0.2, 0.4, i * 0.07));
+  } catch {}
+}
+// 玉が縁を転がる音（ずっと鳴る音。強さだけを変える）
+function rlRoll(level) {
+  if (!level && !RLA.roll) return;
+  const ctx = level ? rlAudio() : RLA.ctx;
+  if (!ctx) return;
+  try {
+    if (level && !RLA.roll && ctx.state === "running") {
+      const s = ctx.createBufferSource(); s.buffer = RLA.noise; s.loop = true;
+      const f = ctx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = 900;
+      const f2 = ctx.createBiquadFilter(); f2.type = "highpass"; f2.frequency.value = 180;
+      const gn = ctx.createGain(); gn.gain.value = 0;
+      s.connect(f); f.connect(f2); f2.connect(gn); gn.connect(ctx.destination); s.start();
+      RLA.roll = { s, f, gn };
+    }
+    if (!RLA.roll) return;
+    RLA.roll.gn.gain.setTargetAtTime(level * 0.22, ctx.currentTime, 0.05);
+    RLA.roll.f.frequency.setTargetAtTime(500 + level * 1400, ctx.currentTime, 0.05);
+    if (!level) { const r = RLA.roll; RLA.roll = null; setTimeout(() => { try { r.s.stop(); } catch {} }, 300); }
+  } catch {}
+}
+function rlCasinoSound(e, g, sp, pose, t, D) {
+  const s = (e.snds ??= {});
+  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, landed: -1, phase: null, beat: 0, done: t >= D }; return; }
+  const P = rlPlanOf(sp, rlCasinoPlan);
+  if (pose.phase === "rim") rlRoll(Math.max(0.15, Math.min(1, 1 - t / P.T1 * 0.7)));
+  else rlRoll(0);
+  if (pose.phase === "hop" && s.phase === "rim") rlSfx("clack", 0.9);
+  if (pose.landed > s.landed) rlSfx(pose.landed === P.hops.length - 1 ? "land" : "clack", pose.landed === P.hops.length - 2 ? 0.8 : 0.6);
+  if (pose.phase === "hop" && t - s.beat > 0.72 && !pose.rest) { s.beat = t; rlSfx("beat", 0.9); }
+  s.landed = pose.landed; s.phase = pose.phase;
+  if (!s.done && t >= D) {
+    s.done = true;
+    if (t - D < 2.5) rlResultFx(g, sp);
+  }
+}
+function rlLotSound(e, g, sp, pose, t, P) {
+  const s = (e.snds ??= {});
+  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, cur: pose.cur, tk: 0, beat: 0, done: pose.done }; return; }
+  const pn = performance.now();
+  if (pose.cur !== s.cur && pn - s.tk > 38) { s.tk = pn; rlSfx("tick", pose.slow ? 1 : 0.55); if (pose.slow) navigator.vibrate?.(6); }
+  s.cur = pose.cur;
+  if (pose.slow && !pose.done && t - s.beat > 0.75) { s.beat = t; rlSfx("beat", 0.8); }
+  if (!s.done && pose.done) { s.done = true; if (t - P.D < 2.5) rlResultFx(g, sp); }
+}
+// 玉が止まった・針が止まった瞬間：大きな知らせ・音・ふるえ（その端末で1回だけ）
+function rlResultFx(g, sp) {
+  if (!cxOnce(`rlres${g.id}.${sp.seed}`)) return;
+  navigator.vibrate?.([24, 40, 24]);
+  if (rlLottery(g)) {
+    rlSfx("land", 0.8); setTimeout(() => rlSfx("fan", 1), 120);
+    rlFlash(`「${sp.items?.[sp.n] ?? "?"}」`, `第${sp.round ?? g.rl?.round ?? ""}回${sp.by ? ` ・ ${memberName(sp.by)}が回しました` : ""}`, "rl-lot");
+    return;
+  }
+  const my = rlMyBets(g), d = my ? rlJudge(rlO(g.opts), my, sp.n).d : null;
+  setTimeout(() => rlSfx(d == null ? "fan" : d > 0 ? "win" : "lose", 1), 160);
+  rlFlash(String(sp.n), `${RL_CNAME[rlColor(sp.n)]}${d == null ? "" : ` ・ あなた ${sgn(d)} ${chU(g)}`}`, `rl-num ${rlColor(sp.n)}${d > 0 ? " up" : d < 0 ? " down" : ""}`);
+}
+function rlFlash(big, sub, cls = "") {
+  if (matchMedia?.("(prefers-reduced-motion: reduce)").matches) return toast(`${big} ${sub}`);
+  document.querySelectorAll(".rl-flash").forEach((x) => x.remove());
+  const el = h("div", { class: `bj-flash rl-flash ${cls}`, "aria-live": "polite" }, h("div", { class: "bj-flash-in" }, h("b", null, big), sub ? h("small", null, sub) : null));
+  document.body.append(el);
+  setTimeout(() => el.remove(), 2400);
+}
+// 締め切った瞬間（NO MORE BETS / SPIN!）を全員の画面に出す
+function rlFlashCheck(g) {
+  const sp = g.rl?.spin;
+  if (g.phase !== "spin" || !sp || !cxOnce(`rlsp${g.id}.${sp.seed}`)) return;
+  if (nowS() - sp.at > 400) return;
+  rlAudio();
+  if (rlLottery(g)) rlFlash("SPIN!", sp.by ? `${memberName(sp.by)}が回します` : "", "rl-go");
+  else { rlFlash("NO MORE BETS", "賭けを締め切りました", "rl-go"); rlSfx("chip", 1); }
+}
+
+// ---- 参加者の画面
+const RLX = { draft: new Map(), chip: new Map(), timer: new Map(), sent: new Map() };
+// 自分の賭けの下書き（押すたびに送るが、画面はこの下書きで描く。届くのを待たない）
+function rlDraft(g) {
+  const uid = S.user.uid, r = g.rl.round;
+  let d = RLX.draft.get(g.id);
+  if (!d || d.round !== r) {
+    const p = rlParseBets(cardAct(g, "b", uid, `r${r}`)) ?? { ready: false, bets: {} };
+    d = { round: r, bets: { ...p.bets }, ready: p.ready, hist: [] };
+    RLX.draft.set(g.id, d);
+  }
+  return d;
+}
+function rlSendDraft(g, d) {
+  clearTimeout(RLX.timer.get(g.id));
+  RLX.timer.set(g.id, setTimeout(() => {
+    const cur = S.games.get(g.id);
+    if (!cur || cur.phase !== "bet" || cur.rl?.round !== d.round) return;
+    cardSend(cur, "b", `r${d.round}`, rlEncBets(d.bets, d.ready));
+  }, 220));
+}
+const rlChipChoices = (o, chips) => RL_CHIPS.filter((x) => x >= Math.max(1, o.betMin) && x <= chips && (!o.betMax || x <= o.betMax));
+const rlAbbr = (a) => (a >= 10000 ? `${Math.floor(a / 1000)}k` : a >= 1000 ? `${(a / 1000).toFixed(a % 1000 ? 1 : 0)}k` : String(a));
+function rlSetBets(g, d, nb, push = null) {
+  d.bets = Object.fromEntries(Object.entries(nb).filter(([, a]) => a > 0));
+  if (push) d.hist.push(push);
+  d.ready = false;
+  rlSendDraft(g, d);
+  paintGameLive();
+}
+function rlPlace(g, spot) {
+  const uid = S.user.uid, o = rlO(g.opts), d = rlDraft(g), chips = g.rl.chips?.[uid] ?? 0;
+  const ch = rlChipChoices(o, chips);
+  const v = RLX.chip.get(g.id) ?? ch[0];
+  if (!v) return toast("賭けられるチップがありません", true);
+  const sum = rlSum(d.bets), cur = d.bets[spot] ?? 0;
+  if (sum + v > chips) return toast(`チップが足りません（残り ${chips - sum}）`, true);
+  if (o.betMax && cur + v > o.betMax) return toast(`1か所 ${o.betMax}枚までです`, true);
+  const nb = { ...d.bets, [spot]: cur + v };
+  if (`r${d.round}:${rlEncBets(nb, true)}`.length > 128) return toast("置ける場所の数がいっぱいです（ほかの場所を戻してください）", true);
+  rlSfx("chip", 0.8); navigator.vibrate?.(8);
+  rlSetBets(g, d, nb, [spot, v]);
+}
+// 賭けの盤（縦向き。0／1〜36／2:1 の列、左に 1〜18・偶数・赤・黒・奇数・19〜36、その右に 1〜12・13〜24・25〜36）
+//   mine：自分の賭け、others：ほかの人の賭け（場所 → 人数）、win：出た数字、tap：押したとき
+function rlBoard(mine, opt = {}) {
+  const cell = (spot, cls, style, label) => {
+    const a = mine?.[spot] ?? 0, n = opt.others?.[spot] ?? 0, win = opt.win != null && rlWins(spot, opt.win);
+    const attrs = { class: `rl-cell ${cls}${a ? " bet" : ""}${win ? " win" : ""}${opt.win != null && !win && a ? " lost" : ""}`, style, "aria-label": `${rlSpotName(spot)}${a ? `（${a}枚）` : ""}` };
+    const kids = [h("span", { class: "rl-cell-l" }, label), a ? h("i", { class: "rl-chip-on" }, rlAbbr(a)) : null, n ? h("i", { class: "rl-chip-o", title: `ほかの人 ${n}人` }, String(n)) : null];
+    return opt.tap ? h("button", { type: "button", ...attrs, onclick: () => opt.tap(spot) }, kids) : h("div", attrs, kids);
+  };
+  const out = [h("div", { class: "rl-cell blank", style: "grid-column:1/3;grid-row:1" }, h("small", null, opt.note ?? "")), cell("n0", "num g", "grid-column:3/6;grid-row:1", "0")];
+  for (let n = 1; n <= 36; n++) out.push(cell(`n${n}`, `num ${rlColor(n)}`, `grid-column:${3 + ((n - 1) % 3)};grid-row:${2 + Math.floor((n - 1) / 3)}`, String(n)));
+  [["L", "1-18"], ["E", "偶数"], ["R", "赤"], ["B", "黒"], ["O", "奇数"], ["H", "19-36"]].forEach(([s, l], i) => out.push(cell(s, `em${s === "R" ? " rr" : s === "B" ? " bb" : ""}`, `grid-column:1;grid-row:${2 + i * 2}/span 2`, l)));
+  ["D1", "D2", "D3"].forEach((s, i) => out.push(cell(s, "dz", `grid-column:2;grid-row:${2 + i * 4}/span 4`, ["1-12", "13-24", "25-36"][i])));
+  ["C1", "C2", "C3"].forEach((s, i) => out.push(cell(s, "col", `grid-column:${3 + i};grid-row:14`, "2:1")));
+  return h("div", { class: `rl-board${opt.tap ? "" : " ro"}`, role: opt.tap ? "group" : null, "aria-label": "賭けの盤" }, out);
+}
+// 最近出た数字
+const rlHistEl = (g, n = 10) => {
+  const hs = (g.rl?.hist ?? []).slice(-n).reverse();
+  return hs.length ? h("div", { class: "rl-hist", "aria-label": "最近出た数字" }, hs.map((x, i) => h("b", { class: `rl-hn ${rlColor(x)}${i === 0 ? " last" : ""}` }, String(x)))) : null;
+};
+function rlBetsList(g, bets, n = null) {
+  const o = rlO(g.opts), U = chU(g);
+  const es = Object.entries(bets ?? {});
+  if (!es.length) return h("p", { class: "cx-note" }, "この回は賭けていません");
+  return h("div", { class: "rl-mybets" }, es.map(([k, a]) => {
+    const win = n != null && rlWins(k, n);
+    const d = n == null ? null : win ? a * rlPay(k) : n === 0 && o.partage && rlEvenMoney(k) ? -(a - Math.floor(a / 2)) : -a;
+    return h("span", { class: `rl-mb${n == null ? "" : win ? " win" : " lose"}` }, h("b", null, rlSpotName(k)), h("small", null, `${a} ${U} ・ ×${rlPay(k)}`), d == null ? null : h("em", null, sgn(d)));
+  }));
+}
+// ほかの人（回っている間は賭けた合計、結果では増減）
+function rlCrowd(g) {
+  const st = g.rl, me = S.user?.uid;
+  const us = g.players;
+  return h("div", { class: "rl-crowd" }, us.map((u) => {
+    const b = st.bets?.[u], d = g.phase === "result" || g.phase === "ended" ? st.res?.[u]?.d : null;
+    return h("span", { class: `rl-cw${u === me ? " me" : ""}${d > 0 ? " up" : d < 0 ? " down" : ""}` }, h("b", null, u === me ? "あなた" : memberName(u)),
+      h("small", null, d != null && b ? sgn(d) : b ? `BET ${rlSum(b)}` : "—"), h("i", null, `${st.chips?.[u] ?? 0}`));
+  }));
+}
+// 玉が止まった瞬間に、画面（自分の賭けの結果など）を描き直す（その回で1回だけ予約）
+const RL_LAND = new Set();
+function rlAtLand(g, sp) {
+  const k = `${g.id}.${sp.seed}`;
+  if (RL_LAND.has(k)) return;
+  if (RL_LAND.size > 300) RL_LAND.clear();
+  RL_LAND.add(k);
+  setTimeout(() => { if (S.games.get(g.id)?.phase === "spin") { paintGameLive(); if (S.isAdmin) scheduleRender(); } }, Math.max(50, sp.at + rlPlanOf(sp, rlCasinoPlan).D * 1000 - nowS() + 40));
+}
+function rlMemberBody(g) {
+  const uid = S.user.uid, st = g.rl, o = rlO(g.opts), r = st.round, U = chU(g);
+  if (rlLottery(g)) {
+    const sp = rlSpinner(g), mine = sp === uid, adminSpin = S.isAdmin && !sp;
+    const sent = cardAct(g, "s", uid, `r${r}`) != null;
+    let ctl = null;
+    if (g.phase === "ready") {
+      if (mine || adminSpin) {
+        const b = cxBtn("play", sent ? "…" : "SPIN", `btn-filled rl-spin-btn${sent ? "" : " need"}`, { disabled: sent, "aria-label": "ルーレットを回す" });
+        b.addEventListener("click", () => { rlAudio(); if (adminSpin) { const cur = S.games.get(g.id) ?? g; guard(b, () => gameForward(cur)); } else cardSend(g, "s", `r${r}`, "go"); });
+        ctl = [h("div", { class: "cx-acts" }, b), h("p", { class: "cx-note" }, mine ? "あなたの番です。押すと回ります" : "押すと回ります（管理者）")];
+      } else ctl = h("p", { class: "cx-note rl-wait" }, sp ? `${memberName(sp)}さんが回します` : "管理者が回します");
+    }
+    const hits = st.hist ?? [];
+    return [h("section", { class: "cx-table rl-x lot" }, rlWheel(g, "m", { size: "big", loud: true }), ctl,
+      hits.length ? h("div", { class: "rl-hits" }, h("small", null, "HIT"), hits.map((x, i) => h("b", null, `${hits.length > 1 ? `${i + 1}. ` : ""}${x}`))) : null)];
+  }
+  const chips = st.chips?.[uid] ?? 0;
+  if (g.phase === "bet") {
+    const canBet = g.actors.includes(uid);
+    if (!canBet) return [h("section", { class: "cx-table rl-x" }, rlWheel(g, "m", { size: "big", loud: true }), h("p", { class: "cx-note rl-wait" }, chips <= 0 ? `${U} 0 ・ この回は見るだけ` : "ほかの人が賭けています"), rlHistEl(g))];
+    const d = rlDraft(g), sum = rlSum(d.bets), ch = rlChipChoices(o, chips);
+    let v = RLX.chip.get(g.id);
+    if (!ch.includes(v)) { v = ch.find((x) => x >= 5) ?? ch[0]; RLX.chip.set(g.id, v); }
+    const prev = st.prev?.[uid];
+    const canPrev = prev && rlSum(prev) <= chips && Object.values(prev).every((a) => !o.betMax || a <= o.betMax);
+    const canDbl = sum > 0 && sum * 2 <= chips && Object.values(d.bets).every((a) => !o.betMax || a * 2 <= o.betMax);
+    const head = h("div", { class: "rl-head" }, rlWheel(g, "m", { size: "mini", loud: true }),
+      h("div", { class: "rl-head-mid" }, rlHistEl(g, 8) ?? h("small", { class: "rl-hint" }, "数字・赤黒などをタップしてチップを置く")),
+      h("div", { class: `rl-sum${sum ? "" : " need"}` }, h("small", null, "BET"), h("b", null, String(sum)), h("small", null, `残り ${chips - sum} ${U}`)));
+    const chipRow = h("div", { class: "rl-chips", role: "radiogroup", "aria-label": "置くチップ" }, ch.map((x) =>
+      h("button", { type: "button", role: "radio", class: `rl-chip c${RL_CHIPS.indexOf(x)}${x === v ? " on" : ""}`, "aria-checked": String(x === v), onclick: () => { RLX.chip.set(g.id, x); paintGameLive(); } }, rlAbbr(x))));
+    const undo = () => { const last = d.hist.pop(); if (!last) return; const nb = { ...d.bets }; nb[last[0]] = Math.max(0, (nb[last[0]] ?? 0) - last[1]); rlSetBets(g, d, nb); };
+    const acts = h("div", { class: "cx-acts sub rl-acts" },
+      cxBtn("refresh", "戻す", "btn-filled", { disabled: !d.hist.length, onclick: undo }),
+      cxBtn("xmark", "クリア", "btn-filled", { disabled: !sum, onclick: () => { d.hist = []; rlSetBets(g, d, {}); } }),
+      cxBtn("dup", "前回", "btn-filled", { disabled: !canPrev, onclick: () => { d.hist = []; rlSetBets(g, d, { ...prev }); } }),
+      cxBtn("plus", "×2", "btn-filled", { disabled: !canDbl, onclick: () => { d.hist = []; rlSetBets(g, d, Object.fromEntries(Object.entries(d.bets).map(([k, a]) => [k, a * 2]))); } }),
+      cxBtn("check", d.ready ? "OK済" : "準備OK", `btn-filled${d.ready ? " on" : sum ? " need" : ""}`, { onclick: () => { d.ready = !d.ready; rlSendDraft(g, d); paintGameLive(); } }));
+    return [h("section", { class: "cx-table rl-x bet" }, head,
+      rlBoard(d.bets, { tap: (s) => rlPlace(g, s), note: o.betMax ? `1か所 ${o.betMin}–${o.betMax}` : `1か所 ${o.betMin}〜` }),
+      chipRow, acts,
+      h("p", { class: "cx-note" }, `${d.ready ? "準備OK ・ 締め切りまで変えられます" : "タップで置く ・ 締め切りまで変えられます"}${o.partage ? " ・ 0は赤黒などが半分戻る" : " ・ 0は外側の賭けが負け"}`))];
+  }
+  // 回っている間・結果
+  const my = st.bets?.[uid];
+  const sp = st.spin, landed = sp && (g.phase !== "spin" || (nowS() - sp.at) / 1000 >= rlPlanOf(sp, rlCasinoPlan).D);
+  if (g.phase === "spin" && !landed && sp) rlAtLand(g, sp);
+  const n = landed && sp ? sp.n : null;
+  return [h("section", { class: `cx-table rl-x spin${landed ? " landed" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }),
+    h("div", { class: "rl-me" }, h("div", { class: "gl-label" }, "MY BETS", my ? h("small", null, ` ${rlSum(my)} ${U}${n != null && st.res?.[uid] ? ` ・ ${sgn(st.res[uid].d)}` : ""}`) : null),
+      rlBetsList(g, my, n))),
+    h("div", { class: "rl-crowd-wrap" }, rlCrowd(g))];
+}
+// 管理者の画面・表示用画面のテーブル
+function rlTable(g, slot = "a", big = false) {
+  const st = g.rl, lot = rlLottery(g), U = chU(g);
+  const wheel = rlWheel(g, slot, { size: big ? "huge" : "mid", loud: true });
+  if (lot) {
+    const hits = st.hist ?? [];
+    return h("div", { class: `rl-tbl lot${big ? " big" : ""}` }, wheel,
+      h("div", { class: "rl-tbl-side" },
+        h("div", { class: "gl-label" }, `HIT ${hits.length} / ${rlO(g.opts).rounds}回`),
+        hits.length ? h("ol", { class: "rl-hitlist" }, hits.map((x) => h("li", null, x))) : h("p", { class: "cell-sub" }, "まだ回していません"),
+        h("div", { class: "gl-label" }, `のこりの項目 ${st.items?.length ?? 0}`), h("div", { class: "rl-items" }, (st.items ?? []).map((x) => h("span", null, x)))));
+  }
+  const sp = st.spin, landed = sp && g.phase !== "bet" && (g.phase !== "spin" || (nowS() - sp.at) / 1000 >= rlPlanOf(sp, rlCasinoPlan).D);
+  if (g.phase === "spin" && !landed && sp) rlAtLand(g, sp);
+  const r = `r${st.round}`;
+  const betOf = (u) => (g.phase === "bet" ? (S.isAdmin ? rlParseBets(cardAct(g, "b", u, r)) : null) : { bets: st.bets?.[u] ?? {}, ready: true });
+  const rows = [...g.players].sort((a, b) => (st.chips?.[b] ?? 0) - (st.chips?.[a] ?? 0)).map((u) => {
+    const b = betOf(u), d = landed && g.phase !== "spin" ? st.res?.[u]?.d : null;
+    return h("div", { class: `rl-row${d > 0 ? " up" : d < 0 ? " down" : ""}` }, h("span", { class: "rl-row-nm" }, memberName(u)),
+      h("small", { class: "rl-row-bet" }, b && rlSum(b.bets) ? `${g.phase === "bet" && b.ready ? "✓ " : ""}${rlBetText(b.bets)}` : g.phase === "bet" ? (g.actors.includes(u) ? "…" : "見送り") : "—"),
+      h("b", null, `${st.chips?.[u] ?? 0}`, h("small", null, ` ${U}`)), d != null ? h("em", null, sgn(d)) : null);
+  });
+  return h("div", { class: `rl-tbl${big ? " big" : ""}` }, wheel,
+    h("div", { class: "rl-tbl-side" }, rlHistEl(g, 14), h("div", { class: "gl-label" }, g.phase === "bet" ? "BET" : landed ? `RESULT ・ ${rlNumText(sp.n)}` : "NO MORE BETS"), h("div", { class: "rl-rows" }, rows)));
+}
+
 // ================= 始める・進める（管理者の端末）
 function cardStartState(kind, players, o) {
   if (kind === "bj") {
@@ -12284,6 +13197,13 @@ function cardTick(g) {
     else if (g.phase === "insure" && !manual && (timeUp || acted("i", r))) fn = bjInsure;
     else if (g.phase === "play" && (g.actors.some((u) => bjPending(g, st, u)) || (timeUp && (!manual || g.actors.some((u) => bjCur(st, u)))))) fn = bjPlay;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = bjNext;
+  } else if (g.kind === "rl") {
+    // v100 ルーレット：賭けの締め切り（時間切れ・全員が準備OK）→ 回す → 全員の画面で止まってから精算 → 次の回
+    const st = g.rl, r = `r${st.round}`;
+    if (g.phase === "bet" && !manual && (timeUp || (g.actors.length > 0 && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready)))) fn = rlSpin;
+    else if (g.phase === "ready" && g.actKey === "s" && (timeUp || cardAct(g, "s", rlSpinner(g), r) != null)) fn = rlSpin;
+    else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + 400) fn = rlSettle;
+    else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = rlNext;
   } else {
     const st = g.dfg;
     if (g.phase === "exchange" && !manual && (timeUp || st.exchange.every((x) => cardAct(g, "x", x.to, `x${st.round}`) != null))) fn = dfgExchangeDone;
@@ -12291,11 +13211,12 @@ function cardTick(g) {
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = dfgNextRound;
   }
   if (!fn) return;
-  const need = g.kind === "bj" ? [DEALER] : g.dfg.seats;
+  const need = cardNeed(g);
   GBUSY.add(g.id);
   gameStep(g.id, g.step ?? 0, fn, need).catch((e) => console.warn("cards", e)).finally(() => GBUSY.delete(g.id));
 }
 function cardForceEnd(g) {
+  if (g.kind === "rl") return { update: rlEndUpdate(g, structuredClone(g.rl), g.log ?? []) };
   if (g.kind === "bj") return { update: bjEndUpdate(g, structuredClone(g.bj), g.log ?? []) };
   return { update: dfgEndUpdate(g, structuredClone(g.dfg), g.log ?? []) };
 }
@@ -12303,12 +13224,17 @@ function cardForceEnd(g) {
 // ================= 表示
 function cardPhaseText(g) {
   if (g.phase === "ended") return "ゲーム終了";
+  if (g.kind === "rl") return `第${g.rl?.round ?? 1}回${{ bet: "・賭け", spin: "・回転中", result: "・結果" }[g.phase] ?? ""}（全${rlO(g.opts).rounds}回）`;
   const o = g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts);
   if (g.kind === "bj") return `第${g.bj.round}回${g.phase === "bet" ? "・賭け" : g.phase === "insure" ? "・保険" : g.phase === "play" ? "・勝負中" : "・結果"}（全${o.rounds}回）`;
   return `第${g.dfg.round}回${g.phase === "exchange" ? "・カード交換" : g.phase === "result" ? "・結果" : ""}（全${o.rounds}回）${dfgRevNow(g.dfg) ? "・強さが逆" : ""}`;
 }
 // 参加者のトランプ画面の上に出す短い表記（例：BJ · R1/3 · BET）
 function cardPhaseShort(g) {
+  if (g.kind === "rl") {
+    const ph = g.phase === "ended" ? "END" : { bet: "BET", spin: "SPIN", result: "RESULT", ready: "READY" }[g.phase] ?? "PLAY";
+    return [rlLottery(g) ? "LOTTERY" : "ROULETTE", g.phase === "ended" ? null : `R${g.rl?.round ?? 1}/${rlO(g.opts).rounds}`, ph].filter(Boolean).join(" · ");
+  }
   const bj = g.kind === "bj", o = bj ? bjO(g.opts) : dfgO(g.opts);
   const r = bj ? g.bj?.round : g.dfg?.round;
   const ph = g.phase === "ended" ? "END" : g.phase === "bet" ? "BET" : g.phase === "insure" ? "INS" : g.phase === "exchange" ? "TRADE" : g.phase === "result" ? "RESULT" : "PLAY";
@@ -12316,6 +13242,15 @@ function cardPhaseShort(g) {
 }
 function cardPrompt(g) {
   if (g.phase === "ended") return g.result?.text ?? "";
+  if (g.kind === "rl") {
+    const man = cardManual(g.opts);
+    if (g.phase === "ready") { const sp = rlSpinner(g); return sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"; }
+    if (g.phase === "spin") return rlLottery(g) ? "回っています…" : "ノーモアベット。玉が回っています…";
+    if (g.phase === "result" && rlLottery(g)) return `「${g.rl?.hist?.at(-1) ?? "?"}」に決まりました。${rlIsLast(g) ? "まもなく終わります。" : "まもなく次の回です。"}`;
+    if (g.phase === "result" && rlIsLast(g)) return "最後の回の結果です。まもなく順位が出ます。";
+    if (g.phase === "result") return `この回の結果です。${rlO(g.opts).autoNext && !man ? "まもなく次の回が始まります。" : man ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。"}`;
+    return `数字や赤・黒などにチップを置いてください。${man ? "ディーラー（管理者）が締め切ると玉を投げます。" : "全員が「準備OK」を押すか、時間になると締め切ります。"}`;
+  }
   const manual = cardManual(g.opts), auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !manual;
   const after = auto ? "まもなく次の回が始まります。" : manual ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
   if (g.kind === "bj" && manual && g.phase === "play" && !g.actors.length) return "全員の番が終わりました。ディーラー（管理者）がカードを開けるのを待っています。";
@@ -12520,14 +13455,15 @@ const cxOnce = (key) => { if (GC.seen.has(key)) return false; if (GC.seen.size >
 const cxBtn = (ic, label, cls, attrs = {}) => h("button", { class: `cx-btn ${cls}`, ...attrs }, icon(ic), h("span", { class: "cx-lb" }, label));
 // 上の段：今の回（輪）・自分のチップ（点）・閉じる
 function cxTop(g, close) {
-  const uid = S.user.uid, bj = g.kind === "bj";
-  const total = Math.max(1, Number(bj ? bjO(g.opts).rounds : dfgO(g.opts).rounds) || 1);
-  const round = Math.min(total, (bj ? g.bj?.round : g.dfg?.round) ?? 1);
+  const uid = S.user.uid, rl = g.kind === "rl", lot = rl && rlLottery(g), bj = g.kind === "bj" || (rl && !lot);
+  const total = Math.max(1, Number(cardO(g).rounds) || 1);
+  const round = Math.min(total, cardRound(g) ?? 1);
   const p = g.phase === "ended" ? 1 : round / total;
   return h("div", { class: "cx-top" },
     h("div", { class: "cx-ring", style: `--p:${p}`, "aria-label": `第${round}回 / 全${total}回` }, h("span", null, String(round), h("small", null, `/${total}`))),
-    h("div", { class: "cx-bal", title: bj ? (g.opts?.pt?.chips === "real" ? "チップ（旅行のポイント）" : "チップ") : "合計点" }, bj ? `${g.bj?.chips?.[uid] ?? 0}` : `${g.dfg?.points?.[uid] ?? 0}`,
-      h("small", null, bj ? chU(g) : "PT")),
+    h("div", { class: "cx-bal", title: lot ? "のこりの項目" : bj ? (g.opts?.pt?.chips === "real" ? "チップ（旅行のポイント）" : "チップ") : "合計点" },
+      lot ? `${g.rl?.items?.length ?? 0}` : bj ? `${(rl ? g.rl : g.bj)?.chips?.[uid] ?? 0}` : `${g.dfg?.points?.[uid] ?? 0}`,
+      h("small", null, lot ? "ITEMS" : bj ? chU(g) : "PT")),
     close);
 }
 function dfgTable(g, me = null) {
@@ -12544,6 +13480,7 @@ function dfgTable(g, me = null) {
 // 参加者の操作
 GC.step = new Map(); // 大富豪：7渡し・10捨てで、出すカードを決めたあとに選ぶ途中
 function cardMemberBody(g) {
+  if (g.kind === "rl") return rlMemberBody(g);
   const uid = S.user.uid;
   const out = [];
   if (g.kind === "bj") {
@@ -12744,7 +13681,7 @@ function cardStageBody(g, spect = false) {
   const last = [...logs].reverse().find((l) => !l.ev?.quiet) ?? logs.at(-1);
   return [
     gEndHero(g),
-    g.kind === "bj" ? bjTable(g) : dfgTable(g),
+    g.kind === "bj" ? bjTable(g) : g.kind === "rl" ? rlTable(g, "s", true) : dfgTable(g),
     last ? h("div", { class: "st-news" }, last.text) : null,
     spect && !logs.length ? null : h("div", { class: "gl-card st-log" }, h("div", { class: "gl-label" }, "これまでの進行"), gLogList(g, 8, spect ? logs : undefined)),
   ];
@@ -12764,7 +13701,7 @@ function demoAct(g, key, uid, target) {
   setTimeout(gameAutoTick, 30);
 }
 const DEMO_CPU = ["ハル", "ソラ", "リク", "ミオ", "ユイ", "カイ", "レン"];
-const DEMO_N = { wolf: 6, word: 5, ng: 4, num: 4, bj: 4, dfg: 4 };
+const DEMO_N = { wolf: 6, word: 5, ng: 4, num: 4, bj: 4, dfg: 4, rl: 4 };
 async function demoStart(kind, o) {
   if (GV.demo) demoEnd();
   const me = S.user.uid, n = DEMO_N[kind] ?? 4;
@@ -12777,6 +13714,7 @@ async function demoStart(kind, o) {
   if (kind === "ng") Object.assign(d, { auto: true, limitMin: 2 });
   if (kind === "num") Object.assign(d, { auto: true, limitMin: 2, rank: true, rankSec: 30 });
   if (isCardKind(kind)) Object.assign(d, { autoNext: true, resultSec: Math.min(Number(d.resultSec) || 6, 8) });
+  if (kind === "rl" && d.mode === "lottery" && (d.items ?? []).length < 2) d.items = [...RL_LOT_EXAMPLE];
   const gid = await startGame(kind, [me, ...cpus], d, true);
   GV.demo = gid;
   paintGameLive();
@@ -12836,6 +13774,25 @@ function demoBotMove(g, u) {
       return ["p", `${r}:${bjValue(hd.cards).total < 17 ? "h" : "s"}${bjNo(cur)}.${hd.cards.length}`];
     }
     return null;
+  }
+  if (g.kind === "rl") {
+    const st = g.rl, r = `r${st.round}`;
+    if (g.phase === "ready" && rlSpinner(g) === u && cardAct(g, "s", u, r) == null) return ["s", `${r}:go`];
+    if (g.phase !== "bet" || !g.actors.includes(u) || cardAct(g, "b", u, r) != null) return null;
+    // CPU：1〜3か所に、持っているチップの1割くらいずつ
+    const o = rlO(g.opts), chips = st.chips?.[u] ?? 0, ch = rlChipChoices(o, chips);
+    if (!ch.length) return ["b", `${r}:!`];
+    const spots = ["R", "B", "E", "O", "L", "H", "D1", "D2", "D3", "C1", "C2", "C3", `n${Math.floor(Math.random() * 37)}`, `n${Math.floor(Math.random() * 37)}`];
+    const bets = {};
+    let left = chips;
+    for (let i = 0, k = 1 + Math.floor(Math.random() * 3); i < k; i++) {
+      const a = pick(ch.filter((x) => x <= Math.max(ch[0], chips / 8)));
+      if (!a || a > left) break;
+      const sp = pick(spots);
+      if (o.betMax && (bets[sp] ?? 0) + a > o.betMax) continue;
+      bets[sp] = (bets[sp] ?? 0) + a; left -= a;
+    }
+    return ["b", `${r}:${rlEncBets(bets, true)}`];
   }
   if (g.kind === "dfg") {
     const st = g.dfg, hand = sortHand(gSecret(g, u)?.hand ?? []);
@@ -12984,10 +13941,12 @@ function gameForwardFn(g) {
   if (g.kind === "num") return g.phase === "result" ? numNextRound : g.phase === "play" && numRankOn(g) ? numToRank : numEnd;
   if (g.kind === "bj" && g.phase === "result") return bjNext;
   if (g.kind === "dfg" && g.phase === "result") return dfgNextRound;
+  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" ? rlSpin : g.phase === "result" ? rlNext : null;
   return null;
 }
 // 管理者がディーラーのときの「進める」（配る・保険を締め切る・カードを開ける・交換を締め切る・番の人をパス・次の回へ）
 function cardForwardFn(g) {
+  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" ? rlSpin : g.phase === "result" ? rlNext : null;
   if (g.kind === "bj") return g.phase === "bet" ? bjDeal : g.phase === "insure" ? (x, s) => bjInsure(x, s, true) : g.phase === "play" ? bjReveal : g.phase === "result" ? bjNext : null;
   return g.phase === "exchange" ? (x, s) => dfgExchangeDone(x, s, true) : g.phase === "play" ? (x, s) => dfgMove(x, s, true) : g.phase === "result" ? dfgNextRound : null;
 }
@@ -13007,6 +13966,12 @@ function cardDealerBox(g) {
       ready = !left.length;
       sub = left.length ? `まだ選んでいる人：${gNames(left)}（押すとスタンドになります）` : "全員の番が終わりました";
     }
+  } else if (g.kind === "rl") {
+    if (g.phase === "bet") {
+      const rr = `r${g.rl.round}`, ok = g.actors.filter((u) => rlParseBets(cardAct(g, "b", u, rr))?.ready), wait = g.actors.filter((u) => !ok.includes(u));
+      ready = !wait.length;
+      sub = `準備OK ${ok.length} / ${g.actors.length}人${wait.length ? ` ・ まだ：${gNames(wait)}` : " ・ 全員そろいました"}`;
+    }
   } else if (g.phase === "exchange") {
     const wait = g.dfg.exchange.filter((x) => cardAct(g, "x", x.to, `x${g.dfg.round}`) == null).map((x) => x.to);
     ready = !wait.length;
@@ -13017,9 +13982,10 @@ function cardDealerBox(g) {
   return h("div", { class: "gp-dealer" }, h("div", { class: "gp-dealer-head" }, h("b", null, "ディーラーの操作"), sub ? h("small", null, sub) : null), b);
 }
 // 場面の操作バー用の短い名前
-const cardDealerShort = (g) => (g.kind === "bj" ? { bet: "配る", insure: "保険を締切", play: "カードを開ける", result: "次の回へ" } : { exchange: "交換を締切", play: "パスにする", result: "次の回へ" })[g.phase] ?? null;
+const cardDealerShort = (g) => (g.kind === "bj" ? { bet: "配る", insure: "保険を締切", play: "カードを開ける", result: "次の回へ" } : g.kind === "rl" ? { bet: "締め切って回す", ready: "回す", result: rlIsLast(g) ? "終える" : "次の回へ" } : { exchange: "交換を締切", play: "パスにする", result: "次の回へ" })[g.phase] ?? null;
 // ディーラーの操作のボタン名（管理者がディーラーのとき）
 function cardDealerLabel(g) {
+  if (g.kind === "rl") return g.phase === "bet" ? "締め切って玉を投げる" : g.phase === "ready" ? "ルーレットを回す" : g.phase === "result" ? (rlIsLast(g) ? "終える（順位を出す）" : "次の回へ") : null;
   if (g.kind === "bj") {
     const st = g.bj, left = g.phase === "play" ? [...new Set(Object.keys(st.hands ?? {}).map(bjOwn))].filter((u) => bjCur(st, u)) : [];
     return g.phase === "bet" ? "締め切って配る" : g.phase === "insure" ? "保険を締め切る" : g.phase === "play" ? (left.length ? "締め切ってディーラーのカードを開ける" : "ディーラーのカードを開ける") : g.phase === "result" ? "次の回へ" : null;
@@ -13028,6 +13994,7 @@ function cardDealerLabel(g) {
 }
 async function gameForward(g) {
   if (!gLive(g)) return;
+  if (g.kind === "rl" && g.phase === "spin") return toast("回っています。止まるまで待ってください");
   if (isCardKind(g.kind) && cardManual(g.opts)) { const f = cardForwardFn(g); if (f) await gameStep(g.id, g.step ?? 0, f, cardNeed(g)); return; }
   const fn = gameForwardFn(g);
   if (fn) { await gameStep(g.id, g.step ?? 0, fn); return; }
@@ -13140,6 +14107,7 @@ const LOG_CATS = {
   num: [["prog", "はじめの説明・次の回", []], ["end", "答え合わせ", ["end", "numRound"]]],
   bj: [["prog", "配った・賭けた記録", ["bjBet", "bjSkip", "bjDeal", "bjIns"]], ["moves", "各人の行動（HIT・STAND など）", ["bjMove", "bjInsDone", "bjPeek"]],
     ["round", "各回の結果", ["bjRound"]], ["end", "最終結果", ["end"]]],
+  rl: [["prog", "賭けの締め切り・回した記録", ["rlBet", "rlSpin", "rlReady"]], ["round", "各回の結果（出た数字・当たり）", ["rlRound", "rlHit"]], ["end", "最終結果", ["end"]]],
   dfg: [["prog", "配った・順番・場が流れた記録", ["dfgStart", "dfgDeal", "dfgLead", "dfgFlow"]], ["plays", "出したカード・パス", ["dfgPlay", "dfgPass"]],
     ["exchange", "カードの交換", ["dfgExchange"]], ["round", "各回の順位", ["dfgRound"]], ["end", "最終結果", ["end"]]],
 };
@@ -13196,6 +14164,12 @@ function gActProgress(g) {
       const us = g.players.filter((u) => bjHandsOf(st, u).length);
       return us.length ? { label: "HIT / STAND", rows: us.map((u) => ({ u, done: bjHandsOf(st, u).every((k) => st.hands[k].done), to: null })) } : null;
     }
+    return null;
+  }
+  if (g.kind === "rl") {
+    const st = g.rl, r = `r${st.round}`;
+    if (g.phase === "bet") return { label: "BET（準備OK）", rows: g.actors.map((u) => { const p = rlParseBets(cardAct(g, "b", u, r)); return { u, done: !!p?.ready, to: p && rlSum(p.bets) ? `BET ${rlSum(p.bets)}` : null }; }) };
+    if (g.phase === "ready" && rlSpinner(g)) return { label: "回す人", turn: true, rows: [{ u: rlSpinner(g), done: false, to: null }] };
     return null;
   }
   const st = g.dfg;
@@ -13293,17 +14267,17 @@ function watchGame() {
 }
 // 場面が変わったとき（夜→朝、投票、次の回など）に、画面の真ん中を横切る帯を一瞬出す
 function phaseKey(g) {
-  if (isCardKind(g.kind)) return `${g.id}:${g.phase === "ended" ? "end" : g.kind === "bj" ? g.bj?.round : g.dfg?.round}`;
+  if (isCardKind(g.kind)) return `${g.id}:${g.phase === "ended" ? "end" : cardRound(g)}`;
   return `${g.id}:${g.phase}:${g.day ?? 1}:${g.actKey ?? ""}`;
 }
 function phaseBanner(g) {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   document.querySelectorAll(".cx-banner").forEach((x) => x.remove());
   const card = isCardKind(g.kind), end = g.phase === "ended";
-  const r = g.kind === "bj" ? g.bj?.round : g.dfg?.round;
+  const r = cardRound(g);
   const big = end ? "FINISH" : card ? `ROUND ${r ?? 1}` : gPhaseShort(g).split(" · ").at(-1);
-  const ic = end ? "★" : card ? (g.kind === "bj" ? "♠" : "♦") : g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "guess" ? "?" : g.kind === "wolf" ? "☀" : g.kind === "ng" ? "NG" : g.kind === "num" ? "#" : "◆";
-  const sub = card ? `${g.title}${end ? "" : ` ・ 全${(g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).rounds}回`}` : gPhaseText(g);
+  const ic = end ? "★" : card ? (g.kind === "bj" ? "♠" : g.kind === "rl" ? "◎" : "♦") : g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "guess" ? "?" : g.kind === "wolf" ? "☀" : g.kind === "ng" ? "NG" : g.kind === "num" ? "#" : "◆";
+  const sub = card ? `${g.title}${end ? "" : ` ・ 全${cardO(g).rounds}回`}` : gPhaseText(g);
   const el = h("div", { class: `cx-banner ph-${end ? "ended" : g.phase}`, "aria-hidden": "true" },
     h("div", { class: "cx-banner-in" }, h("span", { class: "cx-banner-ic" }, ic), h("b", null, big), h("small", null, sub)));
   document.body.append(el);
@@ -13420,6 +14394,7 @@ function paintGameLive() {
   fab?.remove();
   if (g.kind === "bj") bjFlashCheck(g);
   if (g.kind === "dfg") dfgFlashCheck(g);
+  if (g.kind === "rl") rlFlashCheck(g);
   const opened = !el;
   if (!el) { el = h("div", { class: "game-live", role: "dialog", "aria-label": "ゲーム" }); document.body.append(el); }
   const scroll = el.scrollTop, logScroll = el.querySelector(".cx-scroll")?.scrollTop ?? 0, sheetScroll = el.querySelector(".cx-logsheet-body")?.scrollTop ?? 0;
@@ -13432,7 +14407,7 @@ function paintGameLive() {
   if (spect || (S.isAdmin && !adminPlay)) {
     // みんなに見せる画面（秘密の内容は出さない）。デモのゲームも、管理者の画面から開ける
     el.className = `game-live stage ph-${g.phase === "vote" ? "vote" : g.phase === "night" ? "night" : g.phase === "ended" ? "ended" : "day"}`;
-    const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : isCardKind(g.kind) ? "♠" : "💬";
+    const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : g.kind === "rl" ? "◎" : isCardKind(g.kind) ? "♠" : "💬";
     setKids(el, enter(h("div", { class: "gl-inner st-inner" },
       h("div", { class: "st-top" }, h("span", { class: "st-title" }, g.title), spect ? h("span", { class: "ql-watch" }, "観戦") : null, (g.opts?.auto || isCardKind(g.kind)) && gLive(g) ? h("span", { class: "st-auto" }, h("span", { class: "live-dot" }), "自動で進行中") : null, close),
       h("div", { class: "st-phase" }, h("span", { class: "st-icon" }, ic), h("span", null, gPhaseText(g))),
@@ -13461,7 +14436,7 @@ function paintGameLive() {
       cxTop(g, close),
       h("div", { class: "gl-phase cx-phase", title: `${g.title} ・ ${gPhaseText(g)}` }, g.demo ? h("b", { class: "cx-demo" }, "DEMO") : null, h("span", null, cardPhaseShort(g)), gTimer(g)),
       // 賭け・勝負中・大富豪の番は、下の台に操作と説明があるので、上の長い説明は出さない
-      ["bet", "play", "insure", "ended"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !cardManual(g.opts) ? "NEXT ▸ まもなく次の回" : cardManual(g.opts) ? "NEXT ▸ ディーラーが進めるまで待機" : "NEXT ▸ 管理者が進めるまで待機"),
+      ["bet", "play", "insure", "ended", "spin", "ready"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : g.kind === "rl" && rlIsLast(g) ? "NEXT ▸ まもなく結果発表" : g.kind === "rl" && rlLottery(g) ? "NEXT ▸ まもなく次の回" : cardO(g).autoNext && !cardManual(g.opts) ? "NEXT ▸ まもなく次の回" : cardManual(g.opts) ? "NEXT ▸ ディーラーが進めるまで待機" : "NEXT ▸ 管理者が進めるまで待機"),
       gameMemberBody(g))));
     cxFit(el, el.firstElementChild); cxRestore(el, logScroll, sheetScroll, scroll);
     return;
@@ -13596,13 +14571,14 @@ function gameStageBody(g, spect = false) {
 function gEndHero(g, uid = null) {
   if (g.phase !== "ended") return null;
   const rk = isCardKind(g.kind) ? g.result?.ranking ?? [] : [];
-  const bj = g.kind === "bj";
+  const bj = g.kind === "bj" || g.kind === "rl"; // ルーレット（カジノ）もチップの枚数で順位
+  const cs = g.kind === "rl" ? g.rl : g.bj;
   let mine = null;
   if (uid && g.players?.includes(uid)) {
     if (rk.length) {
       const x = rk.find((y) => y.uid === uid);
       if (x) {
-        const place = cardPlace(rk, x), d = bj ? x.chips - (g.bj?.start?.[uid] ?? x.chips) : null;
+        const place = cardPlace(rk, x), d = bj ? x.chips - (cs?.start?.[uid] ?? x.chips) : null;
         mine = { big: `${place}位`, cls: place === 1 ? "win" : "", sub: bj ? `チップ ${x.chips}枚（${sgn(d)}）` : `${x.points}点${x.title ? `・${x.title}` : ""}` };
       }
     } else if (g.kind === "num" && g.judge?.[uid]) {
@@ -13909,7 +14885,7 @@ function gameArchive(g) {
     names: Object.fromEntries((g.players ?? []).map((u) => [u, memberName(u)])), opts: g.opts ?? {}, theme: g.theme ?? null,
     log: g.log ?? [], result: g.result ?? null, reveal: g.reveal ?? null, minors: g.minors ?? null, outs: g.outs ?? null, secrets, acts: isCardKind(g.kind) ? [] : acts,
     settled: g.settled ?? null, ...(g.kind === "num" && g.hist?.length > 1 ? { hist: g.hist } : {}),
-    ...(g.kind === "bj" ? { cardState: { chips: g.bj?.chips ?? {} } } : g.kind === "dfg" ? { cardState: { seats: g.dfg?.seats ?? [], points: g.dfg?.points ?? {}, titles: g.dfg?.titles ?? {} } } : {}),
+    ...(g.kind === "bj" ? { cardState: { chips: g.bj?.chips ?? {} } } : g.kind === "rl" ? { cardState: { chips: g.rl?.chips ?? {}, hist: g.rl?.hist ?? [], items: g.rl?.items ?? [] } } : g.kind === "dfg" ? { cardState: { seats: g.dfg?.seats ?? [], points: g.dfg?.points ?? {}, titles: g.dfg?.titles ?? {} } } : {}),
     at: serverTimestamp(),
   };
 }
@@ -13919,7 +14895,7 @@ function gameAutoArchive() {
   if (!S.isAdmin || !S.meta.playLogs || !S.meta.games) return;
   for (const g of S.games.values()) {
     if (g.demo || gLive(g) || GARCH.has(g.id) || S.playLogs.has(`game_${g.id}`)) continue;
-    if (g.kind !== "bj" && (g.players ?? []).some((u) => !gSecret(g, u))) continue;
+    if (g.kind !== "bj" && g.kind !== "rl" && (g.players ?? []).some((u) => !gSecret(g, u))) continue;
     GARCH.add(g.id);
     setDoc(D("playLogs", `game_${g.id}`), gameArchive(g)).catch((e) => { console.warn("archive", e); GARCH.delete(g.id); });
   }
@@ -13994,7 +14970,7 @@ function historyAdmin() {
         })),
       ];
     } else {
-      const rows = isCardKind(P.game) ? (P.result?.ranking ?? []).map((x) => h("div", { class: "hl-rank-row" }, h("span", { class: "hl-no" }, `${cardPlace(P.result.ranking, x)}位`), h("span", null, plName(P, x.uid)), h("b", null, P.game === "bj" ? `${x.chips}枚` : `${x.points}点`)))
+      const rows = isCardKind(P.game) ? (P.result?.ranking ?? []).map((x) => h("div", { class: "hl-rank-row" }, h("span", { class: "hl-no" }, `${cardPlace(P.result.ranking, x)}位`), h("span", null, plName(P, x.uid)), h("b", null, P.game === "bj" || P.game === "rl" ? `${x.chips}枚` : `${x.points}点`)))
         : (P.players ?? []).map((u) => {
         const v = P.game === "wolf" ? plRole(P, u) : P.game === "word" ? P.secrets?.[u]?.word ?? P.reveal?.[u] ?? "?" : P.game === "num" ? String(P.secrets?.[u]?.number ?? P.reveal?.[u] ?? "?") : String(P.reveal?.[u] ?? "?");
         return h("div", { class: "hl-rank-row" }, h("span", null, plName(P, u)), h("b", null, v, (P.minors ?? []).includes(u) ? "（少数派）" : ""));
@@ -14036,7 +15012,26 @@ function cardReplayScenes(P, sc, add, bars) {
   const cards = (cs, d = 0) => h("span", { class: "pc-row rp-cards" }, (cs ?? []).map((c, k) => { const e = cardEl(c); e.style.setProperty("--d", `${d + k * 0.15}s`); return e; }));
   add("タイトル", 4, () => h("div", { class: "rp-title-card" }, h("div", { class: "rp-kicker" }, "GAME"), h("h1", null, GAME_KINDS[P.game]?.label ?? "ゲーム"),
     h("p", { class: "rp-dim" }, `${players.length}人・全${P.opts?.rounds ?? "?"}回・${plWhen(P.startedAt)}`), h("div", { class: "rp-chips grid" }, players.map((u, k) => h("span", { class: "rp-chip", style: `--d:${0.2 + k * 0.05}s` }, h("b", null, plName(P, u)))))));
-  if (P.game === "bj") {
+  if (P.game === "rl") {
+    // v100 ルーレット：回ごとに、出た数字（抽選は当たった項目）と、だれがどう賭けて増えた・減ったか
+    const lot = P.opts?.mode === "lottery";
+    for (const l of P.log ?? []) {
+      const ev = l.ev ?? {};
+      if (lot && ev.type === "rlHit") add(`第${ev.round}回`, 4, () => h("div", { class: "rp-final" }, h("div", { class: "rp-kicker" }, `ROUND ${ev.round}`), h("div", { class: "rp-win" }, `「${ev.item ?? "?"}」`),
+        ev.by ? h("p", null, `${plName(P, ev.by)}さんが回しました`) : null));
+      if (lot || ev.type !== "rlRound") continue;
+      const us = Object.keys(ev.bets ?? {});
+      add(`第${ev.round}回`, 4 + us.length * 0.5, () => h("div", { class: "rp-q rp-rl" }, h("div", { class: "rp-sub-title" }, `第${ev.round}回`),
+        h("div", { class: `rp-rl-n ${rlColor(ev.n)}` }, String(ev.n)),
+        us.length ? h("div", { class: "rp-rl-rows" }, us.map((u, k) => h("div", { class: `rp-rl-row${(ev.sum?.[u] ?? 0) > 0 ? " up" : ""}`, style: `--d:${0.6 + k * 0.2}s` },
+          h("b", null, plName(P, u)), h("span", null, rlBetText(ev.bets[u])), h("em", null, `${signed(ev.sum?.[u] ?? 0)}枚`)))) : h("p", { class: "rp-dim" }, "賭けた人はいませんでした")));
+      const rows = players.map((u) => ({ name: plName(P, u), v: ev.chips?.[u] ?? 0, delta: ev.sum?.[u] ?? 0 })).sort((a, b) => b.v - a.v);
+      const max = Math.max(1, ...rows.map((r) => r.v));
+      rows.forEach((r) => { r.v0 = r.v - r.delta; r.hl = r.v === rows[0].v; });
+      add(`第${ev.round}回のあとのチップ`, 4, () => h("div", { class: "rp-q" }, h("div", { class: "rp-sub-title" }, `第${ev.round}回のあとのチップ`), bars(rows, max, { unit: "枚" })), "rp-grow");
+    }
+    if (lot) { add("結果", 6, () => h("div", { class: "rp-final" }, h("div", { class: "rp-kicker" }, "RESULT"), h("p", null, P.result?.text ?? ""))); return sc; }
+  } else if (P.game === "bj") {
     for (const l of P.log ?? []) {
       const ev = l.ev ?? {};
       if (ev.type !== "bjRound") continue;
@@ -14073,8 +15068,8 @@ function cardReplayScenes(P, sc, add, bars) {
     flush();
   }
   const rk = P.result?.ranking ?? [];
-  const val = (x) => (P.game === "bj" ? `${x.chips}枚` : `${x.points}点`);
-  const num = (x) => (P.game === "bj" ? x.chips : x.points);
+  const val = (x) => (P.game === "bj" || P.game === "rl" ? `${x.chips}枚` : `${x.points}点`);
+  const num = (x) => (P.game === "bj" || P.game === "rl" ? x.chips : x.points);
   const rkOf = (x) => 1 + rk.filter((y) => num(y) > num(x)).length;
   add("結果", 9, () => h("div", { class: "rp-final" }, h("div", { class: "rp-kicker" }, "RESULT"),
     h("div", { class: "rp-podium" }, [1, 0, 2].map((k) => rk[k] ? h("div", { class: `rp-pod p${k + 1}`, style: `--d:${k === 0 ? 1.4 : k === 1 ? 0.8 : 0.3}s` }, h("b", null, plName(P, rk[k].uid)), h("span", null, val(rk[k])), h("div", { class: "rp-pod-base" }, `${rkOf(rk[k])}`)) : null)),
@@ -14526,6 +15521,35 @@ function gamesAdmin() {
       "貧しい人からは一番強いカードを自動で渡し、お金持ちは好きなカードを同じ枚数返します。"),
     group("進行", [field("ディーラー（進行役）", dfgDealer), field("参加者の持ち時間", dfgTimer), field("1人の持ち時間", dfgTurn), field("結果のあと自動で次の回へ進む", dfgAuto), field("結果を見せる時間", dfgResult)],
       `${cardNote} 持ち時間が過ぎると自動でパスします（場が空のときは一番弱いカードを出します）。反則上がりになるのは、最後に出したカードにジョーカー・一番強い数字（ふだんは2、強さが逆のときは3）・8（8切りあり）・♠3（スペ3返し）が入っているときです。`));
+  // v100 ルーレット（カジノ：チップを賭ける／抽選：項目を回す）
+  const rlMode = segmented([{ value: "casino", label: "カジノ（チップを賭ける）" }, { value: "lottery", label: "抽選（項目を回す）" }], "casino");
+  const rlRounds = mins([3, 5, 7, 10, 15, 20], 5, "回"), rlChips = mins([50, 100, 200, 500, 1000], 100, "枚");
+  const rlMin = mins([1, 5, 10, 25], 1, "枚"), rlMax = pick([[0, "上限なし"], [10, "10枚"], [25, "25枚"], [50, "50枚"], [100, "100枚"], [200, "200枚"], [500, "500枚"]], 0);
+  const rlBetSec = mins([15, 20, 30, 45, 60, 90], 30, "秒"), rlPartage = toggle(false), rlAuto = toggle(true), rlResult = mins([5, 8, 12, 20], 8, "秒");
+  const rlDealer = dealerPick(), rlTimer = toggle(true);
+  const rlItems = h("textarea", { class: "plain rl-items-in", rows: "6", maxlength: "1200", placeholder: "抽選の項目（1行に1つ。2〜36個、1つ20文字まで）\n例：\nジュースをおごる\n一発ギャグ\nセーフ" });
+  const rlItemList = () => rlItems.value.split(/\r?\n/).map((x) => x.trim().slice(0, 20)).filter(Boolean);
+  const rlLotRounds = mins([1, 2, 3, 5, 10], 1, "回"), rlRemove = toggle(true);
+  const rlSpinBy = pick([["admin", "管理者が回す"], ["turn", "遊ぶ人が順番に回す"]], "admin");
+  const rlReadySec = pick([[0, "なし（押すまで待つ）"], [15, "15秒"], [30, "30秒"], [60, "60秒"]], 30);
+  const rlFillNames = h("button", { type: "button", class: "text-btn", onclick: () => { rlItems.value = chosen().map((u) => (u === S.user?.uid ? adminName(S.user.email) : memberName(u))).join("\n"); paintOpts(); } }, "遊ぶ人の名前を入れる");
+  const rlFillEx = h("button", { type: "button", class: "text-btn", onclick: () => { rlItems.value = RL_LOT_EXAMPLE.join("\n"); paintOpts(); } }, "例（罰ゲーム）を入れる");
+  const rlCount = h("span", { class: "cell-sub rl-count" });
+  const rlCasinoBox = h("div", null,
+    group("ルーレットの設定（ヨーロッパ式・0〜36）", [field("遊ぶ回数", rlRounds), field("はじめのチップ（ゲーム内だけのチップのとき）", rlChips),
+      field("0が出たら、赤・黒・偶数・奇数・1〜18・19〜36の賭けは半分戻る（ラ・パルタージュ）", rlPartage)],
+    "もうけ（賭けた分は別に戻ります）：数字1つ 35倍、1〜12・13〜24・25〜36 と縦の列（2:1） 2倍、赤・黒・偶数・奇数・1〜18・19〜36 1倍。0が出ると、0に賭けた分のほかは負けです（ラ・パルタージュがオンなら、1倍の賭けは半分戻ります）。この版では、数字2つ・4つなどにまたがる賭け（スプリット・コーナーなど）はありません。"),
+    group("賭け", [field("1か所の最小", rlMin), field("1か所の最大", rlMax)]),
+    group("進行", [field("ディーラー（進行役）", rlDealer), field("参加者の持ち時間", rlTimer), field("賭ける時間", rlBetSec), field("結果のあと自動で次の回へ進む", rlAuto), field("結果を見せる時間", rlResult)],
+      "「自動」：この画面を開いている管理者の端末がディーラーになり、全員が「準備OK」を押すか賭ける時間が終わると締め切って（ノーモアベット）玉を投げ、止まったら精算して次の回へ進めます。「管理者が手で進める」：締め切って玉を投げる・次の回へ を管理者がボタンで進めます。どこに止まるかは、投げる瞬間に管理者の端末が決め、全員の画面で同じ動きをして同じポケットに止まります。遊んでいる間は、管理者の端末でアプリを開いたままにしてください。"));
+  const rlLotBox = h("div", null,
+    group("抽選の項目", [h("div", { class: "cell" }, rlItems, rlCount), h("div", { class: "cell rl-fill" }, rlFillNames, rlFillEx)],
+      "1行に1つ、2〜36個まで（1つ20文字まで）。同じ項目を2行入れると、その分当たりやすくなります。"),
+    group("進め方", [field("回す回数", rlLotRounds), field("当たった項目は次から外す", rlRemove), field("回す人", rlSpinBy), field("回す人の持ち時間（過ぎると自動で回ります）", rlReadySec)],
+      "「遊ぶ人が順番に回す」では、席順に1人ずつ、自分のスマホの SPIN ボタンで回します。「管理者が回す」では、管理者の画面の「ルーレットを回す」で回します。どこに止まるかは、回す瞬間に管理者の端末が決め、全員の画面で同じ動きをして同じ項目に止まります。"));
+  const rlOpts = h("div", null, group("ルーレットの種類", [h("div", { class: "cell seat-cell" }, rlMode)]), rlCasinoBox, rlLotBox);
+  rlMode.addEventListener("change", paintOpts);
+  rlItems.addEventListener("input", paintOpts);
   // ポイント（全ゲーム共通。数字ならべは勝ち負けがないので使わない）
   const ptPay = pick([["", "使わない"], ["user", "個人のポイント"], ["team", "チームのポイント"]], "");
   const ptSet = h("select", { class: "inline-select" });
@@ -14548,7 +15572,7 @@ function gamesAdmin() {
   // ポイントの使い方を決める（設定の確認と、はじめのチップの計算）
   function ptPlan() {
     const k = kind.value, pay = ptPay.value, ps = chosen();
-    if (!GAME_PT_KINDS.includes(k) || !pay) return { pt: null, startChips: null, err: null, info: "" };
+    if (!GAME_PT_KINDS.includes(k) || !pay || (k === "rl" && rlMode.value === "lottery")) return { pt: null, startChips: null, err: null, info: "" };
     if (ps.includes(S.user?.uid)) return { err: "管理者も遊ぶときは、旅行のポイントは使えません（「使うポイント」を「使わない」にしてください）" };
     const cfg = { pay, setId: pay === "team" ? ptSet.value || null : null };
     if (pay === "team" && !cfg.setId) return { err: "ポイントを使うチーム表を選んでください（まだない場合は、先に「チーム」でチーム表を作ってください）" };
@@ -14556,7 +15580,7 @@ function gamesAdmin() {
     const noTeam = ps.filter((u) => !payers.get(u));
     if (noTeam.length) return { err: `${gNames(noTeam)} さんは、選んだチーム表のどのチームにも入っていません` };
     const bal = (u) => balanceOf(payers.get(u));
-    const real = k === "bj" && ptChips.value === "real";
+    const real = (k === "bj" || k === "rl") && ptChips.value === "real";
     const lines = [];
     let startChips = null;
     if (real) {
@@ -14570,7 +15594,7 @@ function gamesAdmin() {
         const share = p.kind === "team" ? Math.floor(b / cnt.get(p.key)) : b;
         startChips[u] = bring ? Math.min(bring, share) : share;
       }
-      const min = Math.max(1, Number(bjMin.value));
+      const min = Math.max(1, Number((k === "rl" ? rlMin : bjMin).value));
       const poor = ps.filter((u) => startChips[u] < min);
       if (poor.length) return { err: `持ち込めるポイントが足りない人がいます：${poor.map((u) => `${memberName(u)}（${startChips[u]}pt）`).join("・")}` };
       lines.push(`持ち込むチップ：${ps.map((u) => `${memberName(u)} ${startChips[u]}枚`).join("・")}`);
@@ -14582,7 +15606,7 @@ function gamesAdmin() {
       const short = ps.filter((u) => bal(u) - (real ? startChips[u] : 0) < loss);
       if (short.length) lines.push(`注意：没収でポイントがマイナスになることがある人がいます（${short.map((u) => `${memberName(u)} ${bal(u)}pt`).join("・")}）。`);
     }
-    const pt = { pay, setId: cfg.setId, ...(k === "bj" ? { chips: ptChips.value, bring: Number(ptBring.value) } : {}), ...(rank ? { rank } : { win, lose }) };
+    const pt = { pay, setId: cfg.setId, ...(k === "bj" || k === "rl" ? { chips: ptChips.value, bring: Number(ptBring.value) } : {}), ...(rank ? { rank } : { win, lose }) };
     return { pt, startChips, err: null, info: lines.join("\n") };
   }
   function paintPtInfo() {
@@ -14624,7 +15648,7 @@ function gamesAdmin() {
       h("p", { class: "cell-sub self-note" }, "オンにすると、あなたも1人の参加者として遊びます。役職・お題・数字・手札・だれに投票したかは、管理者の画面にも出しません。進める・戻す・時間を止める・増やすはできます。NGワードを人ごとに決めるときも、あなたの分はランダムです（ワード人狼で言葉を自分で決めると、あなたにも分かります）。ポイントは使えません。")],
       "ゲームは、遊ぶ人を分ければいくつでも同時に進められます（進行中のゲームは、管理者の画面の上で切り替えられます）。ほかのゲームで遊んでいる人を選ぶと、その人のスマホは新しいゲームに切り替わります。"),
     group("テーブルの席順", [h("div", { class: "cell seat-cell" }, seatMode, seatList)], "参加者の画面の丸テーブルに、この順で時計回りに座ります（大富豪は出す順番も同じ）。↑↓で入れ替えられます。"),
-    wolfOpts, wordOpts, ngOpts, numOpts, bjOpts, dfgOpts, ptOpts,
+    wolfOpts, wordOpts, ngOpts, numOpts, bjOpts, dfgOpts, rlOpts, ptOpts,
     group("参加者へのログ（これまでの出来事）", [logBox], "ログ（LOG）は「〜さんが処刑されました」など、これまでに起きたことの記録です。はじめは管理者だけに表示され、「全員に表示」にすると選んだ項目だけが参加者のスマホの「ログを見る」から見られます。いまの場面・やること・残り時間は、この設定に関係なく全員のスマホに出ます。"),
     group("観戦", [field("遊ばない人も観戦できる", watchT)], WATCH_NOTE),
     err, start,
@@ -14638,7 +15662,14 @@ function gamesAdmin() {
     const k = kind.value;
     GA.kind = k;
     desc.textContent = GAME_KINDS[k].desc;
-    wolfOpts.hidden = k !== "wolf"; wordOpts.hidden = k !== "word"; ngOpts.hidden = k !== "ng"; numOpts.hidden = k !== "num"; bjOpts.hidden = k !== "bj"; dfgOpts.hidden = k !== "dfg";
+    wolfOpts.hidden = k !== "wolf"; wordOpts.hidden = k !== "word"; ngOpts.hidden = k !== "ng"; numOpts.hidden = k !== "num"; bjOpts.hidden = k !== "bj"; dfgOpts.hidden = k !== "dfg"; rlOpts.hidden = k !== "rl";
+    const rlLot = rlMode.value === "lottery", rlMan = rlDealer.value === "manual";
+    rlCasinoBox.hidden = rlLot; rlLotBox.hidden = !rlLot;
+    rlTimer.closest(".cell").hidden = !rlMan; rlAuto.closest(".cell").hidden = rlMan;
+    rlResult.closest(".cell").hidden = rlMan || !rlAuto.checked;
+    rlBetSec.closest(".cell").hidden = rlMan && !rlTimer.checked;
+    rlReadySec.closest(".cell").hidden = rlSpinBy.value !== "turn";
+    rlCount.textContent = `${rlItemList().length}個`;
     nightSec.closest(".cell").hidden = voteSec.closest(".cell").hidden = !auto.checked;
     wordGuessSec.closest(".cell").hidden = !wordGuess.checked;
     wordTie.closest(".cell").hidden = false;
@@ -14668,16 +15699,17 @@ function gamesAdmin() {
     paintSeats();
     paintLog(k);
     // ポイント
-    const pk = GAME_PT_KINDS.includes(k), pay = ptPay.value;
+    const pk = GAME_PT_KINDS.includes(k) && !(k === "rl" && rlMode.value === "lottery"), pay = ptPay.value;
     ptOpts.hidden = !pk;
     const setV = ptSet.value;
     fillSelect(ptSet, sortedSets().map((x) => ({ value: x.id, label: x.name })));
     if (setV && [...ptSet.options].some((x) => x.value === setV)) ptSet.value = setV;
     ptSetCell.hidden = pay !== "team";
-    const real = k === "bj" && !!pay && ptChips.value === "real";
-    ptChipCells[0].hidden = !(k === "bj" && pay);
+    const real = (k === "bj" || k === "rl") && !!pay && ptChips.value === "real";
+    ptChipCells[0].hidden = !((k === "bj" || k === "rl") && pay);
     ptChipCells[1].hidden = !real;
     bjChips.closest(".cell").hidden = real;
+    rlChips.closest(".cell").hidden = real;
     for (const c of ptWinCells) c.hidden = !pay || isCardKind(k);
     ptRankCell.hidden = !pay || !isCardKind(k);
     const rn = Math.max(2, Math.min(8, n));
@@ -14704,7 +15736,10 @@ function gamesAdmin() {
       : GAME_KINDS[k].max && n > GAME_KINDS[k].max ? `${GAME_KINDS[k].label}は${GAME_KINDS[k].max}人まで遊べます（いま ${n}人）`
       : k === "word" && Number(minority.value) * 2 >= n ? "少数派は、遊ぶ人の半分より少なくしてください"
         : k === "word" && wordMode.value === "pick" && (!wordA.value.trim() || !wordB.value.trim() || wordA.value.trim() === wordB.value.trim()) ? "多数派の言葉・少数派の言葉を、2つとも（違う言葉で）入れてください。決めない場合は「ランダム」を選んでください"
-          : k === "bj" && Number(bjMax.value) && Number(bjMax.value) < Number(bjMin.value) ? "賭けの最大は、最小より大きくしてください" : pe;
+          : k === "bj" && Number(bjMax.value) && Number(bjMax.value) < Number(bjMin.value) ? "賭けの最大は、最小より大きくしてください"
+            : k === "rl" && !rlLot && Number(rlMax.value) && Number(rlMax.value) < Number(rlMin.value) ? "1か所の最大は、最小より大きくしてください"
+              : k === "rl" && rlLot && rlItemList().length < 2 ? "抽選の項目を2つ以上入れてください（1行に1つ）"
+                : k === "rl" && rlLot && rlItemList().length > 36 ? `抽選の項目は36個までです（いま ${rlItemList().length}個）` : pe;
     err.textContent = e ?? `${n}人で遊びます。`;
     err.classList.toggle("bad", !!e);
     start.disabled = !!e;
@@ -14737,6 +15772,10 @@ function gamesAdmin() {
       seven: dfgSeven.checked, ten: dfgTen.checked, nine: dfgNine.checked, miyako: dfgMiyako.checked, foul: dfgFoul.checked,
       sand: dfgSand.checked, qq: dfgQq.checked, rokuro: dfgRokuro.checked, stop4: dfgStop4.checked, coup: dfgCoup.checked, numLock: dfgNumLock.checked, qrev: dfgQrev.checked, bomber: dfgBomber.checked,
       exchange: dfgEx.checked, exBig: N(dfgExBig), exSmall: N(dfgExSmall), exSec: N(dfgExSec), autoNext: dfgAuto.checked, resultSec: N(dfgResult), dealer: dfgDealer.value, dealerTimer: dfgTimer.checked };
+    else if (k === "rl") o = rlMode.value === "lottery"
+      ? { mode: "lottery", rounds: N(rlLotRounds), items: rlItemList(), removeHit: rlRemove.checked, spinner: rlSpinBy.value, readySec: N(rlReadySec) }
+      : { mode: "casino", rounds: N(rlRounds), chips: N(rlChips), betMin: N(rlMin), betMax: N(rlMax), betSec: N(rlBetSec), partage: rlPartage.checked, autoNext: rlAuto.checked, resultSec: N(rlResult),
+        dealer: rlDealer.value, dealerTimer: rlTimer.checked, ...(plan.startChips ? { startChips: plan.startChips } : {}) };
     else o = { auto: numAuto.checked, limitMin: N(numLimit), max: N(numMax), theme: theme.value.trim(), rounds: N(numRoundsSel), gapSec: N(numGap), rank: numRank.checked, rankSec: N(numRankSec) };
     if (plan.pt) o.pt = plan.pt;
     o.logPub = logSet[k] ?? { on: false, cats: logCatKeys(k) };
@@ -14761,7 +15800,9 @@ function gamesAdmin() {
     // v98 ほかの進行中のゲームで遊んでいる人がいたら、先に確かめる
     const busy = ps.filter((u) => gBusyMap().has(u));
     if (busy.length && !confirm(`${busy.map((u) => `${memberName(u)}さん（${gBusyMap().get(u).join("・")}）`).join("、")}は、いまほかのゲームで遊んでいます。\nこのまま始めると、その人のスマホは新しいゲームに切り替わります（前のゲームは続きます）。よろしいですか？`)) return;
-    if (!confirm((k === "bj" ? `ブラックジャックを ${n}人で始めます。遊ぶ人のスマホに賭けの画面が出ます。${man || "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
+    if (!confirm((k === "rl" ? (o.mode === "lottery" ? `抽選ルーレットを始めます（項目 ${o.items.length}個・${o.rounds}回）。遊ぶ人のスマホにルーレットが出ます。この端末が進行役になるので、終わるまでアプリを開いたままにしてください。よろしいですか？`
+      : `ルーレットを ${n}人で始めます。遊ぶ人のスマホに賭けの盤が出ます。${cardManual(o) ? "あなたがディーラーとして、締め切って玉を投げる・次の回へ をボタンで進めます。" : "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`)
+      : k === "bj" ? `ブラックジャックを ${n}人で始めます。遊ぶ人のスマホに賭けの画面が出ます。${man || "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
       : k === "dfg" ? `大富豪を ${n}人で始めます。遊ぶ人のスマホに手札が届きます。${man || "この端末が進行役になるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
         : `${GAME_KINDS[k].label}を ${n}人で始めます。遊ぶ人のスマホに${k === "wolf" ? "役職" : k === "num" ? "数字" : k === "ng" ? "NGワード" : "お題"}が届きます。よろしいですか？`) + ptNote)) return;
     // 読み上げは、ボタンを押した流れで一度鳴らしておかないと、iPhone などでは鳴らない
@@ -14782,6 +15823,7 @@ function gamesAdmin() {
     if (g.kind === "wolf") next = g.phase === "night" ? btn("朝にする（夜の結果を出す）", wolfMorning) : g.phase === "day" ? btn("話し合いを終えて投票へ", wolfToVote) : g.phase === "vote" ? btn("開票する", wolfTally) : null;
     else if (g.kind === "word") next = g.phase === "talk" ? btn("話し合いを終えて投票へ", wordToVote) : g.phase === "vote" ? btn("開票する", wordTally)
       : g.phase === "guess" ? h("div", { class: "gp-actions" }, btn("締め切って判定する", wordGuessEnd), btn("当たりにする（逆転）", wordGuessHit, "btn-small"), btn("はずれにする", wordGuessMiss, "btn-small")) : null;
+    else if (g.kind === "rl" && !cardManual(g.opts)) next = g.phase === "bet" ? btn("締め切って玉を投げる", rlSpin) : g.phase === "ready" ? btn("ルーレットを回す", rlSpin) : g.phase === "result" ? btn(rlIsLast(g) ? "終える（順位を出す）" : "次の回へ", rlNext) : null;
     else if (isCardKind(g.kind) && cardManual(g.opts)) next = null; // 下の「ディーラーの操作」で進める
     else if (isCardKind(g.kind) && g.phase === "result") next = btn("次の回へ", g.kind === "bj" ? bjNext : dfgNextRound);
     else if (g.kind === "num" && g.phase === "result") next = btn(`次の回へ（第${(g.round ?? 1) + 1}回）`, numNextRound);
@@ -14816,10 +15858,11 @@ function gamesAdmin() {
       h("p", { class: `gl-prompt${g.phase === "ended" ? " gp-final" : ""}` }, gPrompt(g)),
       !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。管理者の端末（この操作用の画面か、表示用画面）のどれか1台でアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       gPtCard(g),
-      isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), cardManual(g.opts)
+      g.kind === "rl" && rlLottery(g) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "管理者の端末が進行役です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。")
+      : isCardKind(g.kind) && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), cardManual(g.opts)
         ? "あなた（管理者）がディーラーです。下の「ディーラーの操作」のボタンで、配る・カードを開ける・次の回へ を進めてください。参加者のヒット・スタンドなどはこの端末が反映するので、この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください。"
         : "管理者の端末がディーラー（進行役）です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
-      isCardKind(g.kind) ? h("div", { class: "gl-card" }, g.kind === "bj" ? bjTable(g) : dfgTable(g)) : null,
+      isCardKind(g.kind) ? h("div", { class: "gl-card" }, g.kind === "bj" ? bjTable(g) : g.kind === "rl" ? rlTable(g, "a") : dfgTable(g)) : null,
       gProgressEl(g, GA.showAns && !meIn, meIn),
       (g.kind === "ng" || g.kind === "word") && gLive(g) ? ngTopicBox(g) : null,
       isCardKind(g.kind) && cardManual(g.opts) && gLive(g) ? cardDealerBox(g) : null,
@@ -14831,7 +15874,7 @@ function gamesAdmin() {
       gLive(g) || gameCanUndo(g) ? group("場面の操作", [h("div", { class: "cell" }, gameCtlBar(g))], GAME_CTL_NOTE) : null,
       g.kind === "num" && g.phase === "rank" ? group("みんなの順位表（小さい順）", [h("div", { class: "cell" }, numBoardEl(g))]) : null,
       gRevealList(g), numHistCard(g),
-      g.kind === "bj" || meIn ? null : group(null, [
+      g.kind === "bj" || g.kind === "rl" || meIn ? null : group(null, [
         h("button", { class: "cell cell-button", onclick: () => { GA.showAns = !GA.showAns; scheduleRender(); } }, icon("lock"), GA.showAns ? (g.kind === "dfg" ? "手札を隠す" : "答えを隠す") : g.kind === "dfg" ? "全員の手札を見る（進行役用）" : `答えを見る（${g.kind === "wolf" ? "役職" : g.kind === "num" ? "数字" : g.kind === "ng" ? "NGワード" : "お題"}を表示。司会用）`),
         GA.showAns ? h("div", { class: "cell gp-answers" }, g.players.map((u) => h("div", { class: `gp-ans${dead(u) ? " dead" : ""}` }, h("span", null, memberName(u)), h("b", null, ans(u)),
           g.actKey && gAct(g, g.actKey, u) && !isCardKind(g.kind) ? h("small", null, g.phase === "guess" ? `答え「${gAct(g, g.actKey, u)}」` : `→ ${memberName(gAct(g, g.actKey, u))}`) : null))) : null,
@@ -15463,7 +16506,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v99"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v100"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
