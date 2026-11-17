@@ -4111,6 +4111,7 @@ button.rl-cell:active { transform: scale(.94); }
 .rl-rt thead th { font-size: 11px; font-weight: 700; color: var(--label-3); border-bottom: 1px solid rgba(255, 255, 255, .1); }
 .rl-rt td:last-child, .rl-rt thead th:last-child { text-align: right; }
 .rl-rt td small { color: var(--label-3); font-weight: 600; }
+.rl-rt-bet td:first-child { white-space: normal; word-break: keep-all; overflow-wrap: anywhere; }
 .rl-rt-who th { padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, .08); white-space: normal; }
 .rl-rt-who:first-child th, .rl-rt-who:first-child td { border-top: 0; }
 .rl-rt-who td { padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, .08); }
@@ -4314,3 +4315,218 @@ button.rl-cell:active { transform: scale(.94); }
 .rp-rl-n.dc .dc-badge.big .dc-f.v1 i { width: 2.2cqw; height: 2.2cqw; }
 .rp-rl-n.dc .dc-badge.big > b { height: 6cqw; min-width: 7cqw; font-size: 3.4cqw; }
 @media (prefers-reduced-motion: reduce) { .rl-wheel.dc .rl-read .dc-badge.big { animation: none; } }
+
+/* ================= v104 バカラ（テーブル・カード・絞り・賭けの盤） */
+.rl-wheel.bc.big { width: min(94vw, 64vh, 560px); }
+.rl-wheel.bc.mid { width: min(100%, 380px); }
+.bc-felt { position: relative; width: 100%; aspect-ratio: 1.42; container-type: inline-size; overflow: hidden; border-radius: 46% 46% 14px 14px / 52% 52% 14px 14px;
+  background: radial-gradient(120% 90% at 50% 18%, #0F5A45 0%, #0A4434 55%, #062B21 100%);
+  box-shadow: inset 0 0 0 3px #B79A5B, inset 0 0 0 6px rgba(0, 0, 0, .35), inset 0 0 40px rgba(0, 0, 0, .5), 0 12px 30px rgba(0, 0, 0, .5); }
+.bc-arc { position: absolute; left: 0; right: 0; top: 7%; text-align: center; font-size: 2.6cqw; letter-spacing: .14em; color: rgba(236, 216, 160, .78); font-weight: 600; }
+.bc-shoe { position: absolute; right: 5%; top: 17%; width: 12cqw; height: 8cqw; border-radius: 2cqw 2cqw 1cqw 1cqw; background: linear-gradient(160deg, #3A3A40, #121214);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18), 0 4px 10px rgba(0, 0, 0, .5); transform: rotate(-10deg); }
+.bc-shoe i { position: absolute; left: 12%; right: 12%; bottom: 18%; height: 30%; border-radius: 1cqw; background: repeating-linear-gradient(90deg, #F3EFE6 0 1px, #CFC9BC 1px 2px); }
+.bc-areas { position: absolute; left: 4%; right: 4%; bottom: 7%; top: 30%; display: grid; grid-template-columns: 1fr 1fr; gap: 3%; }
+.bc-area { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 3cqw; padding-top: 2.4cqw; border-radius: 3cqw;
+  border: .5cqw solid currentColor; transition: opacity .4s, box-shadow .4s; }
+.bc-area.p { color: #7FA6FF; } .bc-area.b { color: #FF7C88; }
+.bc-lab { display: flex; align-items: center; gap: 2cqw; font-size: 3.3cqw; font-weight: 800; letter-spacing: .12em; }
+.bc-tot { min-width: 6.4cqw; height: 6.4cqw; display: inline-grid; place-items: center; border-radius: 50%; background: currentColor; font-size: 4.2cqw; letter-spacing: 0; }
+.bc-tot:empty { visibility: hidden; }
+.bc-tot { color: #0A1C16; }
+.bc-area.p .bc-tot { background: #7FA6FF; } .bc-area.b .bc-tot { background: #FF7C88; }
+.bc-area.win { box-shadow: 0 0 0 .5cqw currentColor, 0 0 5cqw currentColor; }
+.bc-area.lose { opacity: .5; }
+.bc-area.tie { box-shadow: 0 0 0 .5cqw #5EE0A0, 0 0 4cqw #5EE0A0; }
+.bc-cards { display: flex; align-items: center; justify-content: center; gap: 1.4cqw; height: 18cqw; }
+.bc-card { position: relative; width: 12cqw; aspect-ratio: 5 / 7; transform-style: preserve-3d; will-change: transform; filter: drop-shadow(0 1.2cqw 1.4cqw rgba(0, 0, 0, .45)); }
+.bc-card[hidden] { display: none; }
+.bc-card.s2 { margin-left: 3cqw; }
+.bc-front-wrap, .bc-face { position: absolute; inset: 0; border-radius: 1.3cqw; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+.bc-front-wrap > .bc-face { position: absolute; inset: 0; }
+.bc-front { background: linear-gradient(170deg, #FFFEFA, #EFEBE1); color: #18181B; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .12); }
+.bc-front.red { color: #C8102E; }
+.bc-back { z-index: 2; background: repeating-linear-gradient(45deg, rgba(255, 255, 255, .16) 0 .6cqw, transparent .6cqw 1.6cqw), linear-gradient(160deg, #A3142A, #640A18);
+  box-shadow: inset 0 0 0 .8cqw #F6F2E8, inset 0 0 0 1cqw rgba(0, 0, 0, .25); }
+.bc-card[data-m="up"] .bc-back { display: none; }
+.bc-card[data-m="flip"] .bc-back { transform: rotateY(180deg); }
+.bc-curl { position: absolute; z-index: 3; display: block; pointer-events: none; border-radius: .6cqw; }
+.bc-curl.v { background: linear-gradient(90deg, rgba(0, 0, 0, .45), #F8F4EA 35%, #D8D2C4 70%, rgba(0, 0, 0, .3)); }
+.bc-curl.h { background: linear-gradient(0deg, rgba(0, 0, 0, .45), #F8F4EA 35%, #D8D2C4 70%, rgba(0, 0, 0, .3)); }
+.bc-idx { position: absolute; display: flex; flex-direction: column; align-items: center; line-height: 1; font-weight: 700; }
+.bc-idx b { font-size: 3cqw; letter-spacing: -.04em; } .bc-idx i { font-size: 2.4cqw; font-style: normal; }
+.bc-idx.tl { left: 6%; top: 4%; } .bc-idx.br { right: 6%; bottom: 4%; transform: rotate(180deg); }
+.bc-pips { position: absolute; inset: 8% 14%; }
+.bc-pips i { position: absolute; transform: translate(-50%, -50%); font-size: 3.1cqw; font-style: normal; line-height: 1; }
+.bc-pips i.dn { transform: translate(-50%, -50%) rotate(180deg); }
+.bc-pips.ace i { font-size: 6.6cqw; }
+.bc-court { position: absolute; inset: 16% 18%; display: flex; flex-direction: column; align-items: center; justify-content: center; border: .35cqw double currentColor; border-radius: .8cqw;
+  background: linear-gradient(160deg, rgba(212, 175, 55, .18), rgba(212, 175, 55, .05)); }
+.bc-court b { font-family: var(--font-display, Georgia, serif); font-size: 6cqw; line-height: 1; } .bc-court i { font-style: normal; font-size: 3cqw; }
+.rl-wheel.bc.tense .bc-felt { box-shadow: inset 0 0 0 3px #E8C86A, inset 0 0 0 6px rgba(0, 0, 0, .35), inset 0 0 40px rgba(0, 0, 0, .5), 0 0 26px rgba(232, 200, 106, .3); }
+.rl-wheel.bc.mini .bc-felt { border-radius: 10px; }
+.rl-wheel.bc.mini .bc-arc, .rl-wheel.bc.mini .bc-shoe, .rl-wheel.bc.mini .bc-lab, .rl-wheel.bc.mini .rl-read { display: none; }
+/* 結果の印（P7・B5・T） */
+.bc-badge { position: relative; display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 5px; border-radius: 15px; font-weight: 800; font-size: 13px; color: #fff; }
+.bc-badge.P { background: #3F6FE0; } .bc-badge.B { background: #D83A4C; } .bc-badge.T { background: #1E9E63; }
+.bc-badge i { position: absolute; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #111; }
+.bc-badge i.pp { left: -2px; top: -2px; background: #7FA6FF; } .bc-badge i.bp { right: -2px; bottom: -2px; background: #FF7C88; }
+.bc-badge.big { min-width: 56px; height: 46px; border-radius: 23px; font-size: 24px; padding: 0 10px; animation: rlPop .5s cubic-bezier(.2, 1.4, .3, 1) both; }
+.bc-badge.h { min-width: 26px; height: 22px; font-size: 11px; }
+/* 賭けの盤 */
+.bc-board { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.bc-main { display: grid; grid-template-columns: 1fr .8fr 1fr; gap: 8px; }
+.bc-pairs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.rl-cell.bc-cell { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 58px; padding: 6px 4px; border-radius: 14px; }
+.rl-cell.bc-cell.big { min-height: 92px; }
+.rl-cell.bc-cell b { font-size: 17px; font-weight: 800; letter-spacing: .06em; }
+.rl-cell.bc-cell.pair b { font-size: 14px; }
+.rl-cell.bc-cell span { font-size: 11px; opacity: .8; }
+.rl-cell.bc-cell.p { background: linear-gradient(160deg, rgba(63, 111, 224, .5), rgba(30, 50, 110, .55)); }
+.rl-cell.bc-cell.b { background: linear-gradient(160deg, rgba(216, 58, 76, .5), rgba(110, 24, 36, .55)); }
+.rl-cell.bc-cell.t { background: linear-gradient(160deg, rgba(30, 158, 99, .5), rgba(12, 70, 44, .55)); }
+.rl-flash.rl-num.bc.P b { color: #9BB9FF; } .rl-flash.rl-num.bc.B b { color: #FF9AA4; } .rl-flash.rl-num.bc.T b { color: #7FEDB8; }
+.rp-rl-n.bc { background: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .bc-badge.big { animation: none; } }
+.bc-card[data-m="down"] .bc-back { transform: translateZ(.5px); }
+.bc-card[data-m="down"] .bc-curl { transform: translateZ(1px); }
+
+/* ================= v104 クラッシュ（倍率のグラフ・CASH OUT・賭けの盤） */
+.rl-wheel.cr.big { width: min(94vw, 64vh, 560px); }
+.rl-wheel.cr.mid { width: min(100%, 380px); }
+.cr-box { position: relative; width: 100%; aspect-ratio: 1.6; border-radius: 18px; overflow: hidden;
+  background: radial-gradient(120% 100% at 20% 100%, rgba(122, 108, 255, .22), transparent 60%), linear-gradient(170deg, #17171C, #0C0C10);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), 0 12px 30px rgba(0, 0, 0, .5); }
+.cr-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cr-grid line { stroke: rgba(255, 255, 255, .08); stroke-width: 1; }
+.cr-grid text { fill: rgba(255, 255, 255, .42); font-size: 9px; text-anchor: end; font-variant-numeric: tabular-nums; }
+.cr-grid text.t { text-anchor: middle; }
+.cr-line { fill: none; stroke: #A99BFF; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 6px rgba(169, 155, 255, .7)); }
+.cr-area { fill: rgba(169, 155, 255, .14); }
+.cr-dot { fill: #fff; filter: drop-shadow(0 0 8px #A99BFF); }
+.cr-box.crashed .cr-line { stroke: #FF5D6C; filter: drop-shadow(0 0 6px rgba(255, 93, 108, .7)); }
+.cr-box.crashed .cr-area { fill: rgba(255, 93, 108, .14); }
+.cr-box.crashed .cr-dot { fill: #FF5D6C; filter: drop-shadow(0 0 10px #FF5D6C); r: 7px; }
+.cr-big { position: absolute; left: 0; right: 0; top: 16%; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+.cr-big b { font-size: clamp(34px, 13cqw, 64px); font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: #fff; text-shadow: 0 2px 16px rgba(0, 0, 0, .6); }
+.cr-box { container-type: inline-size; }
+.cr-big small { font-size: 12px; letter-spacing: .2em; color: var(--label-2, #aaa); min-height: 1em; }
+.cr-box.crashed .cr-big b { color: #FF5D6C; animation: crShake .45s ease-out both; }
+.cr-box.crashed .cr-big small { color: #FF8C97; font-weight: 700; }
+@keyframes crShake { 0% { transform: scale(1.25); } 30% { transform: translateX(-6px) scale(1.1); } 55% { transform: translateX(5px); } 80% { transform: translateX(-2px); } 100% { transform: none; } }
+.rl-wheel.cr.tense .cr-big b { color: #FFE58A; }
+.cr-cash { position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%); min-width: 62%; min-height: 54px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 0; border-radius: 27px; background: linear-gradient(160deg, #FFE27A, #F5B83A); color: #1A1406; box-shadow: 0 8px 22px rgba(245, 184, 58, .4); cursor: pointer; }
+.cr-cash b { font-size: 18px; font-weight: 800; letter-spacing: .08em; } .cr-cash small { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cr-cash:not(:disabled):active { transform: translateX(-50%) scale(.96); }
+.cr-cash.done { background: linear-gradient(160deg, #5EE0A0, #22A66A); color: #04140C; box-shadow: 0 8px 22px rgba(34, 166, 106, .35); }
+.cr-cash.lost { background: rgba(255, 93, 108, .2); color: #FF9AA4; box-shadow: none; }
+.cr-cash[hidden] { display: none; }
+.rl-wheel.cr.mini .cr-big, .rl-wheel.cr.mini .cr-cash, .rl-wheel.cr.mini .cr-grid, .rl-wheel.cr.mini .rl-read { display: none; }
+.rl-wheel.cr.mini .cr-box { border-radius: 10px; }
+.cr-badge { display: inline-grid; place-items: center; min-width: 44px; height: 26px; padding: 0 7px; border-radius: 13px; font-weight: 800; font-size: 12px; font-variant-numeric: tabular-nums; }
+.cr-badge.lo { background: rgba(255, 93, 108, .2); color: #FF9AA4; } .cr-badge.up { background: rgba(94, 224, 160, .18); color: #7FEDB8; } .cr-badge.hi { background: rgba(255, 226, 122, .2); color: #FFE27A; }
+.cr-badge.big { min-width: 84px; height: 44px; border-radius: 22px; font-size: 22px; animation: rlPop .5s cubic-bezier(.2, 1.4, .3, 1) both; }
+.cr-badge.h { min-width: 40px; height: 22px; font-size: 11px; }
+.cr-board { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.rl-cell.cr-bet { position: relative; min-height: 84px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border-radius: 16px;
+  background: linear-gradient(160deg, rgba(122, 108, 255, .45), rgba(52, 44, 120, .55)); }
+.rl-cell.cr-bet b { font-size: 20px; font-weight: 800; letter-spacing: .1em; } .rl-cell.cr-bet span { font-size: 12px; opacity: .85; }
+.cr-autos small { display: block; margin: 0 0 6px 2px; font-size: 11px; letter-spacing: .12em; color: var(--label-2, #aaa); }
+.cr-auto-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.cr-auto { min-height: 38px; border: 0; border-radius: 12px; background: rgba(255, 255, 255, .08); color: var(--label, #fff); font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cr-auto.on { background: #F4F4F6; color: #111; }
+.rl-flash.rl-num.cr b { color: #FF8C97; }
+.rp-rl-n.cr { background: none; box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .cr-box.crashed .cr-big b, .cr-badge.big { animation: none; } }
+
+/* ===== v105 チンチロ：机の上の丼（CSS の 3D。サイコロは大小と同じ作り） ===== */
+.rl-wheel.cc .cc-box { position: relative; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 22px;
+  background: radial-gradient(circle at 50% 40%, #3B2616 0%, #24160C 60%, #140C06 100%); box-shadow: inset 0 0 0 1.5px rgba(216, 196, 142, .28), 0 10px 30px rgba(0, 0, 0, .5); }
+.rl-wheel.cc .rl-disc { transition: none; }
+.rl-wheel.cc.mini .cc-box { border-radius: 12px; }
+.cc-tray { width: calc(var(--k, 3px) * 200); height: calc(var(--k, 3px) * 200); }
+/* 机（木の板）：丼より 11mm 下 */
+.cc-table { position: absolute; left: 50%; top: 50%; width: calc(var(--k, 3px) * 640); height: calc(var(--k, 3px) * 640); margin: calc(var(--k, 3px) * -320);
+  transform: translateZ(calc(var(--k, 3px) * -11));
+  background: repeating-linear-gradient(92deg, rgba(0, 0, 0, .1) 0 calc(var(--k, 3px) * 3), rgba(255, 255, 255, .025) calc(var(--k, 3px) * 3) calc(var(--k, 3px) * 7)),
+    radial-gradient(circle at 50% 50%, #6B4527 0%, #4A2E18 30%, #2A1A0D 60%); }
+/* 丼の外側の影（机の上） */
+.cc-foot { position: absolute; left: 50%; top: 50%; width: calc(var(--k, 3px) * 190); height: calc(var(--k, 3px) * 190); margin: calc(var(--k, 3px) * -95); border-radius: 50%;
+  transform: translateZ(calc(var(--k, 3px) * -10.7)) translate(calc(var(--k, 3px) * 6), calc(var(--k, 3px) * 9));
+  background: radial-gradient(closest-side, rgba(0, 0, 0, .7) 70%, rgba(0, 0, 0, 0)); }
+/* 丼の内側：高さごとの輪（白い釉薬。下ほど少し暗く、底に向かって影） */
+.cc-ly { position: absolute; left: 50%; top: 50%; border-radius: 50%;
+  width: calc(var(--k, 3px) * (var(--r) + var(--o, 4)) * 2); height: calc(var(--k, 3px) * (var(--r) + var(--o, 4)) * 2); margin: calc(var(--k, 3px) * (var(--r) + var(--o, 4)) * -1);
+  transform: translateZ(calc(var(--k, 3px) * var(--z)));
+  background: radial-gradient(circle at 46% 38%, #FFFDF8 0%, #F1ECE2 45%, #DCD4C4 80%, #C9BFAC 100%);
+  -webkit-mask: radial-gradient(circle closest-side, transparent var(--in), #000 calc(var(--in) + .6%));
+  mask: radial-gradient(circle closest-side, transparent var(--in), #000 calc(var(--in) + .6%));
+  }
+.cc-ly.bottom { background: radial-gradient(circle at 46% 40%, #F4EFE5 0%, #E2DACA 70%, #CFC5B1 100%); -webkit-mask: none; mask: none; }
+/* 藍の線（丼の内側のふち近く） */
+.cc-ly.ai { background: radial-gradient(circle at 46% 38%, #E9EEF8 0%, #3F5C9A 30%, #2B4580 100%); }
+/* ふち（少し厚い白い輪） */
+.cc-rim { position: absolute; left: 50%; top: 50%; border-radius: 50%; box-sizing: border-box;
+  width: calc(var(--k, 3px) * (var(--r) * 2 + 6)); height: calc(var(--k, 3px) * (var(--r) * 2 + 6)); margin: calc(var(--k, 3px) * (var(--r) * -1 - 3));
+  transform: translateZ(calc(var(--k, 3px) * var(--z)));
+  border: calc(var(--k, 3px) * 6) solid #F7F3EA; box-shadow: inset 0 0 0 calc(var(--k, 3px) * .6) rgba(0, 0, 0, .12), 0 0 0 calc(var(--k, 3px) * .8) rgba(43, 69, 128, .9); }
+.cc-sh { width: calc(var(--k, 3px) * 19); height: calc(var(--k, 3px) * 19); margin: calc(var(--k, 3px) * -9.5); }
+.rl-wheel.cc.done .cc-box { box-shadow: inset 0 0 0 2px rgba(255, 232, 154, .55), 0 0 26px rgba(255, 232, 154, .28); }
+.rl-wheel.cc .rl-read .dc-badge.big { animation: rlPop .5s cubic-bezier(.2, 1.4, .3, 1) both; }
+/* 役の札：小さなサイコロ3つと役の名前（外に出たサイコロは「外」） */
+.dc-f.cc-out { display: inline-grid; place-items: center; font-size: 9px; font-weight: 800; color: #fff; background: #7A2A2A; }
+.dc-badge.big .dc-f.cc-out { font-size: 13px; }
+.dc-badge.h .dc-f.cc-out { font-size: 7px; }
+.cc-badge > b { width: auto; white-space: nowrap; }
+.cc-badge.pin > b, .cc-badge.zoro > b { background: #B8862A; }
+.cc-badge.c456 > b, .cc-badge.\34 56 > b { background: #B8323A; }
+.cc-badge.me > b { background: #2F6FB7; }
+.cc-badge.none > b { background: #3A3A44; }
+.cc-badge.sb > b, .cc-badge.\31 23 > b { background: #6B2B6B; }
+.rl-hist.cc { gap: 4px; }
+/* 子が賭ける盤 */
+.cc-board { display: grid; gap: 8px; margin: 4px 0 2px; }
+.rl-cell.cc-cell { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 96px; padding: 8px; border-radius: 16px;
+  background: linear-gradient(160deg, rgba(184, 134, 42, .32), rgba(90, 60, 20, .4)); color: #fff; }
+.rl-cell.cc-cell > small { font-size: 11px; font-weight: 800; letter-spacing: .14em; color: rgba(255, 232, 154, .85); }
+.rl-cell.cc-cell > b { font-size: 18px; font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-bet { min-width: 54px; padding: 3px 12px; border-radius: 999px; background: rgba(0, 0, 0, .35); font-size: 15px; font-weight: 800; text-align: center; }
+.rl-cell.cc-cell.on .cc-bet { background: #FFE89A; color: #2A1A0D; }
+.cc-pay { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.cc-pay span { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 4px 2px; border-radius: 8px; background: rgba(255, 255, 255, .05); }
+.cc-pay b { font-size: 10.5px; font-weight: 700; text-align: center; line-height: 1.2; }
+.cc-pay i { font-style: normal; font-size: 11px; font-weight: 800; color: rgba(255, 232, 154, .85); }
+/* この回の全員の手 */
+.cc-hands { display: grid; gap: 4px; width: 100%; margin-top: 6px; }
+.cc-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto minmax(86px, auto) 44px; align-items: center; gap: 6px; min-height: 40px; padding: 4px 8px; border-radius: 12px; background: rgba(255, 255, 255, .04); }
+.cc-row.me { box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .45); }
+.cc-row.turn { background: rgba(162, 158, 255, .14); }
+.cc-row.out { opacity: .45; }
+.cc-role { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #3A3A44; font-size: 12px; font-weight: 800; }
+.cc-role.oya { background: #B8862A; color: #1A1208; }
+.cc-nm { display: flex; flex-direction: column; min-width: 0; font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-nm small { font-weight: 500; font-size: 10.5px; color: var(--label-2); }
+.cc-bt { font-size: 11px; color: var(--label-2); white-space: nowrap; }
+.cc-hd { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
+.cc-hd small { font-size: 10px; color: var(--label-3); white-space: nowrap; }
+.cc-hd em { font-style: normal; font-size: 11px; font-weight: 800; color: var(--accent); }
+.cc-d { text-align: right; font-weight: 800; font-size: 13px; }
+.cc-row.up .cc-d { color: #7FE0A6; } .cc-row.down .cc-d { color: #FF8A8A; }
+.cc-hands.big .cc-row { min-height: 52px; font-size: 16px; }
+.cc-roll { min-width: 96px; }
+/* 役の知らせ */
+.rl-flash.rl-num.cc b { width: auto; min-width: 2.2em; padding: 0 .4em; border-radius: 20px; background: #2F6FB7; font-size: min(15vw, 64px); }
+.rl-flash.rl-num.cc.pin b, .rl-flash.rl-num.cc.zoro b { background: #B8862A; }
+.rl-flash.rl-num.cc.none b { background: #3A3A44; }
+.rl-flash.rl-num.cc.sb b, .rl-flash.rl-num.cc.\31 23 b { background: #6B2B6B; }
+.rl-flash.rl-num.cc.\34 56 b { background: #B8323A; }
+.rp-rl-n.cc { width: auto; height: auto; border-radius: 0; background: none; font-size: 3cqw; }
+.rp-rl-n.cc .dc-badge.big .dc-f { width: 6cqw; height: 6cqw; padding: .7cqw; }
+.rp-rl-n.cc .dc-badge.big > b { height: 6cqw; font-size: 3.4cqw; padding: 0 1.4cqw; }
+@media (max-width: 380px) { .cc-row { grid-template-columns: 24px minmax(0, 1fr) auto minmax(74px, auto) 38px; gap: 4px; padding: 4px 6px; } .cc-bt { font-size: 10px; } }
+@media (prefers-reduced-motion: reduce) { .rl-wheel.cc .rl-read .dc-badge.big { animation: none; } }
+
+/* v104 大富豪：いまの場に出せないカードはグレー（押しても選ばれない） */
+.dfg-card.dim { cursor: not-allowed; }
+.dfg-card.dim .pc { filter: grayscale(1) brightness(.5); }

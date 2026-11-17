@@ -2434,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v103"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v104"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11032,6 +11032,9 @@ const GAME_KINDS = {
   dfg: { label: "大富豪", min: 2, max: 8, desc: "全部のカードを配り、場より強いカードを順番に出していきます（強さは 3 が一番弱く、2 が一番強い。ジョーカーはさらに強い）。出せないときや出したくないときはパス。早く手札をなくした人ほど上位で、何回か遊んだ合計点で順位を決めます。" },
   rl: { label: "ルーレット", min: 1, max: 20, desc: "カジノ式（ヨーロッパ式・0〜36）：全員がチップを数字や赤・黒などに置き、管理者の端末（ディーラー）が玉を投げます。数字1つに当たればもうけ35倍、1〜12などは2倍、赤・黒などは1倍。最後に一番多くチップを残した人の勝ちです。抽選式：好きな項目を円盤に並べて回し、1つを選びます（罰ゲーム・順番決めなど）。" },
   dice: { label: "大小（サイコロ）", alias: "rl", mode: "dice", min: 1, max: 20, desc: "サイコロ3個の目にチップを賭けます（大小・シックボー）。管理者の端末（ディーラー）が、透明なドームの中の台を突き上げてサイコロを振ります。小（合計4〜10）・大（11〜17）・奇数・偶数は1倍（ゾロ目が出たら負け）、合計の数・ゾロ目・ダブル・2つの目の組み合わせ・1つの目は、それぞれの配当でもうかります。サイコロの動きと出る目は、物理の計算で決まります。" },
+  bac: { label: "バカラ", alias: "rl", mode: "bac", min: 1, max: 20, desc: "プレイヤーとバンカー、どちらの合計が9に近いかにチップを賭けます（プント・バンコ）。管理者の端末（ディーラー）が8組のトランプから2枚ずつ配り、決まりに従って3枚目を配ります。カードは少しずつ絞ってめくります（スクイーズ）。プレイヤーの勝ちは1倍、バンカーの勝ちは手数料5%を引いて0.95倍、タイ（引き分け）は8倍、ペアは11倍。" },
+  cc: { label: "チンチロ", alias: "rl", mode: "cc", min: 2, max: 12, desc: "丼（どんぶり）にサイコロを3個投げ入れて、出た役で勝負します。親を1人ずつ順番に回し、子は親と勝負する額を賭けます。親から順に、自分のスマホの「振る」でサイコロを投げます（目なしは3回まで振り直し）。役は強い順にピンゾロ（×5）・ゾロ目（×3）・シゴロ（×2）・目（×1）。ヒフミは2倍払い、目なし・丼の外に出る（ションベン）は負け。サイコロの動きは重力・ぶつかり・摩擦の計算で決まり、力が入りすぎると丼の外に飛び出すこともあります。" },
+  crash: { label: "クラッシュ", alias: "rl", mode: "crash", min: 1, max: 20, desc: "倍率が 1.00x から上がっていき、どこかで突然はじけます（クラッシュ）。はじける前に CASH OUT を押せば、賭けた額×その倍率がもらえます。欲張って待つほど倍率は上がりますが、押す前にはじけると賭けた分は負けです。自動で降りる倍率（AUTO）も決めておけます。はじける倍率は、管理者の端末が始める瞬間にくじで決めます。" },
 };
 const WOLF_ROLES = {
   wolf: { label: "人狼", side: "wolf", desc: "夜に人間を1人襲います。仲間の人狼が誰かはわかります。人狼の数が人間と同じになれば勝ちです。" },
@@ -11244,7 +11247,7 @@ async function startGame(kind, players, o, demo = false) {
     g = { ...base, ...r.update };
   } else if (kind === "rl") {
     // v100 ルーレット（秘密の札は使わない。止まる場所は回すときに決める）
-    g = { ...base, ...(rlO(o).mode === "lottery" ? { title: "抽選ルーレット" } : rlO(o).mode === "dice" ? { title: GAME_KINDS.dice.label } : {}), ...rlStartState(players, o) };
+    g = { ...base, ...(rlO(o).mode === "lottery" ? { title: "抽選ルーレット" } : ["dice", "bac", "crash", "cc"].includes(rlO(o).mode) ? { title: GAME_KINDS[rlO(o).mode].label } : {}), ...rlStartState(players, o) };
   } else {
     const max = Math.max(players.length, o.max ?? 100);
     const nums = gShuffle(Array.from({ length: max }, (_, i) => i + 1)).slice(0, players.length);
@@ -11644,7 +11647,7 @@ const cardText = (c) => (isJoker(c) ? "JOKER" : `${CARD_SUITS[c[0]]}${cardRankTe
 const cardsText = (cs) => (cs ?? []).map(cardText).join(" ");
 const isCardKind = (k) => k === "bj" || k === "dfg" || k === "rl";
 // v103 種類の名前（大小はルーレットの仕組みで動くので、kind は rl のまま）
-const gKindLabel = (kind, o) => (kind === "rl" && o?.mode === "dice" ? GAME_KINDS.dice.label : GAME_KINDS[kind]?.label ?? "ゲーム");
+const gKindLabel = (kind, o) => (kind === "rl" && ["dice", "bac", "crash", "cc"].includes(o?.mode) ? GAME_KINDS[o.mode].label : GAME_KINDS[kind]?.label ?? "ゲーム");
 // 順位（同じ枚数・点数なら同じ順位）
 const cardScore = (x) => x.chips ?? x.points ?? 0;
 const cardPlace = (rk, x) => 1 + (rk ?? []).filter((y) => cardScore(y) > cardScore(x)).length;
@@ -12095,6 +12098,30 @@ function dfgCheck(g, hand, cs) {
   if (!dfgBeats(p, st.field, rev, o, cs)) return rev ? "いまは強さが逆です。場より弱いカード（数字の小さいカード）しか出せません" : "場より強いカードを出してください";
   return null;
 }
+// v104 いまの場に対して出せるカード（どれかの出し方に入るカード）。手札のグレー表示に使う。場が空なら null（全部出せる）
+//   同じ数字の組（ジョーカー込み）と階段（同じマークの連番。足りない所はジョーカー）を全部作り、dfgCheck で確かめる
+function dfgPlayable(g, hand) {
+  const st = g.dfg, f = st?.field;
+  if (!f) return null;
+  const o = dfgO(g.opts), n = f.n, jk = hand.filter(isJoker), nat = hand.filter((c) => !isJoker(c)), ok = new Set();
+  const tryCs = (cs) => { if (cs.length === n && !dfgCheck(g, hand, cs)) for (const c of cs) ok.add(c); };
+  const combos = (arr, k, from = 0, cur = []) => {
+    if (cur.length === k) return tryCs([...cur]);
+    for (let i = from; i <= arr.length - (k - cur.length); i++) { cur.push(arr[i]); combos(arr, k, i + 1, cur); cur.pop(); }
+  };
+  if (f.kind === "set") {
+    for (let v = 0; v < CARD_RANKS.length; v++) { const same = nat.filter((c) => cardSv(c) === v); if (same.length) combos([...same, ...jk], n); }
+    combos(jk, n);
+  } else if (o.stairs) {
+    for (const s of Object.keys(CARD_SUITS)) for (let lo = 0; lo + n <= CARD_RANKS.length; lo++) {
+      const have = [];
+      let miss = 0;
+      for (let v = lo; v < lo + n; v++) { const c = nat.find((x) => x[0] === s && cardSv(x) === v); if (c) have.push(c); else miss++; }
+      if (have.length && miss <= jk.length) tryCs([...have, ...jk.slice(0, miss)]);
+    }
+  }
+  return ok;
+}
 // 7渡し・10捨てで、出したあとに選ぶ枚数
 function dfgExtra(g, hand, cs) {
   const o = dfgO(g.opts), p = dfgParse(cs, o, dfgRevNow(g.dfg), g.dfg.field?.kind);
@@ -12367,11 +12394,13 @@ const RL_CNAME = { r: "赤", b: "黒", g: "緑" };
 // 外側の賭け：[名前, 配当（賭けた額の何倍がもうけになるか）]
 const RL_SPOTS = { R: ["赤", 1], B: ["黒", 1], E: ["偶数", 1], O: ["奇数", 1], L: ["1〜18", 1], H: ["19〜36", 1],
   D1: ["1〜12", 2], D2: ["13〜24", 2], D3: ["25〜36", 2], C1: ["左の列", 2], C2: ["真ん中の列", 2], C3: ["右の列", 2] };
-const rlValidSpot = (s) => /^n([0-9]|[12][0-9]|3[0-6])$/.test(s) || Object.hasOwn(RL_SPOTS, s) || dcValidSpot(s);
+const rlValidSpot = (s) => /^n([0-9]|[12][0-9]|3[0-6])$/.test(s) || Object.hasOwn(RL_SPOTS, s) || dcValidSpot(s) || bacValidSpot(s) || crValidSpot(s) || s === "jB";
 // v103 そのゲームで使える場所か（大小はサイコロの場所だけ、ルーレットはルーレットの場所だけ）
-const rlSpotOk = (o, s) => (o.mode === "dice" ? dcValidSpot(s) : !dcValidSpot(s) && rlValidSpot(s));
+const rlSpotOk = (o, s) => (o.mode === "dice" ? dcValidSpot(s) : o.mode === "bac" ? bacValidSpot(s) : o.mode === "crash" ? crValidSpot(s) : o.mode === "cc" ? s === "jB" : !dcValidSpot(s) && !bacValidSpot(s) && !crValidSpot(s) && s !== "jB" && rlValidSpot(s));
 function rlWins(spot, n) {
   if (spot[0] === "d") return dcWins(spot, n);
+  if (spot[0] === "k") return bacWins(spot, n);
+  if (spot.startsWith("cx")) return crCashOf(spot, n) > 0;
   if (spot[0] === "n") return Number(spot.slice(1)) === n;
   if (n === 0) return false; // 0 は外側の賭けがすべて負け
   switch (spot) {
@@ -12381,9 +12410,9 @@ function rlWins(spot, n) {
   }
   return false;
 }
-const rlPay = (spot) => (spot[0] === "d" ? dcPay(spot) : spot[0] === "n" ? 35 : RL_SPOTS[spot]?.[1] ?? 0);
-const rlPayText = (spot) => (spot[0] === "d" ? dcPayText(spot) : String(rlPay(spot)));
-const rlSpotName = (spot) => (spot[0] === "d" ? dcSpotName(spot) : spot[0] === "n" ? spot.slice(1) : RL_SPOTS[spot]?.[0] ?? spot);
+const rlPay = (spot) => (spot[0] === "d" ? dcPay(spot) : spot[0] === "k" ? BAC_SPOTS[spot]?.[1] ?? 0 : spot.startsWith("cx") ? Number(crPayText(spot)) || 0 : spot[0] === "n" ? 35 : RL_SPOTS[spot]?.[1] ?? 0);
+const rlPayText = (spot) => (spot[0] === "d" ? dcPayText(spot) : spot[0] === "k" ? bacPayText(spot) : spot.startsWith("cx") ? crPayText(spot) : spot === "jB" ? "役" : String(rlPay(spot)));
+const rlSpotName = (spot) => (spot[0] === "d" ? dcSpotName(spot) : spot[0] === "k" ? BAC_SPOTS[spot]?.[0] ?? spot : spot.startsWith("cx") ? crSpotName(spot) : spot === "jB" ? "親との勝負" : spot[0] === "n" ? spot.slice(1) : RL_SPOTS[spot]?.[0] ?? spot);
 const rlEvenMoney = (spot) => RL_SPOTS[spot]?.[1] === 1;
 // 設定（古いゲームにない項目は既定値で補う）
 //   rounds 回数／chips はじめのチップ／betMin 1か所の最小／betMax 1か所の最大（0＝上限なし）／betSec 賭ける時間／partage 0のとき赤黒などは半分戻る
@@ -12436,7 +12465,7 @@ function rlJudge(o, bets, n) {
   return { d, win };
 }
 const rlBetText = (bets) => Object.entries(bets ?? {}).map(([k, a]) => `${rlSpotName(k)}に${a}`).join("・");
-const rlNumText = (n) => (dcIs(n) ? dcText(n) : `${n}（${RL_CNAME[rlColor(n)]}）`);
+const rlNumText = (n) => (dcIs(n) ? dcText(n) : bacIs(n) ? bacText(n) : crIs(n) ? crText(n) : ccIs(n) ? ccText(n) : `${n}（${RL_CNAME[rlColor(n)]}）`);
 // 抽選で回す人（順番に回すときは、席の順に1人ずつ）
 const rlSpinner = (g, st = g.rl) => (rlO(g.opts).spinner === "turn" ? g.players[(st?.turn ?? 0) % g.players.length] : null);
 
@@ -12449,17 +12478,19 @@ function rlStartState(players, o) {
       log: [gLog(`抽選ルーレットを始めます（項目 ${st.items.length}個・${x.rounds}回）。${sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"}`, st.items.join("・"), { type: "rlReady", round: 1 })] };
   }
   const chips = Object.fromEntries(players.map((u) => [u, Math.max(0, Math.floor(o.startChips?.[u] ?? x.chips))]));
-  const st = { round: 1, chips, start: { ...chips }, hist: [], spin: null, bets: null, res: null, prev: null };
+  const st = { round: 1, chips, start: { ...chips }, hist: [], spin: null, bets: null, res: null, prev: null, ...(x.mode === "cc" ? { oya: players.find((u) => chips[u] > 0) ?? players[0], cc: null } : {}) };
   const same = new Set(Object.values(chips)).size === 1;
-  return { rl: st, phase: "bet", actKey: "b", actors: players.filter((u) => chips[u] >= Math.max(1, x.betMin)), endsAt: cardEnds(o, x.betSec),
-    log: [gLog(`${x.mode === "dice" ? "大小（サイコロ）" : "ルーレット"}を始めます。${o.pt?.chips === "real" ? "旅行のポイントをチップとして持ち込みました" : "全員にチップを配りました"}（${same ? `${Object.values(chips)[0]}枚ずつ` : players.map((u) => `${memberName(u)} ${chips[u]}枚`).join("・")}）。第1回の賭けを置いてください。`, null, { type: "rlBet", round: 1 })] };
+  return { rl: st, phase: "bet", actKey: "b", actors: players.filter((u) => u !== st.oya && chips[u] >= Math.max(1, x.betMin)), endsAt: cardEnds(o, x.betSec),
+    log: [gLog(`${x.mode === "dice" ? "大小（サイコロ）" : x.mode === "bac" ? "バカラ" : x.mode === "crash" ? "クラッシュ" : x.mode === "cc" ? "チンチロ" : "ルーレット"}を始めます。${o.pt?.chips === "real" ? "旅行のポイントをチップとして持ち込みました" : "全員にチップを配りました"}（${same ? `${Object.values(chips)[0]}枚ずつ` : players.map((u) => `${memberName(u)} ${chips[u]}枚`).join("・")}）。${x.mode === "cc" ? `第1回の親は${memberName(st.oya)}さん。子は親と勝負する額を賭けてください。` : "第1回の賭けを置いてください。"}`, null, { type: "rlBet", round: 1 })] };
 }
 // 締め切って、玉を投げる（抽選は回す）
 function rlSpin(g) {
-  if (!["bet", "ready"].includes(g.phase)) return null;
+  if (!["bet", "ready", "roll"].includes(g.phase)) return null;
   const st = structuredClone(g.rl), o = rlO(g.opts), r = st.round;
   const seed = 1 + gRand(2 ** 31 - 2);
   const at = nowS() + RL_LEAD;
+  // v105 チンチロ：振る番の人が振る（本人が押した・時間切れ・管理者が代わりに）
+  if (rlCc(g) && g.phase === "roll") return st.cc ? ccThrow(g, st, seed) : null;
   if (rlLottery(g)) {
     if (!st.items.length) return null;
     const n = gRand(st.items.length);
@@ -12476,14 +12507,29 @@ function rlSpin(g) {
     if (rlSum(b)) bets[u] = b;
   }
   st.bets = bets; st.res = null;
+  if (rlCc(g)) { for (const u of Object.keys(bets)) if (u === st.oya) delete bets[u]; return ccBegin(g, st); }
   if (rlDice(g)) {
     // v103 大小：前の回に止まったところから、台を突き上げて振る。出る目は物理の計算で決まる（全員の端末で同じ計算）
     const init = st.spin?.last ?? null, sim = dcSim(seed, init), v = sim.faces.map(dcFaceVal);
     st.spin = { n: v[0] * 100 + v[1] * 10 + v[2], at, dur: Math.ceil(sim.tEnd * 1000), seed, round: r, ...(init ? { init } : {}), last: sim.last };
+  } else if (rlBac(g)) {
+    // v104 バカラ：シュー（8組）から P・B・P・B の順に配り、決まりで3枚目。残りが少なければ混ぜ直す
+    let shoe = typeof st.shoe === "string" && st.shoe.length >= BAC_CUT * 2 ? st.shoe : null, mixed = !shoe;
+    if (!shoe) shoe = bacShoe();
+    let i = 0;
+    const hand = bacDeal(() => shoe.slice(i * 2, ++i * 2));
+    st.shoe = shoe.slice(i * 2);
+    const n = `${hand.p.join("")}|${hand.b.join("")}`;
+    st.spin = { n, at, dur: Math.ceil(bacPlanOf(n).D * 1000), seed, round: r, ...(mixed ? { mixed: true } : {}) };
+  } else if (rlCrash(g)) {
+    // v104 クラッシュ：はじける倍率をくじで決める（約2% は 1.00x ですぐはじける）
+    const x = crPoint();
+    st.spin = { n: `x${x}`, at, dur: x <= 100 ? 0 : Math.ceil(crTime(x) * 1000), seed, round: r };
   } else st.spin = { n: gRand(37), at, dur: Math.ceil(rlCasinoSim(seed).tEnd * 1000), seed, round: r };
   const us = Object.keys(bets);
-  return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null,
-    log: [...(g.log ?? []), gLog(`第${r}回：ノーモアベット（賭けを締め切りました）。${rlDice(g) ? "サイコロを振ります。" : ""}${us.length ? "" : "賭けた人はいません。"}`, us.map((u) => `${memberName(u)}：${rlBetText(bets[u])}（合計 ${rlSum(bets[u])}）`).join("\n") || null, { type: "rlSpin", round: r })] } };
+  // クラッシュは、飛んでいる間に賭けた人が CASH OUT を送る（gameActs の c）
+  return { update: { rl: st, phase: "spin", actKey: rlCrash(g) && us.length ? "c" : null, actors: rlCrash(g) ? us : [], endsAt: null,
+    log: [...(g.log ?? []), gLog(`第${r}回：ノーモアベット（賭けを締め切りました）。${rlDice(g) ? "サイコロを振ります。" : rlBac(g) ? `${st.spin.mixed ? "カードを混ぜ直して、" : ""}カードを配ります。` : rlCrash(g) ? "倍率が上がり始めます。" : ""}${us.length ? "" : "賭けた人はいません。"}`, us.map((u) => `${memberName(u)}：${rlBetText(bets[u])}（合計 ${rlSum(bets[u])}）`).join("\n") || null, { type: "rlSpin", round: r })] } };
 }
 // 回り終わったら、精算する（全員の画面で玉が止まってから）
 function rlSettle(g) {
@@ -12497,6 +12543,8 @@ function rlSettle(g) {
     // 当たった項目をしばらく見せてから、次の人の番にする（すぐ盤が描き変わると、止まった瞬間が見えない）
     return { update: { rl: st, phase: "result", actKey: null, actors: [], endsAt: nowS() + RL_LOT_HOLD, log } };
   }
+  if (rlCc(g)) return ccAfter(g, st);
+  if (rlCrash(g)) st.bets = crSettleBets(g, st);
   const res = {}, sum = {};
   for (const [u, b] of Object.entries(st.bets ?? {})) {
     const j = rlJudge(o, b, n);
@@ -12516,6 +12564,8 @@ function rlSettle(g) {
 function rlIsLast(g, st = g.rl) {
   const o = rlO(g.opts);
   if (st.round >= o.rounds) return true;
+  // チンチロ：チップを持っている人が2人より少なくなったら終わり
+  if (rlCc(g)) return g.players.filter((u) => (st.chips?.[u] ?? 0) >= Math.max(1, o.betMin)).length < 2;
   return rlLottery(g) ? !(st.items?.length) : g.players.every((u) => (st.chips?.[u] ?? 0) < Math.max(1, o.betMin));
 }
 function rlNext(g) {
@@ -12528,7 +12578,8 @@ function rlNext(g) {
     return { update: { rl: st, phase: "ready", actKey: sp ? "s" : null, actors: sp ? [sp] : [], endsAt: sp && o.readySec ? nowS() + o.readySec * 1000 : null,
       log: [...(g.log ?? []), gLog(`第${st.round}回です。${sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"}`, null, { type: "rlReady", round: st.round, quiet: true })] } };
   }
-  st.round += 1; st.prev = st.bets ?? null; st.bets = null; st.res = null;
+  if (rlCc(g)) return ccNextRound(g, st);
+  st.round += 1; st.prev = rlCrash(g) && st.bets ? Object.fromEntries(Object.entries(st.bets).map(([u, b]) => [u, crPlain(b)])) : st.bets ?? null; st.bets = null; st.res = null;
   const actors = g.players.filter((u) => (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
   return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
     log: [...(g.log ?? []), gLog(`第${st.round}回です。賭けを置いてください。`, null, { type: "rlBet", round: st.round })] } };
@@ -12704,6 +12755,10 @@ function dcSim(seed, init = null) {
 // ---- v103 大小（サイコロ3個・シックボー）
 // 出た目は 3桁の数（1個目×100＋2個目×10＋3個目。例 346）。ルーレットの数字（0〜36）と区別できる
 const rlDice = (g) => rlO(g?.opts).mode === "dice";
+const rlBac = (g) => rlO(g?.opts).mode === "bac";
+const rlCrash = (g) => rlO(g?.opts).mode === "crash";
+// v104 出た結果の小さな印（大小・バカラ）。ルーレットの数字は null
+const rlBadgeOf = (n, cls = "") => (dcIs(n) ? dcBadge(n, cls) : bacIs(n) ? bacBadge(n, cls) : crIs(n) ? crBadge(n, cls) : ccIs(n) ? ccBadge(n, cls) : null);
 const dcIs = (n) => typeof n === "number" && n >= 111;
 const dcVals = (n) => [Math.floor(n / 100), Math.floor(n / 10) % 10, n % 10];
 const dcTotal = (n) => dcVals(n).reduce((a, b) => a + b, 0);
@@ -12918,11 +12973,881 @@ function dcBoard(mine, opt = {}) {
     row("sing", "1つの目", [1, 2, 3, 4, 5, 6].map((v) => cell(`dn${v}`, "one", [dcFace(v)]))));
 }
 
+// ================= v104 バカラ（プント・バンコ）。ルーレットと同じ仕組み（賭け→締め切り→結果）で動かし、カードはブラックジャックのカードを使う
+//   出た結果 n は「プレイヤーのカード|バンカーのカード」の文字（例 "S9HK|DAC5D3"）。賭けの場所は k で始める（kP・kB・kT・kPP・kBP）
+const bacIs = (n) => typeof n === "string" && n.includes("|");
+const bacCards = (n) => { const [p = "", b = ""] = String(n).split("|"); return { p: p.match(/../g) ?? [], b: b.match(/../g) ?? [] }; };
+const bacV = (c) => (c[1] === "A" ? 1 : "TJQK".includes(c[1]) ? 0 : Number(c[1]));
+const bacTot = (cs) => cs.reduce((a, c) => a + bacV(c), 0) % 10;
+// 3枚目の決まり（Punto banco の表。Wikipedia「Baccarat」）
+//   どちらかが最初の2枚で 8・9（ナチュラル）なら、両方とも引かない
+//   プレイヤー：0〜5 なら引く・6〜7 は引かない
+//   バンカー：プレイヤーが引かなかったときは 0〜5 で引く。プレイヤーが引いたときは、バンカーの合計とプレイヤーの3枚目で決まる
+function bacDeal(draw) {
+  const p = [draw()], b = [draw()];
+  p.push(draw()); b.push(draw());
+  const pt = bacTot(p), bt = bacTot(b);
+  if (pt >= 8 || bt >= 8) return { p, b };
+  let p3 = null;
+  if (pt <= 5) { p3 = draw(); p.push(p3); }
+  if (p3 == null) { if (bt <= 5) b.push(draw()); }
+  else {
+    const v = bacV(p3);
+    if (bt <= 2 || (bt === 3 && v !== 8) || (bt === 4 && v >= 2 && v <= 7) || (bt === 5 && v >= 4 && v <= 7) || (bt === 6 && v >= 6 && v <= 7)) b.push(draw());
+  }
+  return { p, b };
+}
+const bacWinner = (n) => { const { p, b } = bacCards(n), x = bacTot(p), y = bacTot(b); return x > y ? "P" : y > x ? "B" : "T"; };
+const bacPairP = (n) => { const { p } = bacCards(n); return p.length >= 2 && p[0][1] === p[1][1]; };
+const bacPairB = (n) => { const { b } = bacCards(n); return b.length >= 2 && b[0][1] === b[1][1]; };
+const BAC_SPOTS = { kP: ["プレイヤー", 1], kB: ["バンカー", 0.95], kT: ["タイ（引き分け）", 8], kPP: ["プレイヤーのペア", 11], kBP: ["バンカーのペア", 11] };
+const bacValidSpot = (s) => Object.hasOwn(BAC_SPOTS, s);
+function bacWins(s, n) {
+  const w = bacWinner(n);
+  return s === "kP" ? w === "P" : s === "kB" ? w === "B" : s === "kT" ? w === "T" : s === "kPP" ? bacPairP(n) : s === "kBP" ? bacPairB(n) : false;
+}
+// 1か所の結果。バンカーの勝ちは 5% の手数料を引いて 0.95倍（端数は切り捨て）。タイのとき、プレイヤー・バンカーの賭けはそのまま戻る
+function bacOut(s, a, n) {
+  if (bacWins(s, n)) return { r: "win", d: s === "kB" ? Math.floor(a * 0.95) : a * BAC_SPOTS[s][1] };
+  if ((s === "kP" || s === "kB") && bacWinner(n) === "T") return { r: "push", d: 0 };
+  return { r: "lose", d: -a };
+}
+const bacPayText = (s) => String(BAC_SPOTS[s]?.[1] ?? 0);
+const BAC_WNAME = { P: "プレイヤー", B: "バンカー", T: "タイ" };
+const bacText = (n) => { const { p, b } = bacCards(n), w = bacWinner(n); return `プレイヤー ${bacTot(p)}（${cardsText(p)}）・バンカー ${bacTot(b)}（${cardsText(b)}）→ ${w === "T" ? "タイ（引き分け）" : `${BAC_WNAME[w]}の勝ち`}`; };
+const bacBits = (n) => { const w = bacWinner(n), x = [w === "T" ? "タイ" : `${BAC_WNAME[w]}の勝ち`]; if (bacPairP(n)) x.push("プレイヤーのペア"); if (bacPairB(n)) x.push("バンカーのペア"); return x.join("・"); };
+// 結果の小さな印（例：P7 青・B5 赤・T 緑）
+function bacBadge(n, cls = "") {
+  const { p, b } = bacCards(n), w = bacWinner(n);
+  return h("span", { class: `bc-badge ${w}${cls ? ` ${cls}` : ""}`, "aria-label": bacBits(n) },
+    h("b", null, w === "T" ? `T${bacTot(p)}` : `${w}${w === "P" ? bacTot(p) : bacTot(b)}`),
+    bacPairP(n) ? h("i", { class: "pp" }) : null, bacPairB(n) ? h("i", { class: "bp" }) : null);
+}
+// シュー（8組・416枚）。残りが少なくなったら（カット・カードの位置）混ぜ直す
+const BAC_DECKS = 8, BAC_CUT = 16;
+function bacShoe() {
+  const cs = [];
+  for (let d = 0; d < BAC_DECKS; d++) for (const s of "SHDC") for (const r of "A23456789TJQK") cs.push(s + r);
+  for (let i = cs.length - 1; i > 0; i--) { const j = gRand(i + 1); [cs[i], cs[j]] = [cs[j], cs[i]]; }
+  return cs.join("");
+}
+
+// ---- 配る・めくる（スクイーズ）の時間割。全員の端末が同じ結果 n から同じ時間割を作る（秒）
+//   P1→B1→P2→B2 の順に裏で配る → プレイヤーの2枚を絞る → バンカーの2枚を絞る → （決まりで）プレイヤーの3枚目 → バンカーの3枚目
+const BAC_DEAL = 0.55, BAC_GAP = 0.32, BAC_SQ = 2.9, BAC_SQ3 = 3.2, BAC_PAUSE = 0.55, BAC_REVEAL = 1.0;
+function bacPlan(n) {
+  const { p, b } = bacCards(n);
+  const slots = [];
+  let t = 0;
+  for (const [side, i] of [["p", 0], ["b", 0], ["p", 1], ["b", 1]]) { slots.push({ side, i, c: (side === "p" ? p : b)[i], deal: t, sq: 0 }); t += BAC_GAP; }
+  t += BAC_DEAL + 0.5;
+  for (const side of ["p", "b"]) { for (const s of slots) if (s.side === side) s.sq = t; t += BAC_SQ + BAC_PAUSE; }
+  for (const side of ["p", "b"]) {
+    const cs = side === "p" ? p : b;
+    if (cs.length < 3) continue;
+    slots.push({ side, i: 2, c: cs[2], deal: t, sq: t + BAC_DEAL + 0.25 });
+    t += BAC_DEAL + 0.25 + BAC_SQ3 + BAC_PAUSE;
+  }
+  return { slots, D: t - BAC_PAUSE + 0.2 };
+}
+const BAC_PLANS = new Map();
+const bacPlanOf = (n) => { let P = BAC_PLANS.get(n); if (!P) { if (BAC_PLANS.size > 100) BAC_PLANS.clear(); P = bacPlan(n); BAC_PLANS.set(n, P); } return P; };
+
+// ---- カードの表（本物のトランプと同じ並びのマーク）。横を絞ると左の列のマークが見える
+//   位置は 0〜100（横・縦）。下半分のマークは逆さ
+const BAC_PIPS = {
+  A: [[50, 50]], 2: [[50, 16], [50, 84]], 3: [[50, 16], [50, 50], [50, 84]],
+  4: [[28, 16], [72, 16], [28, 84], [72, 84]], 5: [[28, 16], [72, 16], [50, 50], [28, 84], [72, 84]],
+  6: [[28, 16], [72, 16], [28, 50], [72, 50], [28, 84], [72, 84]], 7: [[28, 16], [72, 16], [50, 33], [28, 50], [72, 50], [28, 84], [72, 84]],
+  8: [[28, 16], [72, 16], [50, 33], [28, 50], [72, 50], [50, 67], [28, 84], [72, 84]],
+  9: [[28, 16], [72, 16], [28, 39], [72, 39], [50, 50], [28, 61], [72, 61], [28, 84], [72, 84]],
+  T: [[28, 16], [72, 16], [50, 28], [28, 39], [72, 39], [28, 61], [72, 61], [50, 72], [28, 84], [72, 84]],
+};
+function bacFront(c) {
+  const red = c[0] === "H" || c[0] === "D", r = c[1], suit = CARD_SUITS[c[0]], rt = cardRankText(c);
+  const idx = (cls) => h("span", { class: `bc-idx ${cls}` }, h("b", null, rt), h("i", null, suit));
+  const body = "JQK".includes(r)
+    ? h("span", { class: "bc-court" }, h("b", null, r), h("i", null, suit))
+    : h("span", { class: `bc-pips${r === "A" ? " ace" : ""}` }, BAC_PIPS[r].map(([x, y]) => h("i", { style: `left:${x}%;top:${y}%`, class: y > 50 ? "dn" : "" }, suit)));
+  return h("div", { class: `bc-face bc-front${red ? " red" : ""}`, "aria-label": cardText(c) }, idx("tl"), body, idx("br"));
+}
+// テーブル（プレイヤー・バンカーの場所、シュー、カード6枚ぶんの入れ物）
+function bacBuild() {
+  const area = (side, label) => {
+    const slots = [0, 1, 2].map((i) => {
+      const back = h("div", { class: "bc-face bc-back" }), curl = h("i", { class: "bc-curl" });
+      const el = h("div", { class: `bc-card s${i}`, hidden: true }, h("div", { class: "bc-front-wrap" }), back, curl);
+      return { el, back, curl, front: el.firstChild, c: null };
+    });
+    const tot = h("b", { class: "bc-tot" }, "");
+    const el = h("div", { class: `bc-area ${side}` }, h("div", { class: "bc-lab" }, h("span", null, label), tot), h("div", { class: "bc-cards" }, slots.map((s) => s.el)));
+    return { el, slots, tot };
+  };
+  const P = area("p", "PLAYER"), B = area("b", "BANKER");
+  const shoe = h("div", { class: "bc-shoe", "aria-hidden": "true" }, h("i"));
+  const felt = h("div", { class: "bc-felt" }, h("div", { class: "bc-arc" }, h("span", null, "BANKER PAYS 0.95 ・ TIE PAYS 8 TO 1")), shoe, h("div", { class: "bc-areas" }, P.el, B.el));
+  return { box: felt, P, B, shoe };
+}
+// 0〜1 を、なめらかに
+const bacEase = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
+// 1枚のカードの、いまの見た目。q：絞りの進み（0〜1）
+//   0〜0.12 持ち上げる → 0.12〜0.46 長い辺（横）を少しずつ曲げて、真ん中の列のマークをのぞく（角は指で押さえる）→ 戻す
+//   → 0.5〜0.8 短い辺（下）をのぞく → 戻す → 0.86〜1 一気に表にする
+function bacCardPose(q) {
+  if (q <= 0) return { flip: 0, side: 0, end: 0, lift: 0 };
+  if (q >= 1) return { flip: 1, side: 0, end: 0, lift: 0 };
+  const lift = bacEase(q / 0.12) * (1 - bacEase((q - 0.9) / 0.1));
+  let side = 0, end = 0;
+  if (q < 0.48) side = q < 0.4 ? bacEase((q - 0.12) / 0.28) * (0.85 + 0.15 * Math.sin(q * 70)) : 1 - bacEase((q - 0.4) / 0.08);
+  else if (q < 0.84) end = q < 0.76 ? bacEase((q - 0.5) / 0.26) * (0.85 + 0.15 * Math.sin(q * 64)) : 1 - bacEase((q - 0.76) / 0.08);
+  const flip = bacEase((q - 0.86) / 0.14);
+  return { flip, side: Math.max(0, side), end: Math.max(0, end), lift };
+}
+const bacClip = (side, end) => {
+  if (side > 0.001) { const x = (side * 34).toFixed(1); return `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 76%, ${x}% 76%, ${x}% 24%, 0 24%)`; }
+  if (end > 0.001) { const y = (100 - end * 30).toFixed(1); return `polygon(0 0, 100% 0, 100% 100%, 78% 100%, 78% ${y}%, 22% ${y}%, 22% 100%, 0 100%)`; }
+  return "none";
+};
+function bacRenderSlot(s, st, slot, t) {
+  if (!slot || t < slot.deal) { if (!s.el.hidden) s.el.hidden = true; return; }
+  if (s.el.hidden) s.el.hidden = false;
+  if (s.c !== slot.c) { s.c = slot.c; setKids(s.front, bacFront(slot.c)); }
+  const dp = bacEase((t - slot.deal) / BAC_DEAL);
+  const q = slot.sq ? (t - slot.sq) / (slot.i === 2 ? BAC_SQ3 : BAC_SQ) : 0;
+  const ps = bacCardPose(q);
+  // 配る：シュー（右上）から滑ってくる。3枚目は横向きに置く（本物のテーブルと同じ）
+  const rot = slot.i === 2 ? 90 : 0;
+  const tx = (1 - dp) * 160, ty = (1 - dp) * -120, tr = (1 - dp) * -24;
+  // 裏のまま（down）：表の上に裏を重ね、絞っているところだけ裏を切り取る（下の表がのぞく）／めくる途中（flip）：立体で裏返す／表（up）
+  const m = ps.flip >= 1 ? "up" : ps.flip > 0 ? "flip" : "down";
+  if (s.el.dataset.m !== m) s.el.dataset.m = m;
+  const rotY = m === "flip" ? 180 - ps.flip * 180 : -ps.side * 9;
+  s.el.style.transform = `translate(${tx.toFixed(1)}px, ${(ty - ps.lift * 6).toFixed(1)}px) rotate(${(rot + tr).toFixed(1)}deg) rotateX(${(ps.lift * 12 + ps.end * 16).toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg) scale(${(1 + ps.lift * 0.08).toFixed(3)})`;
+  s.el.style.opacity = String(Math.min(1, dp * 2.5));
+  const peek = m === "down" && (ps.side > 0 || ps.end > 0);
+  s.back.style.clipPath = peek ? bacClip(ps.side, ps.end) : "none";
+  s.curl.style.cssText = peek ? (ps.side > 0 ? `left:${(ps.side * 34).toFixed(1)}%;top:24%;bottom:24%;width:${(4 + ps.side * 9).toFixed(1)}%` : `top:${(100 - ps.end * 30).toFixed(1)}%;left:22%;right:22%;height:${(4 + ps.end * 8).toFixed(1)}%`) : "display:none";
+  s.curl.className = `bc-curl${ps.side > 0 ? " v" : " h"}`;
+}
+// いまの時刻のテーブルを描く。合計は、その側のカードが全部表になってから出す
+function bacDraw(e, g, sp, now, loud) {
+  const live = sp && g.phase !== "bet" && g.phase !== "ended";
+  const clear = () => { for (const A of [e.P, e.B]) { for (const s of A.slots) s.el.hidden = true; A.tot.textContent = ""; A.el.classList.remove("win", "lose", "tie"); } };
+  if (!live) {
+    clear();
+    rlState(e, "");
+    rlWait(e, g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "");
+    return false;
+  }
+  const P = bacPlanOf(sp.n), D = P.D, t = (now - sp.at) / 1000, { p, b } = bacCards(sp.n);
+  for (const [A, side] of [[e.P, "p"], [e.B, "b"]]) {
+    for (let i = 0; i < 3; i++) bacRenderSlot(A.slots[i], null, P.slots.find((x) => x.side === side && x.i === i), t);
+    const mine = P.slots.filter((x) => x.side === side);
+    const upN = mine.filter((x) => x.sq && t >= x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.93).length;
+    const cs = side === "p" ? p : b;
+    A.tot.textContent = upN >= 2 ? String(bacTot(cs.slice(0, upN))) : "";
+  }
+  const done = t >= D, shown = t >= D + BAC_REVEAL, w = bacWinner(sp.n);
+  e.P.el.classList.toggle("win", shown && w === "P"); e.B.el.classList.toggle("win", shown && w === "B");
+  e.P.el.classList.toggle("lose", shown && w === "B"); e.B.el.classList.toggle("lose", shown && w === "P");
+  e.P.el.classList.toggle("tie", shown && w === "T"); e.B.el.classList.toggle("tie", shown && w === "T");
+  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ));
+  rlState(e, t < 0 ? "spinning" : done ? "done" : sq ? "spinning tense" : "spinning");
+  const my = rlMyBets(g);
+  if (t < 0) rlWait(e, "NO MORE BETS");
+  else if (shown) rlRead(e, `k:${sp.n}:${my ? 1 : 0}`, () => { const d = my ? rlJudge(rlO(g.opts), my, sp.n).d : null; return [bacBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, w === "T" ? "TIE" : `${w === "P" ? "PLAYER" : "BANKER"} WINS`), d == null ? null : h("em", { class: `rl-nb-d${d > 0 ? " up" : d < 0 ? " down" : ""}` }, sgn(d))]; });
+  else rlWait(e, sq ? "SQUEEZE…" : "• • •", true);
+  if (loud) bacSound(e, g, sp, P, t, D);
+  return t < D + 14;
+}
+// 音：配る音・めくる音・絞っている間の鼓動
+function bacSound(e, g, sp, P, t, D) {
+  const s = (e.snds ??= {});
+  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, deal: new Set(P.slots.filter((x) => t > x.deal).map((x) => `${x.side}${x.i}`)), up: new Set(P.slots.filter((x) => x.sq && t > x.sq + 0.5).map((x) => `${x.side}${x.i}`)), beat: Math.floor(t / 0.7), done: t >= D + BAC_REVEAL }; return; }
+  for (const x of P.slots) {
+    const k = `${x.side}${x.i}`, dur = x.i === 2 ? BAC_SQ3 : BAC_SQ;
+    if (!s.deal.has(k) && t >= x.deal) { s.deal.add(k); rlSfx("bcDeal", 0.8); }
+    if (x.sq && !s.up.has(k) && t >= x.sq + dur * 0.88) { s.up.add(k); rlSfx("bcFlip", 0.9); }
+  }
+  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.86);
+  const bt = Math.floor(t / 0.7);
+  if (sq && bt !== s.beat) { s.beat = bt; rlSfx("beat", 0.55); }
+  if (!s.done && t >= D + BAC_REVEAL) { s.done = true; if (t - D < BAC_REVEAL + 2.5) rlResultFx(g, sp); }
+}
+// 賭けの盤（バカラ）：プレイヤー・タイ・バンカー／ペア
+function bacBoard(mine, opt = {}) {
+  const cell = (spot, cls, kids) => {
+    const a = mine?.[spot] ?? 0, win = opt.win != null && bacWins(spot, opt.win), push = opt.win != null && a && bacOut(spot, a, opt.win).r === "push";
+    const attrs = { class: `rl-cell bc-cell ${cls}${a ? " bet" : ""}${win ? " win" : ""}${opt.win != null && !win && !push && a ? " lost" : ""}`, "aria-label": `${BAC_SPOTS[spot][0]}${a ? `（${a}枚）` : ""}` };
+    const all = [...kids, h("small", { class: "dc-pay" }, `×${bacPayText(spot)}`), a ? h("i", { class: "rl-chip-on" }, rlAbbr(a)) : null];
+    return opt.tap ? h("button", { type: "button", ...attrs, onclick: () => opt.tap(spot) }, all) : h("div", attrs, all);
+  };
+  return h("div", { class: `bc-board${opt.tap ? "" : " ro"}`, role: opt.tap ? "group" : null, "aria-label": "賭けの盤（バカラ）" },
+    h("div", { class: "bc-pairs" }, cell("kPP", "pair p", [h("b", null, "P PAIR"), h("span", null, "プレイヤーのペア")]), cell("kBP", "pair b", [h("b", null, "B PAIR"), h("span", null, "バンカーのペア")])),
+    h("div", { class: "bc-main" }, cell("kP", "big p", [h("b", null, "PLAYER"), h("span", null, "プレイヤー")]), cell("kT", "big t", [h("b", null, "TIE"), h("span", null, "タイ")]), cell("kB", "big b", [h("b", null, "BANKER"), h("span", null, "バンカー")])),
+    h("p", { class: "dc-note" }, opt.note ?? "9に近いほうが勝ち（10・絵札は0、Aは1、合計の1の位）。タイのときプレイヤー・バンカーの賭けは戻る"));
+}
+
+// ================= v104 クラッシュ。倍率が 1.00x から上がっていき、どこかで突然はじける（クラッシュ）。はじける前に「降りる（CASH OUT）」と、賭けた額×その倍率がもらえる
+//   ルーレットと同じ仕組み（賭け→締め切り→結果）で動かす。出た結果 n は「x＋はじけた倍率×100」の文字（例 "x231" ＝ 2.31x）
+//   賭けの場所は cx＋自動で降りる倍率×100（0＝自動なし）。精算のときに、降りた倍率を後ろに付ける（例 cx200c185 ＝ 自動2.00x・1.85xで降りた、c0＝降りられなかった）
+//   倍率は時間とともに m(t) = e^(k t)（6秒で2倍）。はじける倍率は 0.99÷(1−一様乱数)の小数第2位までの切り捨て（約2% は 1.00x ですぐはじける。上限 100x）
+const CR_K = Math.LN2 / 6, CR_MAX = 10000, CR_HOLD = 1.6;
+const crIs = (n) => typeof n === "string" && /^x\d+$/.test(n);
+const crX = (n) => Number(String(n).slice(1)) / 100;
+const crAt = (t) => Math.floor(100 * Math.exp(CR_K * Math.max(0, t)) + 1e-9); // 経過 t 秒の倍率×100（切り捨て）
+const crTime = (x100) => Math.log(x100 / 100) / CR_K; // その倍率になる時刻（秒）
+function crPoint() {
+  const u = gRand(1e9) / 1e9, x = 0.99 / (1 - u);
+  return x < 1 ? 100 : Math.min(CR_MAX, Math.floor(x * 100));
+}
+const crKey = (k) => { const m = /^cx(\d+)(?:c(\d+))?$/.exec(k); return m ? { auto: Number(m[1]), cash: m[2] == null ? null : Number(m[2]) } : null; };
+const crValidSpot = (s) => { const k = crKey(s); return !!k && k.cash == null && (k.auto === 0 || (k.auto >= 101 && k.auto <= CR_MAX)) && s === `cx${k.auto}`; };
+const crFmt = (x100) => `${(x100 / 100).toFixed(2)}x`;
+// 降りた倍率（精算のあと）。精算の前は、自動で降りる倍率に届いたかどうかだけで決める
+function crCashOf(k, n) {
+  const c = crKey(k), X = Math.round(crX(n) * 100);
+  if (!c) return 0;
+  if (c.cash != null) return c.cash > 100 && c.cash <= X ? c.cash : 0;
+  return c.auto > 100 && c.auto <= X ? c.auto : 0;
+}
+function crOut(k, a, n) {
+  const c = crCashOf(k, n);
+  return c ? { r: "win", d: Math.floor((a * (c - 100)) / 100) } : { r: "lose", d: -a };
+}
+function crSpotName(k) {
+  const c = crKey(k);
+  if (!c) return k;
+  const at = c.auto ? `自動 ${crFmt(c.auto)}` : "手で降りる";
+  if (c.cash == null) return at;
+  if (!c.cash) return `${c.auto ? `${at}・\u200b` : ""}降りられず`; // \u200b：表の中で「・」のあとで折り返せるように
+  return c.auto === c.cash ? `${at}で降りた` : `${crFmt(c.cash)}で降りた（手）`;
+}
+const crPayText = (k) => { const c = crKey(k); return c?.cash ? (c.cash / 100).toFixed(2) : c?.auto ? (c.auto / 100).toFixed(2) : "?"; };
+const crText = (n) => `${crFmt(Math.round(crX(n) * 100))}でクラッシュ`;
+const crBits = (n) => `${crFmt(Math.round(crX(n) * 100))}でクラッシュ${crX(n) <= 1 ? "（すぐはじけた）" : ""}`;
+function crBadge(n, cls = "") {
+  const x = crX(n);
+  return h("span", { class: `cr-badge${x >= 10 ? " hi" : x >= 2 ? " up" : " lo"}${cls ? ` ${cls}` : ""}`, "aria-label": crText(n) }, `${x.toFixed(2)}x`);
+}
+// 精算のときに、降りた倍率を賭けの場所に書き足す（手で降りた知らせは gameActs の c。時刻をサーバーの時刻で確かめる）
+function crSettleBets(g, st) {
+  const sp = st.spin, X = Math.round(crX(sp.n) * 100), tc = sp.dur, r = st.round, out = {};
+  for (const [u, b] of Object.entries(st.bets ?? {})) {
+    let man = 0;
+    const t = cardAct(g, "c", u, `r${r}`);
+    if (t != null) {
+      const ms = Math.floor(Number(t));
+      const at = ts(S.gameActs.get(`${g.id}_c_${u}`)?.at);
+      // 押した時刻（経過ミリ秒）がはじける前で、知らせがサーバーに届いた時刻とも合うものだけ（はじけたのを見てから「前に押した」と送るのを防ぐ）
+      const ok = Number.isFinite(ms) && ms > 0 && ms < tc && (g.demo || (at && at <= sp.at + ms + 2500));
+      if (ok) man = crAt(ms / 1000);
+      if (man <= 100) man = 0;
+    }
+    out[u] = Object.fromEntries(Object.entries(b).map(([k, a]) => {
+      const c = crKey(k);
+      if (!c) return [k, a];
+      const auto = c.auto > 100 && c.auto <= X ? c.auto : 0;
+      const cash = man && auto ? Math.min(man, auto) : man || auto;
+      return [`cx${c.auto}c${cash}`, a];
+    }));
+  }
+  return out;
+}
+// 次の回の「前回」ボタン用：降りた倍率を外す
+const crPlain = (bets) => (bets ? Object.fromEntries(Object.entries(bets).map(([k, a]) => [crKey(k) ? `cx${crKey(k).auto}` : k, a])) : null);
+
+// ---- 画面：倍率のグラフ
+function crBuild() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 320 200"); svg.setAttribute("class", "cr-svg"); svg.setAttribute("aria-hidden", "true");
+  const mk = (tag, attrs) => { const el = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); svg.append(el); return el; };
+  const grid = mk("g", { class: "cr-grid" });
+  const area = mk("path", { class: "cr-area", d: "" });
+  const line = mk("path", { class: "cr-line", d: "" });
+  const dot = mk("circle", { class: "cr-dot", r: "5", cx: "-20", cy: "-20" });
+  const big = h("div", { class: "cr-big" }, h("b", null, "1.00x"), h("small", null, ""));
+  const cash = h("button", { type: "button", class: "cr-cash", hidden: true }, h("b", null, "CASH OUT"), h("small", null, ""));
+  const box = h("div", { class: "cr-box" }, svg, big, cash);
+  return { box, svg, grid, area, line, dot, big, cash, NS };
+}
+// 目盛り（縦：倍率・横：秒）。上限が変わったときだけ描き直す
+function crGrid(e, tMax, mMax) {
+  const key = `${tMax}:${mMax}`;
+  if (e.gridKey === key) return;
+  e.gridKey = key;
+  e.grid.replaceChildren();
+  const X = (t) => 34 + (t / tMax) * 276, Y = (m) => 182 - ((m - 1) / (mMax - 1)) * 168;
+  const steps = [1.5, 2, 3, 5, 10, 20, 50, 100].filter((m) => m < mMax);
+  const ms = steps.length > 4 ? steps.filter((_, i) => i % 2 === steps.length % 2) : steps;
+  for (const m of [1, ...ms]) {
+    const l = document.createElementNS(e.NS, "line"); l.setAttribute("x1", "34"); l.setAttribute("x2", "310"); l.setAttribute("y1", Y(m)); l.setAttribute("y2", Y(m)); e.grid.append(l);
+    const tx = document.createElementNS(e.NS, "text"); tx.setAttribute("x", "28"); tx.setAttribute("y", Y(m) + 3); tx.textContent = `${m}x`; e.grid.append(tx);
+  }
+  const ts0 = tMax > 40 ? 20 : tMax > 20 ? 10 : 5;
+  for (let t = ts0; t < tMax; t += ts0) { const tx = document.createElementNS(e.NS, "text"); tx.setAttribute("x", X(t)); tx.setAttribute("y", "196"); tx.setAttribute("class", "t"); tx.textContent = `${t}s`; e.grid.append(tx); }
+}
+function crRender(e, t, crashed) {
+  const m = Math.exp(CR_K * t);
+  const tMax = Math.max(10, Math.ceil((t * 1.15) / 5) * 5), mMax = Math.max(2, m * 1.25);
+  crGrid(e, tMax, Math.round(mMax * 10) / 10);
+  const mm = Math.round(mMax * 10) / 10, X = (x) => 34 + (x / tMax) * 276, Y = (v) => 182 - ((v - 1) / (mm - 1)) * 168;
+  const N = 48, pts = [];
+  for (let i = 0; i <= N; i++) { const x = (t * i) / N; pts.push(`${X(x).toFixed(1)},${Y(Math.exp(CR_K * x)).toFixed(1)}`); }
+  e.line.setAttribute("d", `M${pts.join("L")}`);
+  e.area.setAttribute("d", `M34,182L${pts.join("L")}L${X(t).toFixed(1)},182Z`);
+  e.dot.setAttribute("cx", X(t).toFixed(1)); e.dot.setAttribute("cy", Y(m).toFixed(1));
+  e.box.classList.toggle("crashed", crashed);
+}
+function crDraw(e, g, sp, now, loud) {
+  const live = sp && g.phase !== "bet" && g.phase !== "ended";
+  const me = S.user?.uid, my = rlMyBets(g);
+  if (!live) {
+    crRender(e, 0, false);
+    e.big.firstChild.textContent = "1.00x"; e.big.lastChild.textContent = g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "";
+    e.cash.hidden = true;
+    rlState(e, "");
+    rlWait(e, "");
+    return false;
+  }
+  const t = (now - sp.at) / 1000, D = sp.dur / 1000, X100 = Math.round(crX(sp.n) * 100);
+  const crashed = t >= D, tt = Math.max(0, Math.min(t, D));
+  crRender(e, tt, crashed);
+  const cur = crashed ? X100 : crAt(tt);
+  e.big.firstChild.textContent = t < 0 ? "1.00x" : crFmt(cur);
+  e.big.lastChild.textContent = t < 0 ? "NO MORE BETS" : crashed ? "CRASHED" : "";
+  // 自分の CASH OUT（参加者の画面だけ）
+  const k = my && Object.keys(my).find((x) => crKey(x));
+  const a = k ? my[k] : 0, auto = k ? crKey(k).auto : 0;
+  const sentMs = me && g.rl?.round != null ? RLX.cash?.get(`${g.id}:${g.rl.round}`) ?? (cardAct(g, "c", me, `r${g.rl.round}`) != null ? Number(cardAct(g, "c", me, `r${g.rl.round}`)) : null) : null;
+  const autoHit = auto > 100 && auto <= X100 && t >= crTime(auto);
+  const manHit = sentMs != null ? crAt(sentMs / 1000) : 0;
+  const myCash = manHit && autoHit ? Math.min(manHit, auto) : manHit || (autoHit ? auto : 0);
+  if (e.withCash && a && t >= 0 && g.phase === "spin") {
+    e.cash.hidden = false;
+    const can = !crashed && !myCash;
+    e.cash.disabled = !can;
+    e.cash.classList.toggle("done", !!myCash);
+    e.cash.classList.toggle("lost", crashed && !myCash);
+    e.cash.firstChild.textContent = myCash ? `${crFmt(myCash)} で降りた` : crashed ? "降りられず" : "CASH OUT";
+    e.cash.lastChild.textContent = myCash ? `+${Math.floor((a * (myCash - 100)) / 100)} ${chU(g)}` : crashed ? `−${a} ${chU(g)}` : `+${Math.floor((a * (cur - 100)) / 100)} ${chU(g)}${auto ? ` ・ 自動 ${crFmt(auto)}` : ""}`;
+  } else e.cash.hidden = true;
+  rlState(e, t < 0 ? "spinning" : crashed ? "done" : cur >= 200 ? "spinning tense" : "spinning");
+  if (crashed && t >= D + 0.3) rlRead(e, `x:${sp.n}`, () => [crBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, X100 <= 100 ? "すぐはじけた" : "CRASHED")]);
+  else rlWait(e, t < 0 ? "NO MORE BETS" : "", false);
+  if (loud) crSound(e, g, sp, t, D, myCash, a);
+  return t < D + 14;
+}
+// 押したら、はじける前ならその時刻を送る（経過ミリ秒）。届くのが遅れても、押した時刻で精算する
+function crCashOut(g) {
+  const sp = g.rl?.spin, r = g.rl?.round;
+  if (g.phase !== "spin" || !sp) return;
+  const ms = Math.floor(nowS() - sp.at);
+  if (ms <= 0 || ms >= sp.dur) return toast("はじけたあとです", true);
+  const key = `${g.id}:${r}`;
+  if ((RLX.cash ??= new Map()).has(key)) return;
+  RLX.cash.set(key, ms);
+  navigator.vibrate?.([20, 30, 20]); rlSfx("win", 0.7);
+  cardSend(g, "c", `r${r}`, String(ms));
+}
+function crSound(e, g, sp, t, D, myCash, a) {
+  const s = (e.snds ??= {});
+  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, tick: Math.floor(Math.max(0, t) * 2), boom: t >= D, fx: t >= D + 0.3 }; return; }
+  if (t >= 0 && t < D) {
+    const k = Math.floor(t * (2 + t * 0.15));
+    if (k !== s.tick) { s.tick = k; rlSfx("tick", Math.min(1, 0.3 + t * 0.03)); }
+  }
+  if (!s.boom && t >= D) { s.boom = true; rlSfx("crBoom", 1); navigator.vibrate?.(60); }
+  if (!s.fx && t >= D + 0.3) { s.fx = true; if (t - D < 2.5) rlResultFx(g, sp); }
+}
+// 賭けの盤（クラッシュ）：賭ける額（チップを押す）と、自動で降りる倍率
+const CR_AUTOS = [0, 120, 150, 200, 300, 500, 1000, 2000];
+function crBoard(g, d) {
+  const sum = rlSum(d.bets), k = Object.keys(d.bets).find((x) => crKey(x)), auto = k ? crKey(k).auto : RLX.auto?.get(g.id) ?? 0;
+  const setAuto = (A) => { (RLX.auto ??= new Map()).set(g.id, A); if (sum) rlSetBets(g, d, { [`cx${A}`]: sum }); else paintGameLive(); };
+  return h("div", { class: "cr-board" },
+    h("button", { type: "button", class: `rl-cell cr-bet${sum ? " bet" : ""}`, "aria-label": `賭ける${sum ? `（${sum}枚）` : ""}`, onclick: () => rlPlace(g, `cx${auto}`) },
+      h("b", null, "BET"), h("span", null, sum ? `${sum} ${chU(g)}` : "タップでチップを置く"), sum ? h("i", { class: "rl-chip-on" }, rlAbbr(sum)) : null),
+    h("div", { class: "cr-autos", role: "radiogroup", "aria-label": "自動で降りる倍率" }, h("small", null, "AUTO（自動で降りる）"),
+      h("div", { class: "cr-auto-row" }, CR_AUTOS.map((A) => h("button", { type: "button", role: "radio", "aria-checked": String(A === auto), class: `cr-auto${A === auto ? " on" : ""}`, onclick: () => setAuto(A) }, A ? crFmt(A) : "なし")))),
+    h("p", { class: "dc-note" }, "倍率が上がっていく間に CASH OUT を押すと、賭けた額×その倍率がもらえます（もうけは賭けた額×(倍率−1)）。押す前にはじけると、賭けた分は負け。AUTO を決めておくと、その倍率で自動で降ります"));
+}
+// 自分の増減（この端末で分かる分：押した時刻と自動の倍率から）。精算のあとは games の res を使う
+function crMyD(g, sp) {
+  const me = S.user?.uid, my = rlMyBets(g);
+  if (!me || !my) return null;
+  if (g.rl?.res?.[me] && g.phase !== "spin") return g.rl.res[me].d;
+  const X100 = Math.round(crX(sp.n) * 100), r = g.rl?.round;
+  const ms = RLX.cash?.get(`${g.id}:${r}`) ?? (cardAct(g, "c", me, `r${r}`) != null ? Number(cardAct(g, "c", me, `r${r}`)) : null);
+  const man = ms != null && ms < sp.dur ? crAt(ms / 1000) : 0;
+  let d = 0;
+  for (const [k, a] of Object.entries(my)) {
+    const c = crKey(k);
+    if (!c) continue;
+    if (c.cash != null) { d += crOut(k, a, sp.n).d; continue; }
+    const auto = c.auto > 100 && c.auto <= X100 ? c.auto : 0, cash = man > 100 && auto ? Math.min(man, auto) : man > 100 ? man : auto;
+    d += cash ? Math.floor((a * (cash - 100)) / 100) : -a;
+  }
+  return d;
+}
+
+// ---- v105 チンチロ：丼（どんぶり）に3個のサイコロを手で投げ入れる（単位 mm・秒。サイコロは大小と同じ 16mm の立方体）
+// 丼の内側は球の一部（底の真ん中が z=0、球の中心は (0, 0, CC_RB)）。ふちの高さ CC_HR。丼は机の上に置いてあり、机の面は z=CC_TZ
+// ふちを越えて外に出たサイコロは、丼の外側の壁・ふち・机に当たる（外に止まったらションベン）
+const CC_RB = 80, CC_HR = 58, CC_TH = 5, CC_TZ = -CC_TH - 6; // 丼の厚み 5mm・高台（足）6mm
+const CC_RIM = Math.sqrt(CC_RB * CC_RB - (CC_RB - CC_HR) * (CC_RB - CC_HR)); // ふちの半径（内側）
+const CC_E = { bowl: 0.65, rim: 0.5, out: 0.5, table: 0.35, die: 0.5 }, CC_MU = { bowl: 0.1, rim: 0.25, out: 0.25, table: 0.4, die: 0.2 }; // 釉薬の丼はよく滑る
+// 投げる：手の中（丼の手前の上）から、3個を少しばらけて放す。強さ・向き・回転は種から決める
+function ccSim(seed) {
+  const rnd = rlRng(seed ^ 0x2f6b9a3d);
+  const g = (s) => (rnd() + rnd() + rnd() - 1.5) * s; // おおよそ正規分布
+  // 投げる速さ（mm/秒）：ふつうは 0.35〜0.75 m/秒くらい。ときどき（約3.5%）力が入りすぎて 1.1〜1.9 m/秒で投げてしまう
+  const strong = rnd() < 0.035;
+  const power = strong ? 1100 + rnd() * 800 : 350 + rnd() * 400;
+  const D = [];
+  const hx = g(10), hy = 52 + g(6), hz = 112 + g(10);
+  const offs = [[-9, 2, 0], [9, 3, 1], [0, -8, 6]];
+  // 向き：おおむね奥（-y）へ。横へのずれ（丼の中をぐるっと回る分）を少し混ぜる
+  const side = (rnd() - 0.5) * 0.9, vx0 = power * side, vy0 = -power * Math.sqrt(1 - side * side), vz0 = -(80 + rnd() * 160);
+  for (let i = 0; i < 3; i++) {
+    const o = offs[i];
+    D.push({ p: [hx + o[0] + g(1.5), hy + o[1] + g(1.5), hz + o[2]], v: [vx0 + g(40), vy0 + g(50), vz0 + g(40)],
+      q: dcNorm4([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]), w: [g(60), g(60), g(60)] });
+  }
+  const c = [0, 0, CC_RB];
+  const frames = [], ev = [], hist = [];
+  let t = 0, end = null;
+  const step = Math.round(1 / DC_FPS / DC_DT);
+  for (let it = 0; t < 9; it++) {
+    t = it * DC_DT;
+    if (it % step === 0) frames.push({ d: D.map((d) => [d.p[0], d.p[1], d.p[2], d.q[0], d.q[1], d.q[2], d.q[3]]) });
+    if (end != null && t >= end) break;
+    for (const d of D) d.v[2] -= DC_G * DC_DT;
+    const Rs = D.map((d) => dcRot(d.q)), C = [];
+    D.forEach((d, i) => {
+      // 中心が丼の中か外か：ふちの高さより下なら「球の中」、上なら「ふちの円の内側」を中とする
+      const rc = Math.sqrt(d.p[0] * d.p[0] + d.p[1] * d.p[1]);
+      const cd = Math.sqrt(rc * rc + (d.p[2] - CC_RB) * (d.p[2] - CC_RB));
+      const inside = d.p[2] <= CC_HR ? cd < CC_RB + CC_TH / 2 : rc < CC_RIM + CC_TH / 2;
+      for (const cr of DC_CORNERS) {
+        const r = dcMul(Rs[i], cr), x = [d.p[0] + r[0], d.p[1] + r[1], d.p[2] + r[2]];
+        const dx = x[0] - c[0], dy = x[1] - c[1], dz = x[2] - c[2], dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (inside && x[2] <= CC_HR && dist > CC_RB && dist < CC_RB + CC_TH + 4) C.push({ a: i, b: -1, n: [-dx / dist, -dy / dist, -dz / dist], ra: r, depth: dist - CC_RB, vs: [0, 0, 0], k: "bowl" });
+        if (!inside && x[2] <= CC_HR && dist < CC_RB + CC_TH && dist > CC_RB - 4) C.push({ a: i, b: -1, n: [dx / dist, dy / dist, dz / dist], ra: r, depth: CC_RB + CC_TH - dist, vs: [0, 0, 0], k: "out" });
+        // ふち（丸い棒）：ふちの円からの距離が棒の太さより近ければ押し返す
+        const rr = Math.sqrt(x[0] * x[0] + x[1] * x[1]) || 1e-9, rm = CC_RIM + CC_TH / 2;
+        const ex = x[0] - (x[0] / rr) * rm, ey = x[1] - (x[1] / rr) * rm, ez = x[2] - CC_HR, ed = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        if (ed < CC_TH / 2 && ed > 1e-6) C.push({ a: i, b: -1, n: [ex / ed, ey / ed, ez / ed], ra: r, depth: CC_TH / 2 - ed, vs: [0, 0, 0], k: "rim" });
+        if (x[2] < CC_TZ) C.push({ a: i, b: -1, n: [0, 0, 1], ra: r, depth: CC_TZ - x[2], vs: [0, 0, 0], k: "table" });
+      }
+    });
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      if (i === j) continue;
+      const A = D[i], B = D[j], dx = A.p[0] - B.p[0], dy = A.p[1] - B.p[1], dz = A.p[2] - B.p[2];
+      if (dx * dx + dy * dy + dz * dz > 3 * DC_S * DC_S) continue;
+      const dd = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (i < j && dd < DC_S - 0.3) { const n = [dx / dd, dy / dd, dz / dd]; C.push({ a: i, b: j, n, ra: n.map((x) => -x * dd / 2), rb: n.map((x) => x * dd / 2), depth: DC_S - 0.3 - dd, k: "die" }); }
+      for (const cr of DC_PTS) {
+        const r = dcMul(Rs[i], cr), x = [A.p[0] + r[0], A.p[1] + r[1], A.p[2] + r[2]];
+        const l = dcMulT(Rs[j], [x[0] - B.p[0], x[1] - B.p[1], x[2] - B.p[2]]);
+        if (Math.abs(l[0]) >= DC_H || Math.abs(l[1]) >= DC_H || Math.abs(l[2]) >= DC_H) continue;
+        let ax = 0, best = DC_H - Math.abs(l[0]);
+        for (const k of [1, 2]) { const m = DC_H - Math.abs(l[k]); if (m < best) { best = m; ax = k; } }
+        const nl = [0, 0, 0]; nl[ax] = l[ax] < 0 ? -1 : 1;
+        C.push({ a: i, b: j, n: dcMul(Rs[j], nl), ra: r, rb: [x[0] - B.p[0], x[1] - B.p[1], x[2] - B.p[2]], depth: best, k: "die" });
+      }
+    }
+    const vAt = (cc) => {
+      const A = D[cc.a], va = dcCross(A.w, cc.ra);
+      let v = [A.v[0] + va[0], A.v[1] + va[1], A.v[2] + va[2]];
+      if (cc.b >= 0) { const B = D[cc.b], vb = dcCross(B.w, cc.rb); v = [v[0] - B.v[0] - vb[0], v[1] - B.v[1] - vb[1], v[2] - B.v[2] - vb[2]]; }
+      return v;
+    };
+    const kOf = (cc, n) => { const an = dcCross(cc.ra, n); let k = 1 + dcDot(an, an) / DC_I; if (cc.b >= 0) { const bn = dcCross(cc.rb, n); k += 1 + dcDot(bn, bn) / DC_I; } return 1 / k; };
+    const push = (cc, P) => {
+      const A = D[cc.a], ta = dcCross(cc.ra, P);
+      for (let k = 0; k < 3; k++) { A.v[k] += P[k]; A.w[k] += ta[k] / DC_I; }
+      if (cc.b >= 0) { const B = D[cc.b], tb = dcCross(cc.rb, P); for (let k = 0; k < 3; k++) { B.v[k] -= P[k]; B.w[k] -= tb[k] / DC_I; } }
+    };
+    for (const cc of C) {
+      const vn = dcDot(vAt(cc), cc.n);
+      cc.kn = kOf(cc, cc.n); cc.pn = 0; cc.pt = [0, 0, 0];
+      cc.target = (vn < -60 ? -CC_E[cc.k] * vn : 0) + Math.max(0, cc.depth - 0.02) * 30;
+      if (vn < -120) ev.push({ t, k: cc.k, s: Math.min(1, -vn / 1600) });
+    }
+    for (let iter = 0; iter < 10; iter++) for (const cc of C) {
+      const v = vAt(cc), vn = dcDot(v, cc.n);
+      const dp = Math.max(-cc.pn, (cc.target - vn) * cc.kn);
+      if (dp) { cc.pn += dp; push(cc, [cc.n[0] * dp, cc.n[1] * dp, cc.n[2] * dp]); }
+      const v2 = vAt(cc), vn2 = dcDot(v2, cc.n), vt = [v2[0] - cc.n[0] * vn2, v2[1] - cc.n[1] * vn2, v2[2] - cc.n[2] * vn2];
+      const lt = Math.sqrt(dcDot(vt, vt));
+      if (lt < 1e-6) continue;
+      const tdir = [vt[0] / lt, vt[1] / lt, vt[2] / lt], kt = kOf(cc, tdir);
+      let np = [cc.pt[0] - tdir[0] * lt * kt, cc.pt[1] - tdir[1] * lt * kt, cc.pt[2] - tdir[2] * lt * kt];
+      const lim = CC_MU[cc.k] * cc.pn, ln = Math.sqrt(dcDot(np, np));
+      if (ln > lim) np = np.map((x) => (x * lim) / ln);
+      push(cc, [np[0] - cc.pt[0], np[1] - cc.pt[1], np[2] - cc.pt[2]]);
+      cc.pt = np;
+    }
+    for (const d of D) {
+      // 転がる抵抗（陶器の丼の上を転がると少しずつ止まる）
+      for (let k = 0; k < 3; k++) { d.p[k] += d.v[k] * DC_DT; d.w[k] *= 1 - 0.25 * DC_DT; }
+      const [w0, w1, w2] = d.w, q = d.q;
+      d.q = dcNorm4([q[0] + 0.5 * DC_DT * (-w0 * q[1] - w1 * q[2] - w2 * q[3]), q[1] + 0.5 * DC_DT * (w0 * q[0] + w1 * q[3] - w2 * q[2]), q[2] + 0.5 * DC_DT * (w1 * q[0] + w2 * q[1] - w0 * q[3]), q[3] + 0.5 * DC_DT * (w2 * q[0] + w0 * q[2] - w1 * q[1])]);
+    }
+    // 止まったか：0.3秒のあいだ3個とも位置・向きがほとんど変わらない
+    if (t > 0.6 && end == null && it % 100 === 0) {
+      hist.push({ t, s: D.map((d) => [...d.p, ...d.q]) });
+      const old = hist.find((x) => x.t >= t - 0.3001);
+      if (old && t - old.t >= 0.299 && old.s.every((o, i) => { const d = D[i]; return Math.abs(o[0] - d.p[0]) < 0.4 && Math.abs(o[1] - d.p[1]) < 0.4 && Math.abs(o[2] - d.p[2]) < 0.4 && Math.abs(o[3] - d.q[0]) + Math.abs(o[4] - d.q[1]) + Math.abs(o[5] - d.q[2]) + Math.abs(o[6] - d.q[3]) < 0.01; })) end = t + 0.05;
+    }
+  }
+  if (end == null) end = t;
+  const out = D.map((d) => { const rc = Math.sqrt(d.p[0] * d.p[0] + d.p[1] * d.p[1]); return Math.sqrt(rc * rc + (d.p[2] - CC_RB) * (d.p[2] - CC_RB)) > CC_RB || d.p[2] > CC_HR; });
+  const faces = D.map((d) => { const R = dcRot(d.q); const up = [R[6], R[7], R[8]]; let ax = 0; for (const k of [1, 2]) if (Math.abs(up[k]) > Math.abs(up[ax])) ax = k; return { ax, sg: up[ax] > 0 ? 1 : -1, tilt: Math.abs(up[ax]) }; });
+  return { frames, ev, tEnd: end, faces, out, power };
+}
+
+// ---- v105 チンチロの役・勝ち負け・進行
+// 出た目の書き方：n = "j" + 3文字（1〜6。丼の外に出たサイコロは x）。例 "j335"・"j2x6"
+const ccIs = (n) => typeof n === "string" && /^j[1-6x]{3}$/.test(n);
+const ccVals = (n) => [...n.slice(1)].map((c) => (c === "x" ? 0 : Number(c)));
+// 役：y（種類）・s（強さ）・m（勝ったときの倍率）
+//   強い順：ピンゾロ（1・1・1）＞ゾロ目（6〜2）＞シゴロ（4・5・6）＞目（2個そろったときの残り1個：6〜1）＞目なし・ションベン ＞ ヒフミ（1・2・3）
+function ccYaku(n) {
+  const v = ccVals(n);
+  if (v.includes(0)) return { y: "sb", s: 0, m: 0, name: "ションベン（丼の外）", short: "ションベン" };
+  const [a, b, c] = [...v].sort((x, y) => x - y);
+  if (a === 1 && c === 1) return { y: "pin", s: 100, m: 5, name: "ピンゾロ（1・1・1）", short: "ピンゾロ" };
+  if (a === c) return { y: "zoro", v: a, s: 90 + a, m: 3, name: `${a}のゾロ目（アラシ）`, short: `${a}ゾロ` };
+  if (a === 4 && b === 5 && c === 6) return { y: "456", s: 80, m: 2, name: "シゴロ（4・5・6）", short: "シゴロ" };
+  if (a === 1 && b === 2 && c === 3) return { y: "123", s: -1, m: 0, name: "ヒフミ（1・2・3）", short: "ヒフミ" };
+  if (a === b || b === c) { const p = a === b ? c : a; return { y: "me", v: p, s: 10 + p, m: 1, name: `${p}の目`, short: `${p}の目` }; }
+  return { y: "none", s: 0, m: 0, name: "目なし", short: "目なし" };
+}
+// 子1人の勝ち負け（子から見た倍率。＋は子の勝ち、−は子の負け、0 は分け）
+//   親が「目」以外で決まったとき（即決）は、子は振らない
+function ccVs(oy, ky) {
+  if (oy.y === "pin" || oy.y === "zoro" || oy.y === "456") return -oy.m;
+  if (oy.y === "123") return 2;
+  if (oy.y === "none" || oy.y === "sb") return 1;
+  if (!ky) return 0;
+  if (ky.y === "123") return -2;
+  if (ky.s > oy.s) return ky.m;
+  if (ky.s < oy.s) return -1;
+  return 0;
+}
+// チップの受け渡し：子の負けは子の持ち分まで。親が払う分が足りなければ、勝った子に払う額の割合で分ける（端数は切り捨て）
+function ccPayout(oya, bets, chips, oy, hands) {
+  const d = {}, owe = {};
+  let pool = chips[oya] ?? 0;
+  for (const [u, b] of Object.entries(bets)) {
+    const a = rlSum(b), m = ccVs(oy, hands[u] ? ccYaku(hands[u].n) : null);
+    if (m < 0) { const x = Math.min(a * -m, chips[u] ?? 0); d[u] = -x; pool += x; }
+    else if (m > 0) owe[u] = a * m;
+    else d[u] = 0;
+  }
+  const need = Object.values(owe).reduce((s, x) => s + x, 0), rate = need > pool ? pool / need : 1;
+  let paid = 0;
+  for (const [u, x] of Object.entries(owe)) { const p = Math.floor(x * rate); d[u] = p; paid += p; }
+  d[oya] = pool - paid - (chips[oya] ?? 0);
+  return { d, short: rate < 1 };
+}
+const CC_LEAD = 900; // 振ってから投げ始めるまで（全員の端末に届くのを待つ）
+const ccText = (n) => `${ccVals(n).map((v) => (v ? v : "外")).join("・")}（${ccYaku(n).short}）`;
+const rlCc = (g) => rlO(g?.opts).mode === "cc";
+const ccOyaOf = (st) => st?.oya ?? null;
+// 振る番の人と、いま何投目か
+const ccRoller = (g) => (g.phase === "roll" ? g.actors[0] ?? null : g.phase === "spin" ? g.rl?.spin?.by ?? null : null);
+// 次の親：いまの親の次の席から、チップを持っている人
+function ccNextOya(g, st) {
+  const ps = g.players, i = ps.indexOf(st.oya);
+  for (let k = 1; k <= ps.length; k++) { const u = ps[(i + k) % ps.length]; if ((st.chips[u] ?? 0) > 0) return u; }
+  return st.oya;
+}
+// 振る番にする（同じ人のもう1投か、次の人）
+function ccRollUpdate(g, st, log) {
+  const o = rlO(g.opts), u = st.cc.order[st.cc.i];
+  return { rl: st, phase: "roll", actKey: "t", actors: [u], endsAt: o.readySec ? nowS() + o.readySec * 1000 : null, log };
+}
+// 賭けを締め切って、親から振る
+function ccBegin(g, st) {
+  const r = st.round, kids = g.players.filter((u) => u !== st.oya && rlSum(st.bets[u]));
+  if (!kids.length) {
+    st.cc = { order: [], i: 0, k: 0, seq: 0, hands: {}, th: [], none: true };
+    st.res = {};
+    return { update: { rl: st, phase: "result", actKey: null, actors: [], endsAt: rlO(g.opts).autoNext && !cardManual(g.opts) ? nowS() + 4000 : null,
+      log: [...(g.log ?? []), gLog(`第${r}回：子がだれも賭けなかったので、この回は流れました。`, null, { type: "ccSkip", round: r })] } };
+  }
+  st.cc = { order: [st.oya, ...kids], i: 0, k: 0, seq: 0, hands: {}, th: [] };
+  return { update: ccRollUpdate(g, st, [...(g.log ?? []), gLog(`第${r}回：賭けを締め切りました。親の${memberName(st.oya)}さんから振ります。`, kids.map((u) => `${memberName(u)}：${rlSum(st.bets[u])}`).join("\n"), { type: "ccBegin", round: r, bets: st.bets })]) };
+}
+// 振る（本人が押した・時間切れ・管理者が代わりに押した）。出る目は、管理者の端末が決めた種から物理の計算で決まる
+function ccThrow(g, st, seed) {
+  const cc = st.cc, u = cc.order[cc.i], sim = ccSim(seed);
+  const n = `j${sim.faces.map((f, i) => (sim.out[i] ? "x" : dcFaceVal(f))).join("")}`;
+  st.spin = { n, at: nowS() + CC_LEAD, dur: Math.ceil(sim.tEnd * 1000), seed, round: st.round, by: u, k: cc.k + 1, seq: cc.seq };
+  cc.seq += 1;
+  return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null, log: g.log ?? [] } };
+}
+// サイコロが止まったら：役を決めて、振り直し・次の人・精算のどれかへ
+function ccAfter(g, st) {
+  const cc = st.cc, sp = st.spin, u = sp.by, y = ccYaku(sp.n), r = st.round;
+  cc.th = [...(cc.th ?? []), [u, sp.n]];
+  const fin = y.y !== "none" || sp.k >= 3;
+  const log = [...(g.log ?? []), gLog(`第${r}回：${memberName(u)}さん${u === st.oya ? "（親）" : ""}の${sp.k}投目は ${ccText(sp.n)}${fin ? "" : "。振り直します"}`, null, { type: "ccThrow", round: r, u, n: sp.n, k: sp.k, quiet: true })];
+  if (!fin) { cc.k = sp.k; return { update: ccRollUpdate(g, st, log) }; }
+  cc.hands[u] = { n: sp.n, k: sp.k };
+  cc.k = 0;
+  if ((u === st.oya && y.y !== "me") || cc.i + 1 >= cc.order.length) return { update: ccSettleUpdate(g, st, log) };
+  cc.i += 1;
+  return { update: ccRollUpdate(g, st, log) };
+}
+function ccSettleUpdate(g, st, log0) {
+  const o = rlO(g.opts), r = st.round, oy = ccYaku(st.cc.hands[st.oya].n);
+  const { d, short } = ccPayout(st.oya, st.bets, st.chips, oy, st.cc.hands);
+  const res = {};
+  for (const [u, x] of Object.entries(d)) { res[u] = { d: x, win: {} }; st.chips[u] = Math.max(0, (st.chips[u] ?? 0) + x); }
+  st.res = res; st.cc.short = short;
+  st.hist = [...(st.hist ?? []), st.cc.hands[st.oya].n].slice(-60);
+  const sum = Object.fromEntries(Object.entries(d));
+  const instant = oy.y !== "me";
+  const log = [...log0, gLog(`第${r}回の結果：親の${memberName(st.oya)}さんは${oy.name}${instant ? "（ここで勝負が決まりました）" : ""}。${Object.keys(sum).map((u) => `${memberName(u)} ${signed(sum[u])}`).join("・")}${short ? "（親のチップが足りないので、勝った子に割合で払いました）" : ""}`,
+    Object.keys(st.bets).map((u) => `${memberName(u)}：${st.cc.hands[u] ? ccYaku(st.cc.hands[u].n).name : "振らずに決着"}（${signed(sum[u] ?? 0)}）`).join("\n") || null,
+    { type: "rlRound", round: r, n: st.cc.hands[st.oya].n, sum, bets: st.bets ?? {}, chips: { ...st.chips }, oya: st.oya, hands: st.cc.hands })];
+  const last = rlIsLast(g, st);
+  return { rl: st, phase: "result", actKey: null, actors: [], endsAt: last ? nowS() + Math.max(5000, o.autoNext && !cardManual(g.opts) ? o.resultSec * 1000 : 0) : o.autoNext && !cardManual(g.opts) ? nowS() + o.resultSec * 1000 : null, log };
+}
+// 次の回：親を次の人に回して、子が賭ける
+function ccNextRound(g, st) {
+  const o = rlO(g.opts);
+  st.round += 1; st.prev = st.bets ?? null; st.bets = null; st.res = null; st.cc = null;
+  st.oya = ccNextOya(g, st);
+  const actors = g.players.filter((u) => u !== st.oya && (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
+  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
+    log: [...(g.log ?? []), gLog(`第${st.round}回です。親は${memberName(st.oya)}さん。子は賭けてください。`, null, { type: "rlBet", round: st.round, oya: st.oya })] } };
+}
+
+// ---- v105 チンチロの絵（CSS の 3D）：机の上の丼。内側は球の一部なので、高さごとの輪を重ねて曲面に見せる
+const CC_ZOOM_AT = 0.55, CC_ZOOM_DUR = 0.9, CC_REVEAL = CC_ZOOM_AT + CC_ZOOM_DUR, CC_HOLD = 1.6; // 役が出てから次へ進むまで（読めるように）
+const CC_RZ = (z) => Math.sqrt(Math.max(0, CC_RB * CC_RB - (CC_RB - z) * (CC_RB - z))); // 高さ z での丼の内側の半径
+const CC_LAYERS = 24;
+const CC_PLANS = new Map();
+function ccPlanOf(sp) {
+  const k = `${sp.seed}:${sp.n}`;
+  let P = CC_PLANS.get(k);
+  if (P) return P;
+  const sim = ccSim(sp.seed), want = ccIs(sp.n) ? ccVals(sp.n) : null;
+  // 計算の目が記録（管理者の端末の計算）と違うとき（ふつうは起きない）：見た目だけ、記録の目に合わせて面の割り当てを入れ替える
+  const fix = sim.faces.map((f, i) => {
+    if (!want || !want[i] || dcFaceVal(f) === want[i]) return null;
+    const [ax, sg] = (() => { for (let a = 0; a < 3; a++) for (const s of [0, 1]) if (DC_AXV[a][s] === want[i]) return [a, s ? -1 : 1]; return [2, 1]; })();
+    const c = DC_ROTS.filter((M) => M[f.ax * 3 + ax] * sg === f.sg);
+    return c[sp.seed % c.length];
+  });
+  P = { sim, D: sim.tEnd, fix };
+  if (CC_PLANS.size > 40) CC_PLANS.clear();
+  CC_PLANS.set(k, P);
+  return P;
+}
+// 何も振っていないときの置き方（丼の底に3個）
+let CC_IDLE = null;
+const ccIdle = () => (CC_IDLE ??= (() => { const P = ccPlanOf({ seed: 20261117, n: null }); return P.sim.frames.at(-1).d; })());
+function ccBuild() {
+  const dice = [], shadows = [];
+  const tray = h("div", { class: "dc-tray cc-tray" });
+  // 机（丼の外）と、丼の外側の影
+  tray.append(h("i", { class: "cc-table" }), h("i", { class: "cc-foot" }));
+  // 丼の内側：底の円盤と、高さごとの輪（内側の半径が少しずつ大きくなる）
+  for (let i = 0; i < CC_LAYERS; i++) {
+    const z0 = (CC_HR * i) / CC_LAYERS, z1 = (CC_HR * (i + 1)) / CC_LAYERS, r0 = CC_RZ(z0), r1 = CC_RZ(z1);
+    // 外へのはみ出し（--o）：斜めから見たとき輪と輪のすき間から机が見えないように重ねる（ふちの外までは出さない）
+    const ov = Math.min(7, CC_RIM + CC_TH / 2 + 3 - r1), w = r1 + ov;
+    const ring = h("i", { class: `cc-ly${i === 0 ? " bottom" : ""}${i === CC_LAYERS - 3 ? " ai" : ""}`, style: `--r:${rlF(r1)};--o:${rlF(ov)};--z:${rlF(z0)};--in:${rlF(i === 0 ? 0 : (r0 / w) * 100)}%;--lv:${rlF(i / (CC_LAYERS - 1))}` });
+    tray.append(ring);
+  }
+  tray.append(h("i", { class: "cc-rim", style: `--r:${rlF(CC_RIM + CC_TH / 2)};--z:${CC_HR}` }));
+  for (let i = 0; i < 3; i++) {
+    const sides = [];
+    const die = h("div", { class: "dc-die" });
+    const faces = [[0, 1], [0, -1], [1, 1], [1, -1], [2, 1], [2, -1]].map(([ax, sg]) => {
+      const v = DC_AXV[ax][sg > 0 ? 0 : 1], shade = h("i", { class: "dc-shade" });
+      const el = h("div", { class: `dc-side a${ax}${sg > 0 ? "p" : "n"} v${v}` }, DC_PIPS[v].map((k) => h("b", { class: v === 1 ? "r" : "", style: `grid-area:${1 + Math.floor(k / 3)}/${1 + (k % 3)}` })), shade);
+      sides.push({ ax, sg, shade });
+      return el;
+    });
+    die.append(...faces, h("i", { class: "dc-core c0" }), h("i", { class: "dc-core c1" }), h("i", { class: "dc-core c2" }));
+    const sh = h("i", { class: "dc-sh cc-sh" });
+    tray.append(sh); shadows.push(sh);
+    tray.append(die); dice.push({ el: die, sides });
+  }
+  const cam = h("div", { class: "dc-cam" }, tray);
+  const box = h("div", { class: "rl-disc dc-box cc-box" }, cam, h("i", { class: "rl-vig", "aria-hidden": "true" }));
+  return { box, cam, tray, dice, shadows };
+}
+// サイコロの下の面の高さ（影を落とす所）：丼の中なら内側の曲面、外なら机
+const ccFloorZ = (x, y) => { const r = Math.hypot(x, y); return r < CC_RIM ? CC_RB - Math.sqrt(Math.max(0, CC_RB * CC_RB - r * r)) : r < CC_RIM + CC_TH + 2 ? CC_HR : CC_TZ; };
+function ccRender(e, d, fix, zp, shake = 0) {
+  const W = e.box.clientWidth || e.lastW || 300;
+  e.lastW = W;
+  const k = W / 200; // 1mm が何 px か（丼の直径 約164mm＋まわりの机）
+  if (e.persp !== W) { e.persp = W; e.box.style.perspective = `${Math.round(W * 2.2)}px`; }
+  e.tray.style.setProperty("--k", `${k}px`);
+  e.tray.style.transform = "translate(-50%, -50%)";
+  let cx = 0, cy = 0, nIn = 0;
+  d.forEach((s, i) => {
+    let R = dcQR(s.slice(3));
+    if (fix?.[i]) R = dcM3(R, fix[i]);
+    const D = e.dice[i];
+    const jx = shake ? Math.sin(shake * 41 + i * 2.1) * 1.4 : 0, jy = shake ? Math.cos(shake * 37 + i * 1.3) * 1.2 : 0;
+    D.el.style.transform = `translate3d(${rlF((s[0] + jx) * k)}px, ${rlF((s[1] + jy) * k)}px, ${rlF(s[2] * k)}px) matrix3d(${R[0]},${R[3]},${R[6]},0,${R[1]},${R[4]},${R[7]},0,${R[2]},${R[5]},${R[8]},0,0,0,0,1)`;
+    for (const x of D.sides) {
+      const n = [R[x.ax] * x.sg, R[3 + x.ax] * x.sg, R[6 + x.ax] * x.sg];
+      const lit = Math.max(0, n[0] * DC_L[0] + n[1] * DC_L[1] + n[2] * DC_L[2]);
+      x.shade.style.opacity = rlF(0.5 - lit * 0.5);
+    }
+    const fz = ccFloorZ(s[0], s[1]), hgt = Math.max(0, s[2] - DC_H - fz), sh = e.shadows[i];
+    sh.style.transform = `translate3d(${rlF(s[0] * k + hgt * k * 0.35)}px, ${rlF(s[1] * k + hgt * k * 0.5)}px, ${rlF((fz + 0.3) * k)}px) scale(${rlF(1 + hgt / 45)})`;
+    sh.style.opacity = rlF(Math.max(0.05, 0.5 - hgt / 70));
+    if (Math.hypot(s[0], s[1]) < CC_RIM) { cx += s[0]; cy += s[1]; nIn++; }
+  });
+  if (nIn) { cx /= nIn; cy /= nIn; }
+  // ズーム：真上に近い角度から、丼の中のサイコロの真ん中へ寄る
+  const q = zp < 0.5 ? 4 * zp * zp * zp : 1 - (-2 * zp + 2) ** 3 / 2;
+  const tilt = 34 - 26 * q, sc = 1 + 0.75 * q;
+  e.cam.style.transform = `scale(${rlF(sc)}) rotateX(${rlF(tilt)}deg) translate3d(${rlF(-cx * k * q)}px, ${rlF(-cy * k * q + 6 * k * (1 - q))}px, ${rlF(-20 * k * q)}px)`;
+  e.el.classList.toggle("zoom", zp > 0);
+}
+// 2つの置き方の間（拾い上げる動き）。向きは四元数をそのまま混ぜて正規化
+const ccMix = (A, B, s) => A.map((a, i) => { const b = B[i], dot = a[3] * b[3] + a[4] * b[4] + a[5] * b[5] + a[6] * b[6], sg = dot < 0 ? -1 : 1; return [0, 1, 2].map((j) => a[j] + (b[j] - a[j]) * s).concat(dcNorm4([3, 4, 5, 6].map((j) => a[j] + (sg * b[j] - a[j]) * s))); });
+// 1こま描く。まだ動いているなら true
+function ccDraw(e, g, sp, now, loud) {
+  const st = g.rl, cur = sp && sp.round === st.round && ["spin", "roll", "result"].includes(g.phase);
+  const live = cur && g.phase === "spin";
+  if (!live) {
+    // 止まっている：この回にもう振っていればその置き方、なければ前の置き方のまま（ズームは戻す）
+    const P = sp ? ccPlanOf(sp) : null;
+    const d = P ? dcPose(P, P.D + 1).d : ccIdle();
+    ccRender(e, d, P?.fix ?? null, 0);
+    e.rest = d;
+    rlState(e, "");
+    const ro = g.phase === "roll" ? g.actors[0] : null;
+    if (g.phase === "result" && cur) rlRead(e, `cr:${sp.n}:${sp.seq}`, () => [ccBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, `${ccYaku(sp.n).short} ・ ${sp.by === S.user?.uid ? "あなた" : memberName(sp.by)} ${sp.k}投目`)]);
+    else if (ro && cur && !e.mini) {
+      // 次に振る人を待つ間も、いま止まっているサイコロの役は出したままにする
+      rlRead(e, `cw:${sp.n}:${sp.seq}:${ro}:${st.cc?.k ?? 0}`, () => [ccBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, `${ccYaku(sp.n).short} → ${ro === S.user?.uid ? "あなた" : memberName(ro)}の番 ・ ${(st.cc?.k ?? 0) + 1}投目`)]);
+    } else rlWait(e, g.phase === "bet" ? (e.mini ? "" : `親：${st.oya === S.user?.uid ? "あなた" : memberName(st.oya)}`) : ro ? `${ro === S.user?.uid ? "あなた" : memberName(ro)}の番 ・ ${(st.cc?.k ?? 0) + 1}投目` : g.phase === "ended" ? "GAME SET" : "");
+    if (loud) rlRoll(0);
+    return false;
+  }
+  const P = ccPlanOf(sp), D = P.D, t = (now - sp.at) / 1000;
+  if (t < 0) {
+    // 投げる前：止まっていた所から手の中へ拾い上げて、軽く振る
+    const L = CC_LEAD / 1000, s = Math.max(0, Math.min(1, 1 + t / L)), ease = s * s * (3 - 2 * s);
+    const hand = P.sim.frames[0].d, from = e.rest ?? ccIdle();
+    ccRender(e, ease >= 1 ? hand : ccMix(from, hand, ease), P.fix, 0, s > 0.55 ? now / 1000 : 0);
+    rlState(e, "spinning");
+    rlWait(e, `${sp.by === S.user?.uid ? "あなた" : memberName(sp.by)} ・ ${sp.k}投目`, true);
+    return true;
+  }
+  const zp = e.mini ? 0 : Math.max(0, Math.min(1, (t - D - CC_ZOOM_AT) / CC_ZOOM_DUR));
+  const pose = dcPose(P, t).d;
+  ccRender(e, pose, P.fix, zp);
+  e.rest = pose;
+  const done = t >= D, shown = t >= D + CC_REVEAL;
+  rlState(e, done ? "done" : "spinning");
+  if (shown) rlRead(e, `c:${sp.n}:${sp.k}`, () => [ccBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, `${ccYaku(sp.n).short} ・ ${sp.k}投目`)]);
+  else rlWait(e, "• • •", true);
+  if (loud) ccSound(e, g, sp, P, t, D);
+  return t < D + 14;
+}
+// 音：陶器の丼に当たる「チン」・ふちに当たる音・サイコロどうし・机
+function ccSound(e, g, sp, P, t, D) {
+  const s = (e.snds ??= {});
+  const ev = P.sim.ev;
+  if (s.seed !== sp.seed) { const i = ev.findIndex((x) => x.t > t); e.snds = { seed: sp.seed, ei: i < 0 ? ev.length : i, last: {}, done: t >= D + CC_REVEAL }; return; }
+  let n = 0;
+  while (s.ei < ev.length && ev[s.ei].t <= t) {
+    const x = ev[s.ei++];
+    if (n >= 4 || x.t - (s.last[x.k] ?? -1) < 0.03) continue;
+    s.last[x.k] = x.t; n++;
+    rlSfx(x.k === "die" ? "dcDie" : x.k === "bowl" ? "ccBowl" : x.k === "rim" ? "ccRim" : "dcFloor", 0.25 + x.s * 0.75);
+  }
+  if (!s.zoom && t >= D + CC_ZOOM_AT) { s.zoom = true; if (t - D < CC_ZOOM_AT + 1) rlSfx("zoom", 0.6); }
+  if (!s.done && t >= D + CC_REVEAL) { s.done = true; if (t - D < CC_REVEAL + 2.5) rlResultFx(g, sp); }
+}
+// 出た目の札（小さなサイコロ3つと役の名前）。外に出たサイコロは「外」
+const ccBadge = (n, cls = "") => { const y = ccYaku(n); return h("span", { class: `dc-badge cc-badge ${y.y}${cls ? ` ${cls}` : ""}`, title: ccText(n) }, ccVals(n).map((v) => (v ? dcFace(v) : h("span", { class: "dc-f cc-out", "aria-label": "外" }, "外"))), h("b", null, y.short)); };
+// 1投が決まったときの演出
+function ccResultFx(g, sp) {
+  if (!cxOnce(`rlres${g.id}.${sp.seed}`)) return;
+  const y = ccYaku(sp.n), who = sp.by === S.user?.uid ? "あなた" : memberName(sp.by);
+  navigator.vibrate?.(y.y === "pin" || y.y === "zoro" ? [30, 50, 30, 50, 60] : [24, 40, 24]);
+  setTimeout(() => rlSfx(y.y === "pin" || y.y === "zoro" || y.y === "456" ? "fan" : y.y === "123" || y.y === "sb" ? "lose" : "land", 1), 140);
+  const again = y.y === "none" && sp.k < 3;
+  rlFlash(y.short, `${who}${sp.by === g.rl?.oya ? "（親）" : ""} ・ ${sp.k}投目${again ? " ・ 振り直し" : y.y === "none" ? " ・ 3回とも目なし" : ""}`, `rl-num cc ${y.y}`);
+}
+// 子が賭ける盤：「親と勝負」1か所だけ
+function ccBoard(g, d) {
+  const st = g.rl, a = d.bets.jB ?? 0;
+  const b = h("button", { type: "button", class: `rl-cell cc-cell${a ? " on" : ""}`, onclick: () => rlPlace(g, "jB"), "aria-label": `親と勝負に賭ける（いま ${a}）` },
+    h("small", null, "VS 親"), h("b", null, memberName(st.oya)), h("span", { class: "cc-bet" }, a ? `${a}` : "TAP"));
+  const pay = h("div", { class: "cc-pay" }, [["ピンゾロ", "×5"], ["ゾロ目", "×3"], ["シゴロ", "×2"], ["目", "×1"], ["ヒフミ", "−2倍"], ["目なし・ションベン", "−1倍"]].map(([k, v]) => h("span", null, h("b", null, k), h("i", null, v))));
+  return h("div", { class: "cc-board" }, b, pay);
+}
+// この回の全員の手（親がいちばん上）
+function ccHands(g, big = false) {
+  const st = g.rl, cc = st.cc, me = S.user?.uid, U = chU(g), r = `r${st.round}`;
+  const oya = st.oya, settled = g.phase === "result" || g.phase === "ended";
+  const roller = g.phase === "roll" ? g.actors[0] : g.phase === "spin" ? st.spin?.by : null;
+  const betOf = (u) => (g.phase === "bet" ? (S.isAdmin ? rlSum(rlParseBets(cardAct(g, "b", u, r))?.bets) : 0) : rlSum(st.bets?.[u]));
+  const us = [oya, ...g.players.filter((u) => u !== oya)];
+  const rows = us.map((u) => {
+    const hand = cc?.hands?.[u], th = (cc?.th ?? []).filter((x) => x[0] === u), lastN = hand?.n ?? th.at(-1)?.[1];
+    const isOya = u === oya, bet = isOya ? null : betOf(u);
+    const d = settled ? st.res?.[u]?.d : null;
+    const out = !isOya && g.phase !== "bet" && !bet;
+    return h("div", { class: `cc-row${u === me ? " me" : ""}${u === roller ? " turn" : ""}${out ? " out" : ""}${d > 0 ? " up" : d < 0 ? " down" : ""}` },
+      h("span", { class: `cc-role${isOya ? " oya" : ""}` }, isOya ? "親" : "子"),
+      h("span", { class: "cc-nm" }, u === me ? "あなた" : memberName(u), h("small", null, `${st.chips?.[u] ?? 0} ${U}`)),
+      h("span", { class: "cc-bt" }, isOya ? "" : bet ? `BET ${bet}` : g.phase === "bet" ? (g.actors.includes(u) ? "…" : "—") : "見送り"),
+      h("span", { class: "cc-hd" }, lastN ? ccBadge(lastN, "h") : u === roller ? h("em", null, "振る番") : null, th.length > 1 || (lastN && !hand) ? h("small", null, `${th.length}投目`) : null),
+      h("span", { class: "cc-d" }, d != null ? sgn(d) : ""));
+  });
+  const oy = cc?.hands?.[oya] ? ccYaku(cc.hands[oya].n) : null;
+  const note = cc?.none ? "子がだれも賭けなかったので、この回は流れました" : oy && oy.y !== "me" ? `親が${oy.short}で決着${oy.y === "123" || oy.y === "none" || oy.y === "sb" ? "（親の負け）" : "（親の勝ち）"}` : oy ? `親は${oy.short}。子はこれより強い役で勝ち` : g.phase === "bet" ? "子は親と勝負する額を賭けます" : "親から順に振ります（目なしは3回まで）";
+  return h("div", { class: `cc-hands${big ? " big" : ""}` }, h("div", { class: "gl-label" }, `第${st.round}回 ・ ${note}`), rows, cc?.short ? h("p", { class: "cx-note" }, "親のチップが足りないので、勝った子に割合で払いました") : null);
+}
+// 参加者：振る番・振っている間・結果
+function ccMemberBody(g) {
+  const uid = S.user.uid, st = g.rl, r = st.round;
+  const roller = g.phase === "roll" ? g.actors[0] : null, mine = roller === uid, seq = st.cc?.seq ?? 0;
+  const sent = mine && cardAct(g, "t", uid, `r${r}t${seq}`) != null;
+  let ctl = null;
+  if (mine) {
+    const b = cxBtn("play", sent ? "…" : "振る", `btn-filled rl-spin-btn cc-roll${sent ? "" : " need"}`, { disabled: sent, "aria-label": "サイコロを振る" });
+    b.addEventListener("click", () => { rlAudio(); rlSfx("dcDie", 0.6); navigator.vibrate?.(12); cardSend(g, "t", `r${r}t${seq}`, "go"); paintGameLive(); });
+    ctl = [h("div", { class: "cx-acts" }, b), h("p", { class: "cx-note" }, `あなたの番 ・ ${(st.cc?.k ?? 0) + 1}投目（目なしは3回まで）${st.oya === uid ? " ・ あなたは親" : ""}`)];
+  } else if (roller) ctl = h("p", { class: "cx-note rl-wait" }, `${memberName(roller)}さん${roller === st.oya ? "（親）" : ""}が振ります`);
+  const sp = st.spin;
+  if (g.phase === "spin" && sp) rlAtLand(g, sp);
+  return [h("section", { class: "cx-table rl-x cc" }, rlWheel(g, "m", { size: "big", loud: true }), ctl, ccHands(g),
+    g.phase === "result" || g.phase === "ended" ? rlScoreTable(g) : null)];
+}
+// 管理者の画面・表示用画面
+function ccTable(g, slot = "a", big = false) {
+  const wheel = rlWheel(g, slot, { size: big ? "huge" : "mid", loud: true }), sp = g.rl.spin;
+  if (g.phase === "spin" && sp) rlAtLand(g, sp);
+  return h("div", { class: `rl-tbl cc${big ? " big" : ""}` }, wheel,
+    h("div", { class: "rl-tbl-side" }, rlHistEl(g, 14), ccHands(g, big), g.phase === "result" || g.phase === "ended" ? rlScoreTable(g, big ? 4 : 0) : null));
+}
+
 const RL_POCKET = 360 / 37;
 // v103 玉が止まってから、入ったポケットへズームし始めるまで・ズームにかかる時間（秒）。数字はズームし終わってから出す
 const RL_ZOOM_AT = 0.9, RL_ZOOM_DUR = 1.3, RL_REVEAL = RL_ZOOM_AT + RL_ZOOM_DUR, RL_ZOOM_X = 2.7;
 // 数字が分かる（結果を見せてよい）瞬間：止まった時刻＋ズームの分（抽選は止まった瞬間）
-const rlRevealD = (g, sp) => (rlLottery(g) ? rlPlanOf(sp, rlLotPlan).D : rlDice(g) ? dcPlanOf(sp).D + DC_REVEAL : rlPlanOf(sp, rlCasinoPlan).D + RL_REVEAL);
+const rlRevealD = (g, sp) => (rlLottery(g) ? rlPlanOf(sp, rlLotPlan).D : rlDice(g) ? dcPlanOf(sp).D + DC_REVEAL : rlBac(g) ? bacPlanOf(sp.n).D + BAC_REVEAL : rlCrash(g) ? sp.dur / 1000 + CR_HOLD : rlCc(g) ? ccPlanOf(sp).D + CC_REVEAL : rlPlanOf(sp, rlCasinoPlan).D + RL_REVEAL);
 const RL_RT = 0.885, RL_RP = 0.612; // 玉が縁を転がる半径・ポケットの半径（円盤の絵の半径 100 に対する割合）
 // 動きの計画は、同じ回転（種・数字）なら1回だけ作って覚えておく（ゲームのデータには書かない）
 const RL_PLANS = new Map();
@@ -13253,20 +14178,21 @@ function rlSetItems(e, items) {
 }
 // ルーレットの円盤（同じ slot なら使い回す）。opt.size：mini｜mid｜big。opt.loud：音・知らせを出す円盤
 function rlWheel(g, slot, opt = {}) {
-  const key = `${slot}:${g.id}`, lot = rlLottery(g), dice = rlDice(g);
+  const key = `${slot}:${g.id}`, lot = rlLottery(g), dice = rlDice(g), bac = rlBac(g), crash = rlCrash(g), ccm = rlCc(g);
   let e = RLW.get(key);
-  if (!e || e.lot !== lot || !!e.isDice !== dice) {
+  if (!e || e.lot !== lot || !!e.isDice !== dice || !!e.isBac !== bac || !!e.isCrash !== crash || !!e.isCc !== ccm) {
     const id = ++RL_UID;
-    const parts = dice ? dcBuild() : lot ? rlBuildLot(id) : rlBuildCasino(id);
+    const parts = ccm ? ccBuild() : dice ? dcBuild() : bac ? bacBuild() : crash ? crBuild() : lot ? rlBuildLot(id) : rlBuildCasino(id);
     const read = h("div", { class: "rl-read", "aria-live": "off" });
     const snd = h("button", { type: "button", class: "rl-snd", "aria-label": "音" });
     snd.addEventListener("click", (ev) => { ev.stopPropagation(); rlSoundToggle(); });
-    const el = dice ? h("div", { class: "rl-wheel dc" }, parts.box, read, snd) : h("div", { class: `rl-wheel${lot ? " lot" : ""}` }, h("div", { class: "rl-disc" }, parts.svg, h("i", { class: "rl-vig", "aria-hidden": "true" })), read, snd);
-    e = { key, gid: g.id, lot, isDice: dice, el, read, snd, ...parts, theta: null, seen: performance.now(), readTxt: "", sig: "" };
+    const el = ccm ? h("div", { class: "rl-wheel cc" }, parts.box, read, snd) : dice ? h("div", { class: "rl-wheel dc" }, parts.box, read, snd) : bac ? h("div", { class: "rl-wheel bc" }, parts.box, read, snd) : crash ? h("div", { class: "rl-wheel cr" }, parts.box, read, snd) : h("div", { class: `rl-wheel${lot ? " lot" : ""}` }, h("div", { class: "rl-disc" }, parts.svg, h("i", { class: "rl-vig", "aria-hidden": "true" })), read, snd);
+    e = { key, gid: g.id, lot, isDice: dice, isBac: bac, isCrash: crash, isCc: ccm, el, read, snd, ...parts, theta: null, seen: performance.now(), readTxt: "", sig: "" };
     RLW.set(key, e);
   }
-  e.g = g; e.loud = !!opt.loud; e.mini = opt.size === "mini";
-  e.el.className = `rl-wheel ${opt.size ?? "mid"}${lot ? " lot" : ""}${dice ? " dc" : ""}${e.state ? ` ${e.state}` : ""}${e.el.classList.contains("zoom") ? " zoom" : ""}`;
+  e.g = g; e.loud = !!opt.loud; e.mini = opt.size === "mini"; e.withCash = !!opt.cash;
+  if (crash && !e.cashOn) { e.cashOn = true; e.cash.addEventListener("click", (ev) => { ev.stopPropagation(); rlAudio(); crCashOut(S.games.get(e.gid) ?? e.g); rlDraw(e, nowS(), false); }); }
+  e.el.className = `rl-wheel ${opt.size ?? "mid"}${lot ? " lot" : ""}${dice ? " dc" : ""}${bac ? " bc" : ""}${crash ? " cr" : ""}${ccm ? " cc" : ""}${e.state ? ` ${e.state}` : ""}${e.el.classList.contains("zoom") ? " zoom" : ""}`;
   e.snd.hidden = !!e.mini;
   e.snd.textContent = RLA.on ? "♪" : "×";
   e.snd.classList.toggle("off", !RLA.on);
@@ -13318,7 +14244,7 @@ function rlDraw(e, now, loud) {
   const st = g.rl;
   if (!st) return false;
   const sp = st.spin;
-  return e.isDice ? dcDraw(e, g, sp, now, loud) : e.lot ? rlDrawLot(e, g, sp, now, loud) : rlDrawCasino(e, g, sp, now, loud);
+  return e.isCc ? ccDraw(e, g, sp, now, loud) : e.isDice ? dcDraw(e, g, sp, now, loud) : e.isBac ? bacDraw(e, g, sp, now, loud) : e.isCrash ? crDraw(e, g, sp, now, loud) : e.lot ? rlDrawLot(e, g, sp, now, loud) : rlDrawCasino(e, g, sp, now, loud);
 }
 function rlState(e, cls) {
   if (e.state === cls) return;
@@ -13486,6 +14412,12 @@ function rlSfx(type, vol = 1) {
     else if (type === "dcGlass") { osc("sine", 3900, 3700, 0.1, 0.1); noise(6200, 6, 0.14, 0.03); }
     else if (type === "dcWall") { noise(2100, 2, 0.38, 0.05); osc("triangle", 1500, 1200, 0.05, 0.04); }
     else if (type === "dcFloor") { noise(1300, 1.5, 0.42, 0.05); osc("triangle", 700, 420, 0.09, 0.05); }
+    // v104 バカラ：カードを滑らせて配る音・めくる音
+    else if (type === "ccBowl") { osc("sine", 2950, 2900, 0.16, 0.42); osc("sine", 4420, 4380, 0.07, 0.28); noise(5200, 4, 0.22, 0.025); }
+    else if (type === "ccRim") { osc("sine", 2300, 2260, 0.14, 0.3); noise(3600, 3, 0.3, 0.03); }
+    else if (type === "crBoom") { osc("sine", 120, 38, 0.7, 0.5); noise(700, 0.8, 0.6, 0.35); noise(2600, 1.2, 0.25, 0.12); }
+    else if (type === "bcDeal") { noise(2400, 0.9, 0.32, 0.16); noise(5200, 2, 0.12, 0.05, 0.1); }
+    else if (type === "bcFlip") { noise(3600, 1.6, 0.5, 0.05); osc("triangle", 1100, 700, 0.06, 0.05); }
     else if (type === "beat") { osc("sine", 62, 44, 0.55, 0.2); osc("sine", 56, 40, 0.38, 0.18, 0.2); }
     else if (type === "win") [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => osc("triangle", f, f, 0.22, 0.32, i * 0.09));
     else if (type === "lose") osc("sawtooth", 196, 98, 0.08, 0.5);
@@ -13546,8 +14478,11 @@ function rlResultFx(g, sp) {
     rlFlash(`「${sp.items?.[sp.n] ?? "?"}」`, `第${sp.round ?? g.rl?.round ?? ""}回${sp.by ? ` ・ ${memberName(sp.by)}が回しました` : ""}`, "rl-lot");
     return;
   }
+  if (ccIs(sp.n)) return ccResultFx(g, sp);
   const my = rlMyBets(g), d = my ? rlJudge(rlO(g.opts), my, sp.n).d : null;
   setTimeout(() => rlSfx(d == null ? "fan" : d > 0 ? "win" : "lose", 1), 160);
+  if (crIs(sp.n)) { const cd = crMyD(g, sp); return rlFlash(crFmt(Math.round(crX(sp.n) * 100)), `CRASHED${cd == null ? "" : ` ・ あなた ${sgn(cd)} ${chU(g)}`}`, `rl-num cr${cd > 0 ? " up" : cd < 0 ? " down" : ""}`); }
+  if (bacIs(sp.n)) { const w = bacWinner(sp.n), { p, b } = bacCards(sp.n); return rlFlash(w === "T" ? "TIE" : w === "P" ? "PLAYER" : "BANKER", `${bacTot(p)} − ${bacTot(b)}${d == null ? "" : ` ・ あなた ${sgn(d)} ${chU(g)}`}`, `rl-num bc ${w}${d > 0 ? " up" : d < 0 ? " down" : ""}`); }
   if (dcIs(sp.n)) return rlFlash(String(dcTotal(sp.n)), `${dcVals(sp.n).join("・")} ${dcKind(sp.n)}${d == null ? "" : ` ・ あなた ${sgn(d)} ${chU(g)}`}`, `rl-num dc ${dcTriple(sp.n) ? "tr" : dcTotal(sp.n) <= 10 ? "sm" : "bg"}${d > 0 ? " up" : d < 0 ? " down" : ""}`);
   rlFlash(String(sp.n), `${RL_CNAME[rlColor(sp.n)]}${d == null ? "" : ` ・ あなた ${sgn(d)} ${chU(g)}`}`, `rl-num ${rlColor(sp.n)}${d > 0 ? " up" : d < 0 ? " down" : ""}`);
 }
@@ -13561,7 +14496,7 @@ function rlFlash(big, sub, cls = "") {
 // 締め切った瞬間（NO MORE BETS / SPIN!）を全員の画面に出す
 function rlFlashCheck(g) {
   const sp = g.rl?.spin;
-  if (g.phase !== "spin" || !sp || !cxOnce(`rlsp${g.id}.${sp.seed}`)) return;
+  if (g.phase !== "spin" || !sp || rlCc(g) || !cxOnce(`rlsp${g.id}.${sp.seed}`)) return;
   if (nowS() - sp.at > 400) return;
   rlAudio();
   if (rlLottery(g)) rlFlash("SPIN!", sp.by ? `${memberName(sp.by)}が回します` : "", "rl-go");
@@ -13630,19 +14565,21 @@ function rlBoard(mine, opt = {}) {
 // 最近出た数字
 const rlHistEl = (g, n = 10) => {
   const hs = (g.rl?.hist ?? []).slice(-n).reverse();
-  return hs.length ? h("div", { class: `rl-hist${dcIs(hs[0]) ? " dc" : ""}`, "aria-label": dcIs(hs[0]) ? "最近出た目" : "最近出た数字" }, hs.map((x, i) => (dcIs(x) ? dcBadge(x, `h${i === 0 ? " last" : ""}`) : h("b", { class: `rl-hn ${rlColor(x)}${i === 0 ? " last" : ""}` }, String(x))))) : null;
+  return hs.length ? h("div", { class: `rl-hist${dcIs(hs[0]) ? " dc" : bacIs(hs[0]) ? " bc" : crIs(hs[0]) ? " cr" : ccIs(hs[0]) ? " cc" : ""}`, "aria-label": dcIs(hs[0]) ? "最近出た目" : ccIs(hs[0]) ? "最近の親の目" : bacIs(hs[0]) || crIs(hs[0]) ? "最近の結果" : "最近出た数字" }, hs.map((x, i) => (rlBadgeOf(x) ? rlBadgeOf(x, `h${i === 0 ? " last" : ""}`) : h("b", { class: `rl-hn ${rlColor(x)}${i === 0 ? " last" : ""}` }, String(x))))) : null;
 };
 // v102 当たり・はずれの表
 // 1か所の賭けの結果（win 当たり／half 0 で半分戻り／lose はずれ）と、チップの増減
 function rlBetOut(o, k, a, n) {
   if (k[0] === "d") return dcWins(k, n) ? { r: "win", d: a * dcPay(k, n) } : { r: "lose", d: -a };
+  if (k[0] === "k") return bacOut(k, a, n);
+  if (k.startsWith("cx")) return crOut(k, a, n);
   if (rlWins(k, n)) return { r: "win", d: a * rlPay(k) };
   if (n === 0 && o.partage && rlEvenMoney(k)) return { r: "half", d: -(a - Math.floor(a / 2)) };
   return { r: "lose", d: -a };
 }
-const RL_OUT = { win: ["○", "当たり"], half: ["△", "半分戻り"], lose: ["×", "はずれ"] };
+const RL_OUT = { win: ["○", "当たり"], half: ["△", "半分戻り"], push: ["＝", "戻り（タイ）"], lose: ["×", "はずれ"] };
 // 出た数字の説明（例：17 黒・奇数・1〜18）
-const rlNumBits = (n) => (dcIs(n) ? dcBits(n) : n === 0 ? "緑（0）" : `${RL_CNAME[rlColor(n)]}・${n % 2 ? "奇数" : "偶数"}・${n <= 18 ? "1〜18" : "19〜36"}`);
+const rlNumBits = (n) => (dcIs(n) ? dcBits(n) : bacIs(n) ? bacBits(n) : crIs(n) ? crBits(n) : ccIs(n) ? ccYaku(n).name : n === 0 ? "緑（0）" : `${RL_CNAME[rlColor(n)]}・${n % 2 ? "奇数" : "偶数"}・${n <= 18 ? "1〜18" : "19〜36"}`);
 // その回の全員の賭け：1か所ずつ ○当たり／×はずれ と増減。自分がいちばん上
 function rlResTable(g, n) {
   const st = g.rl, o = rlO(g.opts), U = chU(g), me = S.user?.uid;
@@ -13652,7 +14589,7 @@ function rlResTable(g, n) {
   const dOf = (u) => rlJudge(o, st.bets[u], n).d;
   bet.sort((a, b) => (b === me) - (a === me) || dOf(b) - dOf(a));
   const cap = h("div", { class: "rl-rt-cap" }, h("small", null, `第${st.spin?.round ?? st.round}回の当たり・はずれ`),
-    h("span", { class: "rl-rt-num" }, dcIs(n) ? dcBadge(n) : h("b", { class: `rl-hn ${rlColor(n)}` }, String(n)), h("span", null, rlNumBits(n))));
+    h("span", { class: "rl-rt-num" }, rlBadgeOf(n) ? rlBadgeOf(n) : h("b", { class: `rl-hn ${rlColor(n)}` }, String(n)), h("span", null, rlNumBits(n))));
   if (!bet.length) return h("div", { class: "rl-res" }, cap, h("p", { class: "cx-note" }, "この回はだれも賭けていません"));
   const rows = [];
   for (const u of bet) {
@@ -13687,10 +14624,10 @@ function rlScoreTable(g, max = 0) {
   return h("div", { class: "rl-res rl-score" },
     h("div", { class: "rl-rt-cap" }, h("small", null, evs.length < all.length ? `成績表（直近${evs.length}回 ・ 合計は${all.length}回分）` : `成績表（${all.length}回分）`)),
     h("div", { class: "rl-tw" }, h("table", { class: "rl-rt rl-sc" },
-      h("thead", null, h("tr", null, h("th", { scope: "col" }, "回"), h("th", { scope: "col" }, rlDice(g) ? "目" : "数字"),
+      h("thead", null, h("tr", null, h("th", { scope: "col" }, "回"), h("th", { scope: "col" }, rlCc(g) ? "親の目" : rlDice(g) ? "目" : rlBac(g) || rlCrash(g) ? "結果" : "数字"),
         us.map((u) => h("th", { scope: "col", class: `rl-sc-nm${u === me ? " me" : ""}`, title: memberName(u) }, u === me ? "あなた" : memberName(u))))),
       h("tbody", null, evs.map((e) => h("tr", null, h("th", { scope: "row" }, `${e.round}`),
-        h("td", null, dcIs(e.n) ? dcBadge(e.n, "h") : h("b", { class: `rl-hn ${rlColor(e.n)}` }, String(e.n))),
+        h("td", null, rlBadgeOf(e.n) ? rlBadgeOf(e.n, "h") : h("b", { class: `rl-hn ${rlColor(e.n)}` }, String(e.n))),
         us.map((u) => cell(e.sum && Object.hasOwn(e.sum, u) ? e.sum[u] : null))))),
       h("tfoot", null,
         h("tr", null, h("th", { scope: "row", colspan: "2" }, "合計"), us.map((u) => cell((st.chips?.[u] ?? 0) - (st.start?.[u] ?? st.chips?.[u] ?? 0), " sum"))),
@@ -13754,9 +14691,10 @@ function rlMemberBody(g) {
     return [h("section", { class: "cx-table rl-x lot" }, rlWheel(g, "m", { size: "big", loud: true }), ctl, rlLotTable(g))];
   }
   const chips = st.chips?.[uid] ?? 0;
+  if (rlCc(g) && g.phase !== "bet") return ccMemberBody(g);
   if (g.phase === "bet") {
     const canBet = g.actors.includes(uid);
-    if (!canBet) return [h("section", { class: "cx-table rl-x" }, rlWheel(g, "m", { size: "big", loud: true }), h("p", { class: "cx-note rl-wait" }, chips <= 0 ? `${U} 0 ・ この回は見るだけ` : "ほかの人が賭けています"), rlHistEl(g))];
+    if (!canBet) return [h("section", { class: `cx-table rl-x${rlCc(g) ? " cc" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }), h("p", { class: "cx-note rl-wait" }, rlCc(g) && st.oya === uid ? "あなたが親です ・ 子が賭けています" : chips <= 0 ? `${U} 0 ・ この回は見るだけ` : "ほかの人が賭けています"), rlCc(g) ? ccHands(g) : rlHistEl(g))];
     const d = rlDraft(g), sum = rlSum(d.bets), ch = rlChipChoices(o, chips);
     let v = RLX.chip.get(g.id);
     if (!ch.includes(v)) { v = ch.find((x) => x >= 5) ?? ch[0]; RLX.chip.set(g.id, v); }
@@ -13764,7 +14702,7 @@ function rlMemberBody(g) {
     const canPrev = prev && rlSum(prev) <= chips && Object.values(prev).every((a) => !o.betMax || a <= o.betMax);
     const canDbl = sum > 0 && sum * 2 <= chips && Object.values(d.bets).every((a) => !o.betMax || a * 2 <= o.betMax);
     const head = h("div", { class: "rl-head" }, rlWheel(g, "m", { size: "mini", loud: true }),
-      h("div", { class: "rl-head-mid" }, rlHistEl(g, rlDice(g) ? 4 : 8) ?? h("small", { class: "rl-hint" }, rlDice(g) ? "賭けたい所をタップしてチップを置く" : "数字・赤黒などをタップしてチップを置く")),
+      h("div", { class: "rl-head-mid" }, rlHistEl(g, rlDice(g) ? 4 : rlBac(g) || rlCrash(g) || rlCc(g) ? 6 : 8) ?? h("small", { class: "rl-hint" }, rlCc(g) ? "親と勝負する額をチップで置く" : rlDice(g) ? "賭けたい所をタップしてチップを置く" : rlBac(g) ? "PLAYER・BANKER・TIE をタップしてチップを置く" : rlCrash(g) ? "BET をタップしてチップを置く" : "数字・赤黒などをタップしてチップを置く")),
       h("div", { class: `rl-sum${sum ? "" : " need"}` }, h("small", null, "BET"), h("b", null, String(sum)), h("small", null, `残り ${chips - sum} ${U}`)));
     const chipRow = h("div", { class: "rl-chips", role: "radiogroup", "aria-label": "置くチップ" }, ch.map((x) =>
       h("button", { type: "button", role: "radio", class: `rl-chip c${RL_CHIPS.indexOf(x)}${x === v ? " on" : ""}`, "aria-checked": String(x === v), onclick: () => { RLX.chip.set(g.id, x); paintGameLive(); } }, rlAbbr(x))));
@@ -13776,24 +14714,25 @@ function rlMemberBody(g) {
       cxBtn("plus", "×2", "btn-filled", { disabled: !canDbl, onclick: () => { d.hist = []; rlSetBets(g, d, Object.fromEntries(Object.entries(d.bets).map(([k, a]) => [k, a * 2]))); } }),
       cxBtn("check", d.ready ? "OK済" : "準備OK", `btn-filled${d.ready ? " on" : sum ? " need" : ""}`, { onclick: () => { d.ready = !d.ready; rlSendDraft(g, d); paintGameLive(); } }));
     return [h("section", { class: "cx-table rl-x bet" }, head,
-      rlDice(g) ? dcBoard(d.bets, { tap: (s) => rlPlace(g, s) }) : rlBoard(d.bets, { tap: (s) => rlPlace(g, s), note: o.betMax ? `1か所 ${o.betMin}–${o.betMax}` : `1か所 ${o.betMin}〜` }),
+      rlCc(g) ? ccBoard(g, d) : rlDice(g) ? dcBoard(d.bets, { tap: (s) => rlPlace(g, s) }) : rlBac(g) ? bacBoard(d.bets, { tap: (s) => rlPlace(g, s) }) : rlCrash(g) ? crBoard(g, d) : rlBoard(d.bets, { tap: (s) => rlPlace(g, s), note: o.betMax ? `1か所 ${o.betMin}–${o.betMax}` : `1か所 ${o.betMin}〜` }),
       chipRow, acts,
-      h("p", { class: "cx-note" }, `${d.ready ? "準備OK ・ 締め切りまで変えられます" : "タップで置く ・ 締め切りまで変えられます"}${rlDice(g) ? ` ・ 1か所 ${o.betMin}${o.betMax ? `–${o.betMax}` : "〜"}` : o.partage ? " ・ 0は赤黒などが半分戻る" : " ・ 0は外側の賭けが負け"}`))];
+      h("p", { class: "cx-note" }, `${d.ready ? "準備OK ・ 締め切りまで変えられます" : "タップで置く ・ 締め切りまで変えられます"}${rlCc(g) ? ` ・ ${o.betMin}${o.betMax ? `–${o.betMax}` : "〜"}` : rlDice(g) || rlBac(g) || rlCrash(g) ? ` ・ 1か所 ${o.betMin}${o.betMax ? `–${o.betMax}` : "〜"}` : o.partage ? " ・ 0は赤黒などが半分戻る" : " ・ 0は外側の賭けが負け"}`))];
   }
   // 回っている間・結果
   const my = st.bets?.[uid];
-  const sp = st.spin, landed = sp && (g.phase !== "spin" || (nowS() - sp.at) / 1000 >= rlRevealD(g, sp));
+  const sp = st.spin, landed = sp && (g.phase !== "spin" || (!rlCrash(g) && (nowS() - sp.at) / 1000 >= rlRevealD(g, sp)));
   if (g.phase === "spin" && !landed && sp) rlAtLand(g, sp);
   const n = landed && sp ? sp.n : null;
-  if (n != null) return [h("section", { class: "cx-table rl-x spin landed" }, rlWheel(g, "m", { size: "big", loud: true }), rlResTable(g, n),
+  if (n != null) return [h("section", { class: "cx-table rl-x spin landed" }, rlWheel(g, "m", { size: "big", loud: true, cash: true }), rlResTable(g, n),
     g.phase === "spin" ? null : rlScoreTable(g))];
-  return [h("section", { class: `cx-table rl-x spin${landed ? " landed" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }),
+  return [h("section", { class: `cx-table rl-x spin${landed ? " landed" : ""}` }, rlWheel(g, "m", { size: "big", loud: true, cash: true }),
     h("div", { class: "rl-me" }, h("div", { class: "gl-label" }, "MY BETS", my ? h("small", null, ` ${rlSum(my)} ${U}${n != null && st.res?.[uid] ? ` ・ ${sgn(st.res[uid].d)}` : ""}`) : null),
       rlBetsList(g, my, n))),
     h("div", { class: "rl-crowd-wrap" }, rlCrowd(g))];
 }
 // 管理者の画面・表示用画面のテーブル
 function rlTable(g, slot = "a", big = false) {
+  if (rlCc(g)) return ccTable(g, slot, big);
   const st = g.rl, lot = rlLottery(g), U = chU(g);
   const wheel = rlWheel(g, slot, { size: big ? "huge" : "mid", loud: true });
   if (lot) {
@@ -13847,7 +14786,8 @@ function cardTick(g) {
     const st = g.rl, r = `r${st.round}`;
     if (g.phase === "bet" && !manual && (timeUp || (g.actors.length > 0 && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready)))) fn = rlSpin;
     else if (g.phase === "ready" && g.actKey === "s" && (timeUp || cardAct(g, "s", rlSpinner(g), r) != null)) fn = rlSpin;
-    else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + (rlLottery(g) ? 0 : (rlDice(g) ? DC_REVEAL : RL_REVEAL) * 1000) + 400) fn = rlSettle;
+    else if (g.phase === "roll" && rlCc(g) && (timeUp || cardAct(g, "t", g.actors[0], `${r}t${st.cc?.seq ?? 0}`) != null)) fn = rlSpin;
+    else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + (rlLottery(g) ? 0 : (rlDice(g) ? DC_REVEAL : rlBac(g) ? BAC_REVEAL : rlCrash(g) ? CR_HOLD : rlCc(g) ? CC_REVEAL + CC_HOLD : RL_REVEAL) * 1000) + 400) fn = rlSettle;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = rlNext;
   } else {
     const st = g.dfg;
@@ -13869,7 +14809,7 @@ function cardForceEnd(g) {
 // ================= 表示
 function cardPhaseText(g) {
   if (g.phase === "ended") return "ゲーム終了";
-  if (g.kind === "rl") return `第${g.rl?.round ?? 1}回${{ bet: "・賭け", spin: "・回転中", result: "・結果" }[g.phase] ?? ""}（全${rlO(g.opts).rounds}回）`;
+  if (g.kind === "rl") return `第${g.rl?.round ?? 1}回${{ bet: "・賭け", spin: rlCc(g) ? "・振っています" : "・回転中", roll: "・振る番", result: "・結果" }[g.phase] ?? ""}（全${rlO(g.opts).rounds}回）`;
   const o = g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts);
   if (g.kind === "bj") return `第${g.bj.round}回${g.phase === "bet" ? "・賭け" : g.phase === "insure" ? "・保険" : g.phase === "play" ? "・勝負中" : "・結果"}（全${o.rounds}回）`;
   return `第${g.dfg.round}回${g.phase === "exchange" ? "・カード交換" : g.phase === "result" ? "・結果" : ""}（全${o.rounds}回）${dfgRevNow(g.dfg) ? "・強さが逆" : ""}`;
@@ -13877,8 +14817,8 @@ function cardPhaseText(g) {
 // 参加者のトランプ画面の上に出す短い表記（例：BJ · R1/3 · BET）
 function cardPhaseShort(g) {
   if (g.kind === "rl") {
-    const ph = g.phase === "ended" ? "END" : { bet: "BET", spin: rlDice(g) ? "SHAKE" : "SPIN", result: "RESULT", ready: "READY" }[g.phase] ?? "PLAY";
-    return [rlDice(g) ? "SIC BO" : rlLottery(g) ? "LOTTERY" : "ROULETTE", g.phase === "ended" ? null : `R${g.rl?.round ?? 1}/${rlO(g.opts).rounds}`, ph].filter(Boolean).join(" · ");
+    const ph = g.phase === "ended" ? "END" : { bet: "BET", spin: rlDice(g) ? "SHAKE" : rlBac(g) ? "DEAL" : rlCrash(g) ? "LIVE" : rlCc(g) ? "THROW" : "SPIN", result: "RESULT", ready: "READY", roll: "ROLL" }[g.phase] ?? "PLAY";
+    return [rlDice(g) ? "SIC BO" : rlBac(g) ? "BACCARAT" : rlCrash(g) ? "CRASH" : rlCc(g) ? "CHINCHIRO" : rlLottery(g) ? "LOTTERY" : "ROULETTE", g.phase === "ended" ? null : `R${g.rl?.round ?? 1}/${rlO(g.opts).rounds}`, ph].filter(Boolean).join(" · ");
   }
   const bj = g.kind === "bj", o = bj ? bjO(g.opts) : dfgO(g.opts);
   const r = bj ? g.bj?.round : g.dfg?.round;
@@ -13890,11 +14830,17 @@ function cardPrompt(g) {
   if (g.kind === "rl") {
     const man = cardManual(g.opts);
     if (g.phase === "ready") { const sp = rlSpinner(g); return sp ? `${memberName(sp)}さんが回します。` : "管理者が回します。"; }
-    if (g.phase === "spin") return rlLottery(g) ? "回っています…" : rlDice(g) ? "ノーモアベット。サイコロを振っています…" : "ノーモアベット。玉が回っています…";
+    if (rlCc(g)) {
+      const u = ccRoller(g);
+      if (g.phase === "roll") return `${memberName(u)}さん${u === g.rl.oya ? "（親）" : ""}が振る番です（${(g.rl.cc?.k ?? 0) + 1}投目）。自分のスマホの「振る」でサイコロを投げます。`;
+      if (g.phase === "spin") return `${memberName(u)}さんがサイコロを投げました…`;
+      if (g.phase === "bet") return `親は${memberName(g.rl.oya)}さん。子は親と勝負する額を賭けてください。${man ? "ディーラー（管理者）が締め切ると、親から振ります。" : "全員が「準備OK」を押すか、時間になると締め切って親から振ります。"}`;
+    }
+    if (g.phase === "spin") return rlLottery(g) ? "回っています…" : rlDice(g) ? "ノーモアベット。サイコロを振っています…" : rlBac(g) ? "ノーモアベット。カードを配っています…" : rlCrash(g) ? "倍率が上がっています。はじける前に CASH OUT！" : "ノーモアベット。玉が回っています…";
     if (g.phase === "result" && rlLottery(g)) return `「${g.rl?.hist?.at(-1) ?? "?"}」に決まりました。${rlIsLast(g) ? "まもなく終わります。" : "まもなく次の回です。"}`;
     if (g.phase === "result" && rlIsLast(g)) return "最後の回の結果です。まもなく順位が出ます。";
     if (g.phase === "result") return `この回の結果です。${rlO(g.opts).autoNext && !man ? "まもなく次の回が始まります。" : man ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。"}`;
-    return `${rlDice(g) ? "小・大・合計などにチップを置いてください。" : "数字や赤・黒などにチップを置いてください。"}${man ? `ディーラー（管理者）が締め切ると${rlDice(g) ? "サイコロを振ります" : "玉を投げます"}。` : "全員が「準備OK」を押すか、時間になると締め切ります。"}`;
+    return `${rlDice(g) ? "小・大・合計などにチップを置いてください。" : rlBac(g) ? "プレイヤー・バンカー・タイなどにチップを置いてください。" : rlCrash(g) ? "賭ける額と、自動で降りる倍率（AUTO）を決めてください。" : "数字や赤・黒などにチップを置いてください。"}${man ? `ディーラー（管理者）が締め切ると${rlDice(g) ? "サイコロを振ります" : rlBac(g) ? "カードを配ります" : rlCrash(g) ? "倍率が上がり始めます" : "玉を投げます"}。` : "全員が「準備OK」を押すか、時間になると締め切ります。"}`;
   }
   const manual = cardManual(g.opts), auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !manual;
   const after = auto ? "まもなく次の回が始まります。" : manual ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
@@ -14076,7 +15022,7 @@ GC.focus = new Map(); GC.fan = new Map();
 const CX_WIDE_MQ = "(min-width: 960px) and (min-height: 560px) and (orientation: landscape)", CX_ME_PC = 440;
 const cxWide = () => !!window.matchMedia?.(CX_WIDE_MQ).matches;
 const cxSet = (el, t) => { el.style.marginLeft = t.ml; el.style.setProperty("--r", `${t.r}deg`); el.style.setProperty("--dy", `${t.dy}px`); el.style.setProperty("--lift", `${t.lift}px`); el.style.opacity = String(t.op); };
-function cxHandFan(g, cards, sel, tap) {
+function cxHandFan(g, cards, sel, tap, dim = null) {
   const n = cards.length;
   const W = (cxWide() ? CX_ME_PC : Math.min(window.innerWidth || 390, 640)) - 40 - 36;
   const cw = (window.innerWidth || 390) <= 380 ? 50 : 54; // style.css の @media (max-width: 380px) のカードの幅と合わせる
@@ -14096,8 +15042,10 @@ function cxHandFan(g, cards, sel, tap) {
     const t = { ml: i === 0 ? "0px" : need ? `calc((100% - ${cw}px) * ${(gw[i] / sw).toFixed(4)} - ${cw}px)` : `${(step - cw).toFixed(1)}px`,
       r: ((x - 0.5) * spread).toFixed(2), dy: ((2 * x - 1) ** 2 * 9).toFixed(1), lift: sel.has(c) ? 20 : open(i) ? 7 : 0, op: 1 };
     next.set(c, t);
-    const el = h("button", { type: "button", class: `dfg-card${sel.has(c) ? " on" : ""}${open(i) ? " near" : ""}`, "aria-pressed": String(sel.has(c)),
-      onclick: () => { if (need && !open(i)) { GC.focus.set(g.id, i); paintGameLive(); } else tap(c); } }, cardEl(c));
+    const off = !!dim?.has(c); // v104 いまは出せないカード：グレーにして選べないようにする
+    const el = h("button", { type: "button", class: `dfg-card${sel.has(c) ? " on" : ""}${open(i) ? " near" : ""}${off ? " dim" : ""}`, "aria-pressed": String(sel.has(c)),
+      ...(off ? { "aria-disabled": "true", "aria-label": "いまは出せないカード" } : {}),
+      onclick: () => { if (need && !open(i)) { GC.focus.set(g.id, i); paintGameLive(); } else if (!off) tap(c); } }, cardEl(c));
     cxSet(el, prev.get(c) ?? { ...t, r: 0, dy: 46, lift: 0, op: 0 });
     return [el, t];
   });
@@ -14285,6 +15233,10 @@ function cardMemberBody(g) {
   const stage = step ? (step.give.length < step.need.give ? "give" : step.need.disc && !step.disc ? "disc" : step.need.bomb ? "bomb" : "disc") : null;
   const shown = step ? hand.filter((c) => !step.play.includes(c) && !(stage !== "give" && step.give.includes(c)) && !(stage === "bomb" && (step.disc ?? []).includes(c))) : hand;
   for (const c of [...sel]) if (!shown.includes(c)) sel.delete(c);
+  // v104 自分の番（出すカードを選ぶとき）は、場に対して出せないカードをグレーにする
+  const playable = myTurn && !step && sentT == null ? dfgPlayable(g, hand) : null;
+  const dim = playable ? new Set(shown.filter((c) => !playable.has(c))) : null;
+  if (dim) for (const c of dim) sel.delete(c);
   const picked = shown.filter((c) => sel.has(c));
   const err = myTurn && !step ? dfgCheck(g, hand, picked) : null;
   if (exTo) {
@@ -14326,7 +15278,7 @@ function cardMemberBody(g) {
       } }),
       cxBtn("skip", "PASS", "btn-small", { disabled: !st.field || sentT != null, onclick: () => send("pass") }),
       picked.length ? h("button", { class: "text-btn cx-redo", onclick: () => { sel.clear(); paintGameLive(); } }, "↺ 選び直す") : null);
-    note = h("p", { class: `cell-sub${err && picked.length ? " dfg-err" : ""}` }, sentT != null ? "✓ 送信済み" : picked.length ? (err ? `✕ ${err}` : "✓ OK") : st.field ? "出せない → PASS" : "場は空 → 何でも出せる");
+    note = h("p", { class: `cell-sub${err && picked.length ? " dfg-err" : ""}` }, sentT != null ? "✓ 送信済み" : picked.length ? (err ? `✕ ${err}` : "✓ OK") : st.field ? (playable?.size ? "明るいカードが出せる（グレーは出せない）" : "出せるカードがない → PASS") : "場は空 → 何でも出せる");
   }
   const f = st.field, flags = dfgFlags(st), rev = dfgRevNow(st);
   if (flags.length) out.unshift(h("div", { class: "cx-flags" }, flags.map((x) => h("span", null, x)), rev ? h("span", { class: "hot" }, "強さ逆転 ⇅") : null));
@@ -14346,7 +15298,7 @@ function cardMemberBody(g) {
     h("div", { class: "gl-label" }, step ? "PLAY" : myTurn ? "YOUR TURN" : `HAND ×${hand.length}`),
     step ? h("div", { class: "dfg-cards fixed" }, cardRow(step.play)) : null,
     step ? h("div", { class: "gl-label" }, stage === "give" ? "GIVE" : stage === "bomb" ? "BOMB ・ 数字を選ぶ" : "DISCARD") : null,
-    shown.length ? cxHandFan(g, shown, sel, tap)
+    shown.length ? cxHandFan(g, shown, sel, tap, dim)
       : h("p", { class: "cell-sub" }, st.done.includes(uid) ? `✓ ${st.done.indexOf(uid) + 1}位あがり` : (st.down ?? []).includes(uid) ? (st.fallen === uid ? "都落ち（最下位）" : "反則上がり（最下位）") : "…"),
     actions, note)));
   if (st.points && Object.keys(st.points).length) out.push(h("div", { class: "cell-sub dfg-points cx-points" }, h("b", null, "PT"), " ", st.seats.map((u) => `${memberName(u)} ${st.points[u] ?? 0}`).join(" · ")));
@@ -14455,15 +15407,17 @@ function demoBotMove(g, u) {
   if (g.kind === "rl") {
     const st = g.rl, r = `r${st.round}`;
     if (g.phase === "ready" && rlSpinner(g) === u && cardAct(g, "s", u, r) == null) return ["s", `${r}:go`];
+    if (g.phase === "roll" && g.actors[0] === u && cardAct(g, "t", u, `${r}t${st.cc?.seq ?? 0}`) == null) return ["t", `${r}t${st.cc?.seq ?? 0}:go`];
     if (g.phase !== "bet" || !g.actors.includes(u) || cardAct(g, "b", u, r) != null) return null;
     // CPU：1〜3か所に、持っているチップの1割くらいずつ
     const o = rlO(g.opts), chips = st.chips?.[u] ?? 0, ch = rlChipChoices(o, chips);
     if (!ch.length) return ["b", `${r}:!`];
-    const spots = rlDice(g) ? ["dS", "dB", "dO", "dE", "dS", "dB", `dT${4 + Math.floor(Math.random() * 14)}`, `dn${1 + Math.floor(Math.random() * 6)}`, `dd${1 + Math.floor(Math.random() * 6)}`, "dA", "dc12", "dc36"]
+    const spots = rlCc(g) ? ["jB"] : rlCrash(g) ? ["cx150", "cx200", "cx200", "cx300", "cx500", "cx1000", "cx120"] : rlBac(g) ? ["kP", "kB", "kP", "kB", "kP", "kB", "kT", "kPP", "kBP"] : rlDice(g) ? ["dS", "dB", "dO", "dE", "dS", "dB", `dT${4 + Math.floor(Math.random() * 14)}`, `dn${1 + Math.floor(Math.random() * 6)}`, `dd${1 + Math.floor(Math.random() * 6)}`, "dA", "dc12", "dc36"]
       : ["R", "B", "E", "O", "L", "H", "D1", "D2", "D3", "C1", "C2", "C3", `n${Math.floor(Math.random() * 37)}`, `n${Math.floor(Math.random() * 37)}`];
     const bets = {};
     let left = chips;
-    for (let i = 0, k = 1 + Math.floor(Math.random() * 3); i < k; i++) {
+    // クラッシュ・チンチロは1人1か所（人の画面と同じ）。ほかは1〜3か所
+    for (let i = 0, k = rlCrash(g) || rlCc(g) ? 1 : 1 + Math.floor(Math.random() * 3); i < k; i++) {
       const a = pick(ch.filter((x) => x <= Math.max(ch[0], chips / 8)));
       if (!a || a > left) break;
       const sp = pick(spots);
@@ -14619,12 +15573,12 @@ function gameForwardFn(g) {
   if (g.kind === "num") return g.phase === "result" ? numNextRound : g.phase === "play" && numRankOn(g) ? numToRank : numEnd;
   if (g.kind === "bj" && g.phase === "result") return bjNext;
   if (g.kind === "dfg" && g.phase === "result") return dfgNextRound;
-  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" ? rlSpin : g.phase === "result" ? rlNext : null;
+  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" || g.phase === "roll" ? rlSpin : g.phase === "result" ? rlNext : null;
   return null;
 }
 // 管理者がディーラーのときの「進める」（配る・保険を締め切る・カードを開ける・交換を締め切る・番の人をパス・次の回へ）
 function cardForwardFn(g) {
-  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" ? rlSpin : g.phase === "result" ? rlNext : null;
+  if (g.kind === "rl") return g.phase === "bet" || g.phase === "ready" || g.phase === "roll" ? rlSpin : g.phase === "result" ? rlNext : null;
   if (g.kind === "bj") return g.phase === "bet" ? bjDeal : g.phase === "insure" ? (x, s) => bjInsure(x, s, true) : g.phase === "play" ? bjReveal : g.phase === "result" ? bjNext : null;
   return g.phase === "exchange" ? (x, s) => dfgExchangeDone(x, s, true) : g.phase === "play" ? (x, s) => dfgMove(x, s, true) : g.phase === "result" ? dfgNextRound : null;
 }
@@ -14660,10 +15614,11 @@ function cardDealerBox(g) {
   return h("div", { class: "gp-dealer" }, h("div", { class: "gp-dealer-head" }, h("b", null, "ディーラーの操作"), sub ? h("small", null, sub) : null), b);
 }
 // 場面の操作バー用の短い名前
-const cardDealerShort = (g) => (g.kind === "bj" ? { bet: "配る", insure: "保険を締切", play: "カードを開ける", result: "次の回へ" } : g.kind === "rl" ? { bet: rlDice(g) ? "締め切って振る" : "締め切って回す", ready: "回す", result: rlIsLast(g) ? "終える" : "次の回へ" } : { exchange: "交換を締切", play: "パスにする", result: "次の回へ" })[g.phase] ?? null;
+const cardDealerShort = (g) => (g.kind === "bj" ? { bet: "配る", insure: "保険を締切", play: "カードを開ける", result: "次の回へ" } : g.kind === "rl" && rlCc(g) ? { bet: "締め切る", roll: "代わりに振る", result: rlIsLast(g) ? "終える" : "次の回へ" } : g.kind === "rl" ? { bet: rlDice(g) ? "締め切って振る" : rlBac(g) ? "締め切って配る" : rlCrash(g) ? "締め切って始める" : "締め切って回す", ready: "回す", result: rlIsLast(g) ? "終える" : "次の回へ" } : { exchange: "交換を締切", play: "パスにする", result: "次の回へ" })[g.phase] ?? null;
 // ディーラーの操作のボタン名（管理者がディーラーのとき）
 function cardDealerLabel(g) {
-  if (g.kind === "rl") return g.phase === "bet" ? (rlDice(g) ? "締め切って振る" : "締め切って玉を投げる") : g.phase === "ready" ? "ルーレットを回す" : g.phase === "result" ? (rlIsLast(g) ? "終える（順位を出す）" : "次の回へ") : null;
+  if (g.kind === "rl" && rlCc(g)) return g.phase === "bet" ? "締め切って親が振る" : g.phase === "roll" ? `${memberName(g.actors[0])}さんの代わりに振る` : g.phase === "result" ? (rlIsLast(g) ? "終える（順位を出す）" : "次の回へ（親を交代）") : null;
+  if (g.kind === "rl") return g.phase === "bet" ? (rlDice(g) ? "締め切って振る" : rlBac(g) ? "締め切ってカードを配る" : rlCrash(g) ? "締め切って始める" : "締め切って玉を投げる") : g.phase === "ready" ? "ルーレットを回す" : g.phase === "result" ? (rlIsLast(g) ? "終える（順位を出す）" : "次の回へ") : null;
   if (g.kind === "bj") {
     const st = g.bj, left = g.phase === "play" ? [...new Set(Object.keys(st.hands ?? {}).map(bjOwn))].filter((u) => bjCur(st, u)) : [];
     return g.phase === "bet" ? "締め切って配る" : g.phase === "insure" ? "保険を締め切る" : g.phase === "play" ? (left.length ? "締め切ってディーラーのカードを開ける" : "ディーラーのカードを開ける") : g.phase === "result" ? "次の回へ" : null;
@@ -14672,7 +15627,7 @@ function cardDealerLabel(g) {
 }
 async function gameForward(g) {
   if (!gLive(g)) return;
-  if (g.kind === "rl" && g.phase === "spin") return toast("回っています。止まるまで待ってください");
+  if (g.kind === "rl" && g.phase === "spin") return toast(rlCc(g) ? "サイコロが止まるまで待ってください" : "回っています。止まるまで待ってください");
   if (isCardKind(g.kind) && cardManual(g.opts)) { const f = cardForwardFn(g); if (f) await gameStep(g.id, g.step ?? 0, f, cardNeed(g)); return; }
   const fn = gameForwardFn(g);
   if (fn) { await gameStep(g.id, g.step ?? 0, fn); return; }
@@ -14856,6 +15811,7 @@ function gActProgress(g) {
     const st = g.rl, r = `r${st.round}`;
     if (g.phase === "bet") return { label: "BET（準備OK）", rows: g.actors.map((u) => { const p = rlParseBets(cardAct(g, "b", u, r)); return { u, done: !!p?.ready, to: p && rlSum(p.bets) ? `BET ${rlSum(p.bets)}` : null }; }) };
     if (g.phase === "ready" && rlSpinner(g)) return { label: "回す人", turn: true, rows: [{ u: rlSpinner(g), done: false, to: null }] };
+    if (g.phase === "roll" && g.actors[0]) return { label: "振る人", turn: true, rows: [{ u: g.actors[0], done: false, to: null }] };
     return null;
   }
   const st = g.dfg;
@@ -15122,7 +16078,7 @@ function paintGameLive() {
       cxTop(g, close),
       h("div", { class: "gl-phase cx-phase", title: `${g.title} ・ ${gPhaseText(g)}` }, g.demo ? h("b", { class: "cx-demo" }, "DEMO") : null, h("span", null, cardPhaseShort(g)), gTimer(g)),
       // 賭け・勝負中・大富豪の番は、下の台に操作と説明があるので、上の長い説明は出さない
-      ["bet", "play", "insure", "ended", "spin", "ready"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : g.kind === "rl" && rlIsLast(g) ? "NEXT ▸ まもなく結果発表" : g.kind === "rl" && rlLottery(g) ? "NEXT ▸ まもなく次の回" : cardO(g).autoNext && !cardManual(g.opts) ? "NEXT ▸ まもなく次の回" : cardManual(g.opts) ? "NEXT ▸ ディーラーが進めるまで待機" : "NEXT ▸ 管理者が進めるまで待機"),
+      ["bet", "play", "insure", "ended", "spin", "ready", "roll"].includes(g.phase) ? null : h("p", { class: "cx-prompt" }, g.phase === "ended" ? gPrompt(g) : g.phase === "exchange" ? "TRADE ・ 大富豪・富豪は渡すカードを選ぶ" : g.kind === "rl" && rlIsLast(g) ? "NEXT ▸ まもなく結果発表" : g.kind === "rl" && rlLottery(g) ? "NEXT ▸ まもなく次の回" : cardO(g).autoNext && !cardManual(g.opts) ? "NEXT ▸ まもなく次の回" : cardManual(g.opts) ? "NEXT ▸ ディーラーが進めるまで待機" : "NEXT ▸ 管理者が進めるまで待機"),
       gameMemberBody(g))));
     cxFit(el, el.firstElementChild); cxRestore(el, logScroll, sheetScroll, scroll);
     return;
@@ -15708,7 +16664,7 @@ function cardReplayScenes(P, sc, add, bars) {
       if (lot || ev.type !== "rlRound") continue;
       const us = Object.keys(ev.bets ?? {});
       add(`第${ev.round}回`, 4 + us.length * 0.5, () => h("div", { class: "rp-q rp-rl" }, h("div", { class: "rp-sub-title" }, `第${ev.round}回`),
-        dcIs(ev.n) ? h("div", { class: "rp-rl-n dc" }, dcBadge(ev.n, "big")) : h("div", { class: `rp-rl-n ${rlColor(ev.n)}` }, String(ev.n)),
+        dcIs(ev.n) ? h("div", { class: "rp-rl-n dc" }, dcBadge(ev.n, "big")) : bacIs(ev.n) ? h("div", { class: "rp-rl-n bc" }, bacBadge(ev.n, "big")) : crIs(ev.n) ? h("div", { class: "rp-rl-n cr" }, crBadge(ev.n, "big")) : ccIs(ev.n) ? h("div", { class: "rp-rl-n cc" }, ccBadge(ev.n, "big")) : h("div", { class: `rp-rl-n ${rlColor(ev.n)}` }, String(ev.n)),
         us.length ? h("div", { class: "rp-rl-rows" }, us.map((u, k) => h("div", { class: `rp-rl-row${(ev.sum?.[u] ?? 0) > 0 ? " up" : ""}`, style: `--d:${0.6 + k * 0.2}s` },
           h("b", null, plName(P, u)), h("span", null, rlBetText(ev.bets[u])), h("em", null, `${signed(ev.sum?.[u] ?? 0)}枚`)))) : h("p", { class: "rp-dim" }, "賭けた人はいませんでした")));
       const rows = players.map((u) => ({ name: plName(P, u), v: ev.chips?.[u] ?? 0, delta: ev.sum?.[u] ?? 0 })).sort((a, b) => b.v - a.v);
@@ -16239,8 +17195,23 @@ function gamesAdmin() {
   const dcInfo = group("大小（サイコロ）の配当", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
     "小（合計4〜10）・大（11〜17）・奇数・偶数：1倍（ゾロ目が出たら負け）／合計 4・17：60倍、5・16：30倍、6・15：17倍、7・14：12倍、8・13：8倍、9〜12：6倍／ゾロ目どれでも：30倍、決めた数のゾロ目：180倍／決めた数のダブル（2個以上）：10倍／2つの目の組み合わせ：5倍／1つの目：出た個数ぶん（1〜3倍）"))],
     "配当は gamerules.com の表に合わせました（お店によって少し違います）。サイコロは中国式（1 と 4 が赤い）。動きと出る目は、台の突き上げ・重力・ぶつかり・摩擦の計算で決まり、全員の画面で同じ動きになります。");
+  // v104 バカラの決まり
+  const bacInfo = group("バカラの決まりと配当", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
+    "カードの数え方：A＝1、2〜9＝そのまま、10・J・Q・K＝0。合計の1の位（例 7＋8＝15 → 5）が9に近いほうの勝ち。／配り方：プレイヤー・バンカーに2枚ずつ。どちらかが8・9（ナチュラル）なら終わり。プレイヤーは0〜5で3枚目を引く。バンカーはプレイヤーの3枚目に応じた決まりで引く（自動）。／配当：プレイヤー 1倍・バンカー 0.95倍（手数料5%・端数切り捨て）・タイ 8倍（タイのとき、プレイヤー・バンカーの賭けは戻る）・プレイヤーのペア／バンカーのペア（最初の2枚が同じ数字）11倍"))],
+    "決まりと配当は、カジノでいちばん多い「プント・バンコ」に合わせました（お店によって少し違います）。トランプは8組（416枚）を混ぜたシューから配り、残りが16枚を切ったら混ぜ直します。カードは全員の画面で同じ時刻に、少しずつ絞ってめくります。");
+  // v104 クラッシュの決まり
+  const crInfo = group("クラッシュの決まり", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
+    "倍率は 1.00x から上がっていきます（6秒で2倍・12秒で4倍・約20秒で10倍）。はじける前に CASH OUT を押すと、賭けた額×その倍率がもらえます（もうけ＝賭けた額×(倍率−1)、端数切り捨て）。押す前にはじけると、賭けた分は負け。AUTO（1.20x〜20x）を決めておくと、その倍率で自動で降ります。／はじける倍率：0.99÷(1−くじ)。約50回に1回（2%）は 1.00x ですぐはじけ、2.00x まで届くのは約半分（49.5%）、10x は約10回に1回。上限 100x。どの倍率で降りても、平均すると賭けの約1%が負けになる（控除 1%）"))],
+    "はじける倍率の決め方は、オンラインのクラッシュでよく使われる式（控除 1%）にしました。CASH OUT は押した時刻で精算します（通信が遅れても、はじける前に押していれば有効）。");
+  // v105 チンチロの決まりと進め方
+  const ccCycles = pick([[1, "1周（全員が1回ずつ親）"], [2, "2周"], [3, "3周"]], 1);
+  const ccTurnSec = pick([[0, "なし（押すまで待つ）"], [15, "15秒"], [20, "20秒"], [30, "30秒"]], 20);
+  const ccInfo = group("チンチロの決まり", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
+    "役（強い順）：ピンゾロ 1・1・1（×5）＞ゾロ目 6〜2（×3）＞シゴロ 4・5・6（×2）＞目（2個そろったときの残り1個の数。6の目〜1の目、×1）＞目なし・ションベン（負け）＞ヒフミ 1・2・3（2倍払い）。／目なしは3回まで振り直し。サイコロが丼の外に出たらションベンで、その場で負け。／親が ピンゾロ・ゾロ目・シゴロ なら子全員から倍率ぶん取り、ヒフミなら子全員に2倍、目なし・ションベンなら子全員に1倍を払い、子は振りません。親が「目」なら子が1人ずつ振り、親より強ければ子の勝ち（子の役の倍率）、弱ければ子の負け（ヒフミは2倍）、同じ目は分け。／親のチップが足りないときは、勝った子に割合で払います。")),
+    field("親を回す回数", ccCycles), field("1人の振る持ち時間（過ぎると自動で振ります）", ccTurnSec)],
+    "役と倍率は、チンチロでよく使われる決まりに合わせました（地方や遊ぶ人によって少し違います）。親は席の順に交代し、チップがなくなった人は親を飛ばします。サイコロは丼（直径 約16cm・深さ 約6cm）に手から投げ入れたものとして、重力・はね返り・摩擦・丼の曲面とふち・サイコロどうしのぶつかりを計算して動かし、出る目は計算の結果で決まります（全員の画面で同じ動き）。");
   const rlModeGroup = group("ルーレットの種類", [h("div", { class: "cell seat-cell" }, rlMode)]);
-  const rlOpts = h("div", null, rlModeGroup, dcInfo, rlCasinoBox, rlLotBox);
+  const rlOpts = h("div", null, rlModeGroup, dcInfo, bacInfo, crInfo, ccInfo, rlCasinoBox, rlLotBox);
   // v103 大小は、ルーレットの仕組みを使う（kind は rl、opts.mode は dice）
   const gkOf = (k) => GAME_KINDS[k]?.alias ?? k;
   const rlModeV = () => GAME_KINDS[kind.value]?.mode ?? rlMode.value;
@@ -16355,13 +17326,14 @@ function gamesAdmin() {
 
   const chosen = () => [...players.value().filter((u) => S.members.has(u)), ...(selfPlay.checked && S.user ? [S.user.uid] : [])];
   function paintOpts() {
-    const k0 = kind.value, k = gkOf(k0), dice = rlModeV() === "dice";
+    const k0 = kind.value, k = gkOf(k0), dice = rlModeV() === "dice", bac = rlModeV() === "bac", crash = rlModeV() === "crash", ccm = rlModeV() === "cc";
     GA.kind = k0;
     desc.textContent = GAME_KINDS[k0].desc;
-    rlModeGroup.hidden = k0 !== "rl"; dcInfo.hidden = !dice;
-    rlPartage.closest(".cell").hidden = dice;
-    rlCasinoBox.querySelector(".group-header").textContent = dice ? "大小の設定" : "ルーレットの設定（ヨーロッパ式・0〜36）";
-    rlCasinoBox.querySelector(".group-footer").hidden = dice;
+    rlModeGroup.hidden = k0 !== "rl"; dcInfo.hidden = !dice; bacInfo.hidden = !bac; crInfo.hidden = !crash; ccInfo.hidden = !ccm;
+    rlRounds.closest(".cell").hidden = ccm;
+    rlPartage.closest(".cell").hidden = dice || bac || crash || ccm;
+    rlCasinoBox.querySelector(".group-header").textContent = dice ? "大小の設定" : bac ? "バカラの設定" : crash ? "クラッシュの設定" : ccm ? "チンチロの設定" : "ルーレットの設定（ヨーロッパ式・0〜36）";
+    rlCasinoBox.querySelector(".group-footer").hidden = dice || bac || crash || ccm;
     wolfOpts.hidden = k !== "wolf"; wordOpts.hidden = k !== "word"; ngOpts.hidden = k !== "ng"; numOpts.hidden = k !== "num"; bjOpts.hidden = k !== "bj"; dfgOpts.hidden = k !== "dfg"; rlOpts.hidden = k !== "rl";
     const rlLot = rlModeV() === "lottery", rlMan = rlDealer.value === "manual";
     rlCasinoBox.hidden = rlLot; rlLotBox.hidden = !rlLot;
@@ -16474,7 +17446,7 @@ function gamesAdmin() {
       exchange: dfgEx.checked, exBig: N(dfgExBig), exSmall: N(dfgExSmall), exSec: N(dfgExSec), autoNext: dfgAuto.checked, resultSec: N(dfgResult), dealer: dfgDealer.value, dealerTimer: dfgTimer.checked };
     else if (k === "rl") o = rlModeV() === "lottery"
       ? { mode: "lottery", rounds: N(rlLotRounds), items: rlItemList(), removeHit: rlRemove.checked, spinner: rlSpinBy.value, readySec: N(rlReadySec) }
-      : { mode: rlModeV() === "dice" ? "dice" : "casino", rounds: N(rlRounds), chips: N(rlChips), betMin: N(rlMin), betMax: N(rlMax), betSec: N(rlBetSec), partage: rlModeV() === "dice" ? false : rlPartage.checked, autoNext: rlAuto.checked, resultSec: N(rlResult),
+      : { mode: ["dice", "bac", "crash", "cc"].includes(rlModeV()) ? rlModeV() : "casino", rounds: rlModeV() === "cc" ? N(ccCycles) * Math.max(2, n) : N(rlRounds), ...(rlModeV() === "cc" ? { cycles: N(ccCycles), readySec: N(ccTurnSec) } : {}), chips: N(rlChips), betMin: N(rlMin), betMax: N(rlMax), betSec: N(rlBetSec), partage: ["dice", "bac", "crash", "cc"].includes(rlModeV()) ? false : rlPartage.checked, autoNext: rlAuto.checked, resultSec: N(rlResult),
         dealer: rlDealer.value, dealerTimer: rlTimer.checked, ...(plan.startChips ? { startChips: plan.startChips } : {}) };
     else o = { auto: numAuto.checked, limitMin: N(numLimit), max: N(numMax), theme: theme.value.trim(), rounds: N(numRoundsSel), gapSec: N(numGap), rank: numRank.checked, rankSec: N(numRankSec) };
     if (plan.pt) o.pt = plan.pt;
@@ -16501,7 +17473,7 @@ function gamesAdmin() {
     const busy = ps.filter((u) => gBusyMap().has(u));
     if (busy.length && !confirm(`${busy.map((u) => `${memberName(u)}さん（${gBusyMap().get(u).join("・")}）`).join("、")}は、いまほかのゲームで遊んでいます。\nこのまま始めると、その人のスマホは新しいゲームに切り替わります（前のゲームは続きます）。よろしいですか？`)) return;
     if (!confirm((k === "rl" ? (o.mode === "lottery" ? `抽選ルーレットを始めます（項目 ${o.items.length}個・${o.rounds}回）。遊ぶ人のスマホにルーレットが出ます。この端末が進行役になるので、終わるまでアプリを開いたままにしてください。よろしいですか？`
-      : `${o.mode === "dice" ? "大小（サイコロ）" : "ルーレット"}を ${n}人で始めます。遊ぶ人のスマホに賭けの盤が出ます。${cardManual(o) ? `あなたがディーラーとして、${o.mode === "dice" ? "締め切って振る" : "締め切って玉を投げる"}・次の回へ をボタンで進めます。` : "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`)
+      : `${o.mode === "dice" ? "大小（サイコロ）" : o.mode === "bac" ? "バカラ" : o.mode === "crash" ? "クラッシュ" : o.mode === "cc" ? `チンチロ（親を${o.cycles}周・全${o.rounds}回）` : "ルーレット"}を ${n}人で始めます。遊ぶ人のスマホに賭けの盤が出ます。${cardManual(o) ? `あなたがディーラーとして、${o.mode === "dice" ? "締め切って振る" : o.mode === "bac" ? "締め切ってカードを配る" : o.mode === "crash" ? "締め切って始める" : o.mode === "cc" ? "締め切って親が振る" : "締め切って玉を投げる"}・次の回へ をボタンで進めます。` : "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`)
       : k === "bj" ? `ブラックジャックを ${n}人で始めます。遊ぶ人のスマホに賭けの画面が出ます。${man || "この端末がディーラーになるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
       : k === "dfg" ? `大富豪を ${n}人で始めます。遊ぶ人のスマホに手札が届きます。${man || "この端末が進行役になるので、"}終わるまでアプリを開いたままにしてください。よろしいですか？`
         : `${GAME_KINDS[k].label}を ${n}人で始めます。遊ぶ人のスマホに${k === "wolf" ? "役職" : k === "num" ? "数字" : k === "ng" ? "NGワード" : "お題"}が届きます。よろしいですか？`) + ptNote)) return;
@@ -16523,7 +17495,8 @@ function gamesAdmin() {
     if (g.kind === "wolf") next = g.phase === "night" ? btn("朝にする（夜の結果を出す）", wolfMorning) : g.phase === "day" ? btn("話し合いを終えて投票へ", wolfToVote) : g.phase === "vote" ? btn("開票する", wolfTally) : null;
     else if (g.kind === "word") next = g.phase === "talk" ? btn("話し合いを終えて投票へ", wordToVote) : g.phase === "vote" ? btn("開票する", wordTally)
       : g.phase === "guess" ? h("div", { class: "gp-actions" }, btn("締め切って判定する", wordGuessEnd), btn("当たりにする（逆転）", wordGuessHit, "btn-small"), btn("はずれにする", wordGuessMiss, "btn-small")) : null;
-    else if (g.kind === "rl" && !cardManual(g.opts)) next = g.phase === "bet" ? btn(rlDice(g) ? "締め切って振る" : "締め切って玉を投げる", rlSpin) : g.phase === "ready" ? btn("ルーレットを回す", rlSpin) : g.phase === "result" ? btn(rlIsLast(g) ? "終える（順位を出す）" : "次の回へ", rlNext) : null;
+    else if (g.kind === "rl" && rlCc(g) && !cardManual(g.opts)) next = g.phase === "bet" ? btn("締め切って親が振る", rlSpin) : g.phase === "roll" ? btn(`${memberName(g.actors[0])}さんの代わりに振る`, rlSpin) : g.phase === "result" ? btn(rlIsLast(g) ? "終える（順位を出す）" : "次の回へ（親を交代）", rlNext) : null;
+    else if (g.kind === "rl" && !cardManual(g.opts)) next = g.phase === "bet" ? btn(rlDice(g) ? "締め切って振る" : rlBac(g) ? "締め切ってカードを配る" : rlCrash(g) ? "締め切って始める" : "締め切って玉を投げる", rlSpin) : g.phase === "ready" ? btn("ルーレットを回す", rlSpin) : g.phase === "result" ? btn(rlIsLast(g) ? "終える（順位を出す）" : "次の回へ", rlNext) : null;
     else if (isCardKind(g.kind) && cardManual(g.opts)) next = null; // 下の「ディーラーの操作」で進める
     else if (isCardKind(g.kind) && g.phase === "result") next = btn("次の回へ", g.kind === "bj" ? bjNext : dfgNextRound);
     else if (g.kind === "num" && g.phase === "result") next = btn(`次の回へ（第${(g.round ?? 1) + 1}回）`, numNextRound);
@@ -17206,7 +18179,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v103"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v104"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
