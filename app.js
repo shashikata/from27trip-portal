@@ -2434,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v105"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v106"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -12635,9 +12635,10 @@ function rlRng(seed) {
 }
 // ---- v103 大小（サイコロ）：3個のサイコロを剛体として計算する（単位 mm・秒・質量は1個=1）
 // 自動シェーカー（透明なドームの中の台が下から突き上げる）で跳ねさせる。どの端末でも同じ結果になるよう、四則演算と平方根だけで計算する（三角関数は使わない）
-const DC_S = 16, DC_H = DC_S / 2, DC_I = (DC_S * DC_S) / 6, DC_RW = 46, DC_HC = 54, DC_G = 9810, DC_DT = 1 / 1000, DC_FPS = 60;
+const DC_S = 16, DC_H = DC_S / 2, DC_I = (DC_S * DC_S) / 6, DC_RW = 58, DC_HC = 54, DC_G = 9810, DC_DT = 1 / 1000, DC_FPS = 60;
 // 物の性質：はね返り係数・摩擦係数（arXiv:1407.6307 のサイコロの実験に近い値：e≈0.5・μ≈0.29）
-const DC_E = { floor: 0.45, wall: 0.5, glass: 0.55, die: 0.5 }, DC_MU = { floor: 0.3, wall: 0.2, glass: 0.15, die: 0.25 };
+// v106 上から落とす形式にしたので、台をつるっとした硬い台（漆塗りのような）に：はね返り 床 0.45→0.6・壁 0.5→0.6、摩擦 床 0.3→0.12・壁 0.2→0.15
+const DC_E = { floor: 0.6, wall: 0.6, glass: 0.55, die: 0.5 }, DC_MU = { floor: 0.12, wall: 0.15, glass: 0.15, die: 0.25 };
 // サイコロの角（自分の向きでの座標）
 const DC_CORNERS = []; for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) DC_CORNERS.push([x * DC_H, y * DC_H, z * DC_H]);
 // サイコロどうしの当たりは、角に加えて辺の真ん中でも調べる（辺と辺が当たるときを見落とさない）
@@ -12662,31 +12663,47 @@ function dcPlate(pops, t, x, y) {
 }
 // v105 台を傾ける量（kx・ky）と横へ押す速さ（vx・vy）を大きくして、跳ねるだけでなく、よく転がるようにした
 const dcPop = (rnd, t, v0, dv, side = 1) => ({ t, v: v0 + rnd() * dv, vx: (rnd() - 0.5) * 560 * side, vy: (rnd() - 0.5) * 560 * side, kx: (rnd() - 0.5) * 0.075 * side, ky: (rnd() - 0.5) * 0.075 * side });
-// init：前の回に止まった位置と向き（[x, y, z, qw, qx, qy, qz] × 3 の21個）。ないときは、はじめの並べ方を種から決める
+// 1回目の前の置き方（台の上に、重ならない位置・ばらばらの向き）。種から決める
+function dcLayout(seed) {
+  const rnd = rlRng(seed ^ 0x5bd1e995), out = [];
+  const spots = [[-17, -9], [15, -12], [1, 16], [-20, 12], [20, 10]];
+  const pick = spots.map((s, i) => [s, rnd()]).sort((a, b) => a[1] - b[1]).slice(0, 3);
+  const syms = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0.7071067811865476, 0.7071067811865476, 0, 0], [0.7071067811865476, -0.7071067811865476, 0, 0], [0.7071067811865476, 0, 0.7071067811865476, 0]];
+  for (const [[x, y]] of pick) {
+    const s = syms[Math.floor(rnd() * syms.length)], yaw = dcNorm4([rnd() - 0.5 || 0.1, 0, 0, rnd() - 0.5]);
+    const q = dcNorm4([yaw[0] * s[0] - yaw[3] * s[3], yaw[0] * s[1] - yaw[3] * s[2], yaw[0] * s[2] + yaw[3] * s[1], yaw[0] * s[3] + yaw[3] * s[0]]);
+    out.push([x + (rnd() - 0.5) * 4, y + (rnd() - 0.5) * 4, DC_H, ...q]);
+  }
+  return out;
+}
+// v106 投げ方を「上から落とす」に変えた（チンチロと同じ）：台の上（底から 9〜12cm）で手を開いて3個を落とし、
+//   少し前へ押し出して、手首のひねりで回転をかける。台の床で跳ね、ふちの壁に当たって転がる。強さ・向き・回転は種から決める
+//   （v103〜v105 は透明なドームの中の台を下から突き上げていた。ドームの天井はなくした）
+const DC_HZ = 90, DC_PW = 400, DC_PR = 300, DC_SPIN = 280, DC_DAMP = 0.03; // 手の高さ（mm）・押し出す速さとばらつき（mm/秒）・手首のひねり（rad/秒）・回転の減り
+// init：前の回に止まった位置と向き（[x, y, z, qw, qx, qy, qz] × 3 の21個）。v106 からは、拾い上げる動きの見た目だけに使う（計算は手の中から始める）
 function dcSim(seed, init = null) {
   const rnd = rlRng(seed ^ 0x5bd1e995);
-  // 突き上げの回数・間隔・強さ（機械の振動。毎回ちがう）
+  const g = (s) => (rnd() + rnd() + rnd() - 1.5) * s; // おおよそ正規分布
+  // 台を突き上げるのは、止まったサイコロが平らでないとき（ほかのサイコロに乗った・壁にもたれた）だけ（本物の機械も、読めなければ振り直す）
   const pops = [];
-  // v105 回数を増やし（11〜14回）、最後の3回は弱くして、転がりながら落ち着くようにする
-  let tp = 0.3;
-  const K = 11 + Math.floor(rnd() * 4);
-  for (let k = 0; k < K; k++) { const w = k >= K - 3 ? 0.55 + 0.15 * (K - 1 - k) : 1; pops.push(dcPop(rnd, tp, 470 * w, 330 * w, w)); tp += 0.22 + rnd() * 0.14; }
-  // はじめは台の上に止まっている（前の回の続き。1回目は、重ならない位置・ばらばらの向き）
   const D = [];
-  if (init?.length === 21) for (let i = 0; i < 3; i++) { const x = init.slice(i * 7, i * 7 + 7); D.push({ p: [x[0], x[1], x[2]], v: [0, 0, 0], q: dcNorm4([x[3], x[4], x[5], x[6]]), w: [0, 0, 0] }); }
-  else {
-    const spots = [[-17, -9], [15, -12], [1, 16], [-20, 12], [20, 10]];
-    const pick = spots.map((s, i) => [s, rnd()]).sort((a, b) => a[1] - b[1]).slice(0, 3);
-    const syms = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0.7071067811865476, 0.7071067811865476, 0, 0], [0.7071067811865476, -0.7071067811865476, 0, 0], [0.7071067811865476, 0, 0.7071067811865476, 0]];
-    for (const [[x, y]] of pick) {
-      const s = syms[Math.floor(rnd() * syms.length)], yaw = dcNorm4([rnd() - 0.5 || 0.1, 0, 0, rnd() - 0.5]);
-      const q = dcNorm4([yaw[0] * s[0] - yaw[3] * s[3], yaw[0] * s[1] - yaw[3] * s[2], yaw[0] * s[2] + yaw[3] * s[1], yaw[0] * s[3] + yaw[3] * s[0]]);
-      D.push({ p: [x + (rnd() - 0.5) * 4, y + (rnd() - 0.5) * 4, DC_H], v: [0, 0, 0], q, w: [0, 0, 0] });
-    }
+  // 手の位置：台の真ん中から少し外（向きは種から。三角関数を使わず、ばらばらな向きのベクトルを長さ1にする）
+  let ux = rnd() - 0.5, uy = rnd() - 0.5; const ul = Math.sqrt(ux * ux + uy * uy) || 1; ux /= ul; uy /= ul;
+  const r0 = 4 + rnd() * 10, hx = ux * r0, hy = uy * r0, hz = DC_HZ + rnd() * 30;
+  // 手の中の3個の位置（はじめから重ならないよう、中心どうしを 29mm 以上離す）
+  const offs = [[-16, 2, 0], [16, 4, 5], [0, -19, 14]];
+  // 向き：台のふちに沿う向き（右回り・左回りは種から）に、内向きを混ぜる → 壁に当たりながら台の上をぐるっと転がる
+  const power = DC_PW + rnd() * DC_PR, turn = rnd() < 0.5 ? 1 : -1, tin = 0.3 + rnd() * 0.4, tt = Math.sqrt(1 - tin * tin);
+  const vx0 = power * (-uy * turn * tt - ux * tin), vy0 = power * (ux * turn * tt - uy * tin), vz0 = -(40 + rnd() * 140);
+  const spin = [g(DC_SPIN), g(DC_SPIN), g(DC_SPIN)];
+  for (let i = 0; i < 3; i++) {
+    const o = offs[i];
+    D.push({ p: [hx + o[0] + g(1.5), hy + o[1] + g(1.5), hz + o[2]], v: [vx0 + g(50), vy0 + g(50), vz0 + g(40)],
+      q: dcNorm4([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]), w: [spin[0] + g(35), spin[1] + g(35), spin[2] + g(35)] });
   }
   const frames = [], ev = [];
   const hist = [];
-  let t = 0, end = null, extra = 0, lastPop = pops[pops.length - 1].t;
+  let t = 0, end = null, extra = 0, lastPop = 0.5;
   const step = Math.round(1 / DC_FPS / DC_DT);
   for (let it = 0; t < 12; it++) {
     t = it * DC_DT;
@@ -12701,7 +12718,6 @@ function dcSim(seed, init = null) {
         const r = dcMul(Rs[i], c), x = [d.p[0] + r[0], d.p[1] + r[1], d.p[2] + r[2]];
         const fp = pl.z || pl.vz ? dcPlate(pops, t, x[0], x[1]) : pl;
         if (x[2] < fp.z) C.push({ a: i, b: -1, n: [0, 0, 1], ra: r, depth: fp.z - x[2], vs: [fp.vx, fp.vy, fp.vz], k: "floor" });
-        if (x[2] > DC_HC) C.push({ a: i, b: -1, n: [0, 0, -1], ra: r, depth: x[2] - DC_HC, vs: [0, 0, 0], k: "glass" });
         const rr = Math.sqrt(x[0] * x[0] + x[1] * x[1]);
         if (rr > DC_RW) C.push({ a: i, b: -1, n: [-x[0] / rr, -x[1] / rr, 0], ra: r, depth: rr - DC_RW, vs: [0, 0, 0], k: "wall" });
       }
@@ -12760,7 +12776,7 @@ function dcSim(seed, init = null) {
     }
     // 動かす（空気の抵抗はほとんどないので、わずかに減らすだけ）
     for (const d of D) {
-      for (let k = 0; k < 3; k++) { d.p[k] += d.v[k] * DC_DT; d.w[k] *= 1 - 0.15 * DC_DT; }
+      for (let k = 0; k < 3; k++) { d.p[k] += d.v[k] * DC_DT; d.w[k] *= 1 - DC_DAMP * DC_DT; }
       const [w0, w1, w2] = d.w, q = d.q;
       d.q = dcNorm4([q[0] + 0.5 * DC_DT * (-w0 * q[1] - w1 * q[2] - w2 * q[3]), q[1] + 0.5 * DC_DT * (w0 * q[0] + w1 * q[3] - w2 * q[2]), q[2] + 0.5 * DC_DT * (w1 * q[0] + w2 * q[1] - w0 * q[3]), q[3] + 0.5 * DC_DT * (w2 * q[0] + w0 * q[2] - w1 * q[1])]);
     }
@@ -12868,12 +12884,12 @@ function dcPlanOf(sp) {
   return P;
 }
 // 何も振っていないときの並べ方（1回目の前）
-const dcIdle = () => dcSimOf0().frames[0];
 let DC_IDLE = null;
-const dcSimOf0 = () => (DC_IDLE ??= dcSim(20260527));
+const dcIdle = () => (DC_IDLE ??= { z: 0, kx: 0, ky: 0, d: dcLayout(20260527) });
 function dcBuild() {
   const dice = [], shadows = [];
-  const tray = h("div", { class: "dc-tray" }, h("i", { class: "dc-floor" }), h("i", { class: "dc-ring" }));
+  // v106 台（直径約12cm）と、まわりの低い壁（高さ 18mm を6枚の輪で重ねて見せる）
+  const tray = h("div", { class: "dc-tray" }, h("i", { class: "dc-floor" }), ...[1, 2, 3, 4, 5, 6].map((j) => h("i", { class: `dc-wall${j === 6 ? " top" : ""}`, style: `--z:${j * 3}` })), h("i", { class: "dc-ring" }));
   for (let i = 0; i < 3; i++) {
     const sides = [];
     const die = h("div", { class: "dc-die" });
@@ -12890,7 +12906,7 @@ function dcBuild() {
     tray.append(die); dice.push({ el: die, sides });
   }
   const cam = h("div", { class: "dc-cam" }, tray);
-  const box = h("div", { class: "rl-disc dc-box" }, cam, h("i", { class: "dc-dome", "aria-hidden": "true" }), h("i", { class: "rl-vig", "aria-hidden": "true" }));
+  const box = h("div", { class: "rl-disc dc-box" }, cam, h("i", { class: "rl-vig", "aria-hidden": "true" }));
   return { box, cam, tray, dice, shadows };
 }
 const dcQR = (q) => dcRot(q);
@@ -12909,7 +12925,14 @@ const DC_L = (() => { const v = [-0.35, -0.5, 0.79], l = Math.hypot(...v); retur
 function dcRender(e, pose, fix, zp) {
   const W = e.box.clientWidth || e.lastW || 300;
   e.lastW = W;
-  const k = W / 112; // 1mm が何 px か（台の直径 92mm＋ふち）
+  // ズーム：真上に近い角度から、3個の真ん中へ寄る
+  const q = zp < 0.5 ? 4 * zp * zp * zp : 1 - (-2 * zp + 2) ** 3 / 2;
+  // v106 寄るときは、CSS で拡大せずに 1mm あたりの px（k）を大きくして描き直す（拡大すると小さい絵が引き伸ばされてぼやけるため）
+  // 寄る倍率は、3個が全部画面に収まる大きさまで（台が広いので、離れて止まったときは控えめに寄る）
+  const mx = pose.d.reduce((a2, s) => a2 + s[0] / 3, 0), my = pose.d.reduce((a2, s) => a2 + s[1] / 3, 0);
+  const spread = Math.max(...pose.d.map((s) => Math.hypot(s[0] - mx, s[1] - my))) + DC_S * 0.9;
+  const zMax = Math.max(1, Math.min(1.6, (0.78 * 68) / spread));
+  const sc = 1 + (zMax - 1) * q, k = (W / 136) * sc; // 1mm が何 px か（台の直径 116mm＋ふち）
   if (e.persp !== W) { e.persp = W; e.box.style.perspective = `${Math.round(W * 2.3)}px`; }
   e.tray.style.setProperty("--k", `${k}px`);
   const plate = pose.z * k;
@@ -12930,10 +12953,8 @@ function dcRender(e, pose, fix, zp) {
     sh.style.opacity = rlF(Math.max(0.08, 0.55 - hgt / 70));
     cx += s[0] / 3; cy += s[1] / 3;
   });
-  // ズーム：真上に近い角度から、3個の真ん中へ寄る
-  const q = zp < 0.5 ? 4 * zp * zp * zp : 1 - (-2 * zp + 2) ** 3 / 2;
-  const tilt = 40 - 34 * q, sc = 1 + 0.55 * q;
-  e.cam.style.transform = `scale(${rlF(sc)}) rotateX(${rlF(tilt)}deg) translate(${rlF(-cx * k * q)}px, ${rlF(-cy * k * q + 4 * k * (1 - q))}px)`;
+  const tilt = 40 - 34 * q;
+  e.cam.style.transform = `rotateX(${rlF(tilt)}deg) translate(${rlF(-cx * k * q)}px, ${rlF(-cy * k * q + 4 * k * (1 - q))}px)`;
   e.el.classList.toggle("zoom", zp > 0);
 }
 // 1こま描く。まだ動いているなら true
@@ -12955,8 +12976,20 @@ function dcDraw(e, g, sp, now, loud) {
     return false;
   }
   const t = (now - sp.at) / 1000;
+  if (t < 0) {
+    // v106 投げる前：止まっていた所（前の回の置き方。全員の端末で同じ）から手の中へ拾い上げて、軽く振る
+    const L = RL_LEAD / 1000 - 0.4, u = Math.max(0, Math.min(1, 1 + t / L)), ease = u * u * (3 - 2 * u); // 合図から 0.4 秒は止めたまま、残りの 1 秒で拾い上げる
+    const hand = P.sim.frames[0].d, from = sp.init?.length === 21 ? [0, 1, 2].map((i) => sp.init.slice(i * 7, i * 7 + 7)) : dcIdle().d;
+    const mix = ease >= 1 ? hand : ccMix(from, hand, ease);
+    const sh = u > 0.6 ? now / 1000 : 0;
+    dcRender(e, { z: 0, kx: 0, ky: 0, d: sh ? mix.map((s, i) => [s[0] + Math.sin(sh * 41 + i * 2.1) * 1.2, s[1] + Math.cos(sh * 37 + i * 1.3) * 1.0, ...s.slice(2)]) : mix }, P.fix, 0);
+    rlState(e, "spinning");
+    rlWait(e, "NO MORE BETS");
+    if (loud) dcSound(e, g, sp, P, t, D);
+    return true;
+  }
   const zp = e.mini ? 0 : Math.max(0, Math.min(1, (t - D - DC_ZOOM_AT) / DC_ZOOM_DUR));
-  dcRender(e, dcPose(P, Math.max(0, t)), P.fix, zp);
+  dcRender(e, dcPose(P, t), P.fix, zp);
   const done = t >= D, shown = t >= D + DC_REVEAL;
   rlState(e, t < 0 ? "spinning" : done ? "done" : "spinning");
   const my = rlMyBets(g);
@@ -13065,7 +13098,14 @@ function bacShoe() {
 // ---- 配る・めくる（スクイーズ）の時間割。全員の端末が同じ結果 n から同じ時間割を作る（秒）
 //   P1→B1→P2→B2 の順に裏で配る → プレイヤーの2枚を絞る → バンカーの2枚を絞る → （決まりで）プレイヤーの3枚目 → バンカーの3枚目
 // v105 ゆっくり絞る（2枚 5.6秒・3枚目 6.2秒）。配る・間もゆとりを持たせる
-const BAC_DEAL = 0.7, BAC_GAP = 0.45, BAC_SQ = 5.6, BAC_SQ3 = 6.2, BAC_PAUSE = 0.9, BAC_REVEAL = 1.2;
+// v106 絞り終わってから開くまでにゆとり：ひと呼吸（BQ_BREATH）→ ゆっくり表に返す（BQ_FLIP）→ 表のまま大きく見せる → 置く（BQ_PUT）
+//   絞る部分（BAC_SQP・BAC_SQP3）の速さは v105 と同じ。BAC_SQ・BAC_SQ3 は絞り始めてから置き終わるまでの全体
+const BAC_SQP = 5.6, BAC_SQP3 = 6.2, BQ_BREATH = 0.45, BQ_FLIP = 0.9, BQ_PUT = 0.35;
+const BAC_DEAL = 0.7, BAC_GAP = 0.45, BAC_SQ = 7.8, BAC_SQ3 = 8.3, BAC_PAUSE = 0.9, BAC_REVEAL = 1.2;
+const bacSqDur = (x) => (x.i === 2 ? BAC_SQ3 : BAC_SQ);
+const bacSqPeel = (x) => (x.i === 2 ? BAC_SQP3 : BAC_SQP);
+const bacFlipAt = (x) => 0.85 * bacSqPeel(x) + BQ_BREATH; // 表に返し始める（絞り始めからの秒）
+const bacUpAt = (x) => bacSqDur(x) - BQ_PUT; // 大きなカードを置いて、テーブルの小さいカードが表になる
 function bacPlan(n) {
   const { p, b } = bacCards(n);
   const slots = [];
@@ -13149,7 +13189,9 @@ const bqTense = (x) => (x <= 0 ? 0 : 0.34 * bacEase(x / 0.26) + 0.33 * bacEase((
 //   本物と同じく、いつも手前の辺を曲げてのぞく。座った人の目線（手前に倒した向き）で見る
 //   0〜0.06 持ち上げて手前に寄せる → 0.06〜0.13 横に回す → 0.13〜0.46 長い辺を少しずつ曲げて、端の列のマークをのぞく → 戻す
 //   → 0.48〜0.55 縦に戻す → 0.55〜0.82 短い辺を曲げて、上下のマークをのぞく → 戻す → 0.86〜0.95 一気に表にする → 置く
-function bqPose(q, v = 0) {
+function bqPose(sec, slot, v = 0) {
+  // 絞る部分は v105 と同じ割合（q）で動かす。そのあとは秒で：ひと呼吸 → 返す → 見せる → 置く
+  const T = bacSqDur(slot), Tp = bacSqPeel(slot), q = Math.min(sec / Tp, 0.85), a = sec - 0.85 * Tp;
   const d = v * 0.02, dir = v ? 1 : -1;
   let edge = "", x = 0, th = 0, f = 0;
   if (q > 0.13 + d && q < 0.48) {
@@ -13162,10 +13204,10 @@ function bqPose(q, v = 0) {
     th = 155 * x; f = 0.08 + 0.3 * x;
   }
   const rz = dir * 90 * bacEase((q - 0.06 - d) / 0.07) * (1 - bacEase((q - 0.48 - d) / 0.07));
-  const flip = bacEase((q - 0.86 - d) / 0.09);
-  const lift = bacEase(q / 0.06) * (1 - bacEase((q - 0.95) / 0.05));
-  // 手前に倒す角度：絞っている間は深く（のぞき込む）、表にするときは浅く（みんなに見せる）
-  const tilt = lift * (40 - 30 * bacEase((q - 0.85) / 0.08));
+  const flip = bacEase((a - BQ_BREATH - d * 4) / BQ_FLIP);
+  const lift = bacEase(q / 0.06) * (1 - bacEase((sec - (T - BQ_PUT)) / BQ_PUT));
+  // 手前に倒す角度：絞っている間は深く（のぞき込む）、ひと呼吸の間に起こしはじめ、表にしたあとは浅く（みんなに見せる）
+  const tilt = lift * (40 - 30 * bacEase((a - 0.1) / (BQ_BREATH + BQ_FLIP * 0.6)));
   // 横にしたとき、2枚がぶつからないよう左右に離す
   const sx = (v ? 1 : -1) * 0.2 * Math.abs(rz) / 90;
   return { edge, th, f, flip, lift, rz, tilt, sx };
@@ -13214,18 +13256,18 @@ function bacRenderSlot(s, st, slot, t, mini = false) {
   if (s.el.hidden) s.el.hidden = false;
   if (s.c !== slot.c) { s.c = slot.c; setKids(s.front, bacFront(slot.c)); }
   const dp = bacEase((t - slot.deal) / BAC_DEAL);
-  const q = slot.sq ? (t - slot.sq) / (slot.i === 2 ? BAC_SQ3 : BAC_SQ) : 0;
+  const q = slot.sq ? (t - slot.sq) / bacSqDur(slot) : 0, qUp = slot.sq ? bacUpAt(slot) / bacSqDur(slot) : 1;
   // 配る：シュー（右上）から、少し回りながら滑ってきて、最後にふわっと置かれる。3枚目は横向き（本物のテーブルと同じ）
   const rot = slot.i === 2 ? 90 : 0;
   const tx = (1 - dp) * 160, ty = (1 - dp) * -120, tr = (1 - dp) * -28, hop = Math.sin(Math.PI * dp) * 8;
   // mini（小さい表示）は大きなカードを出さないので、ここでめくる
-  const flip = mini ? bacEase((q - 0.85) / 0.1) : q >= 0.95 ? 1 : 0;
+  const flip = mini ? bacEase(((t - slot.sq) - bacFlipAt(slot)) / BQ_FLIP) : q >= qUp ? 1 : 0;
   const m = flip >= 1 ? "up" : flip > 0 ? "flip" : "down";
   if (s.el.dataset.m !== m) s.el.dataset.m = m;
   const rotY = m === "flip" ? 180 - flip * 180 : 0;
   s.el.style.transform = `translate(${(tx).toFixed(1)}px, ${(ty).toFixed(1)}px) translateZ(${hop.toFixed(1)}px) rotate(${(rot + tr).toFixed(1)}deg) rotateY(${rotY.toFixed(1)}deg)`;
   s.el.style.opacity = String(Math.min(1, dp * 2.5));
-  s.el.classList.toggle("sq", !mini && q > 0 && q < 0.95);
+  s.el.classList.toggle("sq", !mini && q > 0 && q < qUp);
 }
 // いまの時刻のテーブルを描く。合計は、その側のカードが全部表になってから出す
 function bacDraw(e, g, sp, now, loud) {
@@ -13241,23 +13283,23 @@ function bacDraw(e, g, sp, now, loud) {
   for (const [A, side] of [[e.P, "p"], [e.B, "b"]]) {
     for (let i = 0; i < 3; i++) bacRenderSlot(A.slots[i], null, P.slots.find((x) => x.side === side && x.i === i), t, e.mini);
     const mine = P.slots.filter((x) => x.side === side);
-    const upN = mine.filter((x) => x.sq && t >= x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.95).length;
+    const upN = mine.filter((x) => x.sq && t >= x.sq + (e.mini ? bacFlipAt(x) + BQ_FLIP : bacUpAt(x))).length;
     const cs = side === "p" ? p : b;
     A.tot.textContent = upN >= 2 ? String(bacTot(cs.slice(0, upN))) : "";
   }
   // v105 絞っているカード（同じ側の2枚、または3枚目）を大きく出す
-  const now2 = e.mini ? [] : P.slots.filter((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ));
+  const now2 = e.mini ? [] : P.slots.filter((x) => x.sq && t >= x.sq && t < x.sq + bacSqDur(x));
   if (e.stage) {
     e.stage.hidden = !now2.length;
     if (now2.length) {
-      const sd = now2[0].side, dur = now2[0].i === 2 ? BAC_SQ3 : BAC_SQ, q = (t - now2[0].sq) / dur;
+      const sd = now2[0].side, sec = t - now2[0].sq, T = bacSqDur(now2[0]);
       e.stage.className = `bc-stage ${sd}${now2.length === 1 ? " one" : ""}`;
-      e.stage.style.opacity = rlF(bacEase(q / 0.05) * (1 - bacEase((q - 0.965) / 0.035)));
+      e.stage.style.opacity = rlF(bacEase(sec / 0.3) * (1 - bacEase((sec - (T - BQ_PUT * 0.6)) / (BQ_PUT * 0.6))));
       e.stLab.textContent = `${sd === "p" ? "PLAYER" : "BANKER"} · SQUEEZE`;
       e.big.forEach((B, i) => {
         const sl = now2[i];
         B.el.hidden = !sl;
-        if (sl) bqRender(B, sl.c, bqPose((t - sl.sq) / (sl.i === 2 ? BAC_SQ3 : BAC_SQ), now2.length > 1 ? i : 0));
+        if (sl) bqRender(B, sl.c, bqPose(t - sl.sq, sl, now2.length > 1 ? i : 0));
       });
     }
   }
@@ -13265,7 +13307,7 @@ function bacDraw(e, g, sp, now, loud) {
   e.P.el.classList.toggle("win", shown && w === "P"); e.B.el.classList.toggle("win", shown && w === "B");
   e.P.el.classList.toggle("lose", shown && w === "B"); e.B.el.classList.toggle("lose", shown && w === "P");
   e.P.el.classList.toggle("tie", shown && w === "T"); e.B.el.classList.toggle("tie", shown && w === "T");
-  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ));
+  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + bacSqDur(x));
   rlState(e, t < 0 ? "spinning" : done ? "done" : sq ? "spinning tense" : "spinning");
   const my = rlMyBets(g);
   if (t < 0) rlWait(e, "NO MORE BETS");
@@ -13279,11 +13321,12 @@ function bacSound(e, g, sp, P, t, D) {
   const s = (e.snds ??= {});
   if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, deal: new Set(P.slots.filter((x) => t > x.deal).map((x) => `${x.side}${x.i}`)), up: new Set(P.slots.filter((x) => x.sq && t > x.sq + 0.5).map((x) => `${x.side}${x.i}`)), beat: Math.floor(t / 0.7), done: t >= D + BAC_REVEAL }; return; }
   for (const x of P.slots) {
-    const k = `${x.side}${x.i}`, dur = x.i === 2 ? BAC_SQ3 : BAC_SQ;
+    const k = `${x.side}${x.i}`;
     if (!s.deal.has(k) && t >= x.deal) { s.deal.add(k); rlSfx("bcDeal", 0.8); }
-    if (x.sq && !s.up.has(k) && t >= x.sq + dur * 0.87) { s.up.add(k); rlSfx("bcFlip", 0.9); }
+    if (x.sq && !s.up.has(k) && t >= x.sq + bacFlipAt(x) + BQ_FLIP * 0.15) { s.up.add(k); rlSfx("bcFlip", 0.9); }
   }
-  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + (x.i === 2 ? BAC_SQ3 : BAC_SQ) * 0.86);
+  // 鼓動は絞っている間とひと呼吸の間だけ
+  const sq = P.slots.some((x) => x.sq && t >= x.sq && t < x.sq + bacFlipAt(x));
   const bt = Math.floor(t / 0.7);
   if (sq && bt !== s.beat) { s.beat = bt; rlSfx("beat", 0.55); }
   if (!s.done && t >= D + BAC_REVEAL) { s.done = true; if (t - D < BAC_REVEAL + 2.5) rlResultFx(g, sp); }
@@ -13851,7 +13894,9 @@ const ccFloorZ = (x, y) => { const r = Math.hypot(x, y); return r < CC_RIM ? CC_
 function ccRender(e, d, fix, zp, shake = 0) {
   const W = e.box.clientWidth || e.lastW || 300;
   e.lastW = W;
-  const k = W / 200; // 1mm が何 px か（丼の直径 約164mm＋まわりの机）
+  const q = zp < 0.5 ? 4 * zp * zp * zp : 1 - (-2 * zp + 2) ** 3 / 2;
+  // v106 寄るときは CSS で拡大せず、1mm あたりの px（k）を大きくして描き直す（ぼやけないように）
+  const sc = 1 + 0.75 * q, k = (W / 200) * sc; // 1mm が何 px か（丼の直径 約164mm＋まわりの机）
   if (e.persp !== W) { e.persp = W; e.box.style.perspective = `${Math.round(W * 2.2)}px`; }
   e.tray.style.setProperty("--k", `${k}px`);
   e.tray.style.transform = "translate(-50%, -50%)";
@@ -13874,9 +13919,8 @@ function ccRender(e, d, fix, zp, shake = 0) {
   });
   if (nIn) { cx /= nIn; cy /= nIn; }
   // ズーム：真上に近い角度から、丼の中のサイコロの真ん中へ寄る
-  const q = zp < 0.5 ? 4 * zp * zp * zp : 1 - (-2 * zp + 2) ** 3 / 2;
-  const tilt = 34 - 26 * q, sc = 1 + 0.75 * q;
-  e.cam.style.transform = `scale(${rlF(sc)}) rotateX(${rlF(tilt)}deg) translate3d(${rlF(-cx * k * q)}px, ${rlF(-cy * k * q + 6 * k * (1 - q))}px, ${rlF(-20 * k * q)}px)`;
+  const tilt = 34 - 26 * q;
+  e.cam.style.transform = `rotateX(${rlF(tilt)}deg) translate3d(${rlF(-cx * k * q)}px, ${rlF(-cy * k * q + 6 * k * (1 - q))}px, ${rlF(-20 * k * q)}px)`;
   e.el.classList.toggle("zoom", zp > 0);
 }
 // 2つの置き方の間（拾い上げる動き）。向きは四元数をそのまま混ぜて正規化
@@ -14272,8 +14316,10 @@ function rlBuildCasino(id) {
     const c = RL_COLS[rlColor(n)];
     rot.append(svgEl("path", { d: rlSector((i - 0.5) * A, (i + 0.5) * A, 66, 78), fill: c[0] }), svgEl("path", { d: rlSector((i - 0.5) * A, (i + 0.5) * A, 56, 66), fill: c[1] }));
   });
+  // v106 自分が賭けた（当たりになる）ポケットを、その人の画面だけでうっすら光らせる（円盤と一緒に回る）
+  const mine = svgEl("g", { class: "rl-mine" });
   const hit = svgEl("path", { class: "rl-hit", d: "" });
-  rot.append(hit);
+  rot.append(mine, hit);
   RL_ORDER.forEach((n, i) => {
     const [x0, y0] = rlXY((i - 0.5) * A, 56), [x1, y1] = rlXY((i - 0.5) * A, 78);
     rot.append(svgEl("line", { x1: rlF(x0), y1: rlF(y0), x2: rlF(x1), y2: rlF(y1), stroke: "#C4C4CE", "stroke-width": 0.7 }));
@@ -14294,7 +14340,21 @@ function rlBuildCasino(id) {
   const ball = svgEl("g", { class: "rl-ball", opacity: 0 });
   ball.append(svgEl("circle", { r: 3.3, fill: `url(#rlb${id})` }));
   s.append(shadow, ball, svgEl("circle", { r: 99, fill: `url(#rlg${id})`, "pointer-events": "none" }), svgEl("ellipse", { cx: -10, cy: -48, rx: 70, ry: 44, fill: `url(#rls${id})`, "pointer-events": "none" }));
-  return { svg: s, rot, ball, shadow, hit };
+  return { svg: s, rot, ball, shadow, hit, mine };
+}
+// v106 自分の賭けで当たりになるポケット（0〜36 のうち、どれかの賭けが当たる数字）を円盤に出す。止まって当たったポケットは強めに光らせる
+function rlMineMark(e, bets, hitN) {
+  if (!e.mine) return;
+  const spots = Object.keys(bets ?? {}).filter((k) => (bets[k] ?? 0) > 0).sort();
+  const key = `${spots.join(",")}|${hitN ?? ""}`;
+  if (e.mineKey === key) return;
+  e.mineKey = key;
+  const A = RL_POCKET, kids = [];
+  RL_ORDER.forEach((n, i) => {
+    if (!spots.some((k) => rlWins(k, n))) return;
+    kids.push(svgEl("path", { class: `rl-mine-p${n === hitN ? " win" : ""}`, d: rlSector((i - 0.5) * A, (i + 0.5) * A, 56, 78) }));
+  });
+  e.mine.replaceChildren(...kids);
 }
 // 抽選の円盤（色分けした項目・ピン・まわりの電球・上の針）
 function rlBuildLot(id) {
@@ -14433,6 +14493,8 @@ function rlDrawCasino(e, g, sp, now, loud) {
     e.rot.setAttribute("transform", `rotate(${rlF(e.theta)})`);
     e.ball.setAttribute("opacity", 0); e.shadow.setAttribute("opacity", 0);
     e.hit.setAttribute("d", "");
+    // 賭けている間：自分が置いたチップ（下書き）の分を出す
+    rlMineMark(e, g.phase === "bet" && S.user ? RLX.draft?.get(g.id)?.round === g.rl?.round ? RLX.draft.get(g.id).bets : null : null, null);
     rlZoom(e, 0, 0);
     rlState(e, "");
     rlWait(e, g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "");
@@ -14464,6 +14526,7 @@ function rlDrawCasino(e, g, sp, now, loud) {
   e.shadow.setAttribute("transform", `translate(${rlF(x + 0.8 + z * 4)} ${rlF(y + 1.4 + z * 6)})`);
   const done = t >= D, shown = t >= D + RL_REVEAL;
   e.hit.setAttribute("d", shown ? rlSector((idx - 0.5) * RL_POCKET, (idx + 0.5) * RL_POCKET, 56, 78) : "");
+  rlMineMark(e, rlMyBets(g), shown ? sp.n : null);
   rlState(e, done ? "done" : pose.phase === "hop" ? "spinning tense" : "spinning");
   // v103 止まって少したってから、入ったポケットへズーム（玉を真上に回して寄る）
   const zp = e.mini ? 0 : Math.max(0, Math.min(1, (t - D - RL_ZOOM_AT) / RL_ZOOM_DUR));
@@ -14476,14 +14539,25 @@ function rlDrawCasino(e, g, sp, now, loud) {
   return t < D + 14;
 }
 // v103 ズーム（p：0〜1、ball：玉の角度）。玉を真上へ回し、拡大して、真ん中へ寄せる。外側は丸く切り取る
+// v106 拡大は SVG の中のグループ（カメラ）にかける。SVG 全体を CSS で拡大すると、拡大前の小さい絵を引き伸ばしてぼやけるため。
+//   中のグループなら、拡大した大きさで図形を描き直すので、何倍でもくっきり見える（座標は円盤の真ん中が 0,0、1 = 円盤の半径の 1/100）
+function rlCam(e) {
+  if (e.cam?.parentNode === e.svg) return e.cam;
+  const cam = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  cam.setAttribute("class", "rl-cam");
+  for (const n of [...e.svg.childNodes]) if (n.nodeName !== "defs") cam.append(n);
+  e.svg.append(cam);
+  return (e.cam = cam);
+}
 function rlZoom(e, p, ball) {
-  if (!p) { if (e.zp) { e.zp = 0; e.svg.style.transition = "transform .6s cubic-bezier(.2, .8, .2, 1)"; e.svg.style.transform = ""; e.el.classList.remove("zoom"); } return; }
+  if (!p) { if (e.zp) { e.zp = 0; const c = rlCam(e); c.style.transition = "transform .6s cubic-bezier(.2, .8, .2, 1)"; c.style.transform = ""; e.el.classList.remove("zoom"); } return; }
   const k = p < 0.5 ? 4 * p * p * p : 1 - (-2 * p + 2) ** 3 / 2; // ゆっくり始まって、ゆっくり止まる
   let a = ((ball % 360) + 360) % 360; if (a > 180) a -= 360;
   const s = 1 + (RL_ZOOM_X - 1) * k, R = RL_RP * 100;
   e.zp = p;
-  e.svg.style.transition = "none";
-  e.svg.style.transform = `translateY(${rlF((R * s * k) / 2)}%) scale(${rlF(s)}) rotate(${rlF(-a * k)}deg)`;
+  const c = rlCam(e);
+  c.style.transition = "none";
+  c.style.transform = `translateY(${rlF(R * s * k)}px) scale(${rlF(s)}) rotate(${rlF(-a * k)}deg)`;
   e.el.classList.add("zoom");
 }
 // 数字の札（色つきの丸＋数字。d があれば、そこで止まったときの自分の増減）
@@ -14996,7 +15070,7 @@ function cardPhaseText(g) {
 // 参加者のトランプ画面の上に出す短い表記（例：BJ · R1/3 · BET）
 function cardPhaseShort(g) {
   if (g.kind === "rl") {
-    const ph = g.phase === "ended" ? "END" : { bet: "BET", spin: rlDice(g) ? "SHAKE" : rlBac(g) ? "DEAL" : rlCrash(g) ? "LIVE" : rlCc(g) ? "THROW" : "SPIN", result: "RESULT", ready: "READY", roll: "ROLL" }[g.phase] ?? "PLAY";
+    const ph = g.phase === "ended" ? "END" : { bet: "BET", spin: rlDice(g) ? "ROLL" : rlBac(g) ? "DEAL" : rlCrash(g) ? "LIVE" : rlCc(g) ? "THROW" : "SPIN", result: "RESULT", ready: "READY", roll: "ROLL" }[g.phase] ?? "PLAY";
     return [rlDice(g) ? "SIC BO" : rlBac(g) ? "BACCARAT" : rlCrash(g) ? "CRASH" : rlCc(g) ? "CHINCHIRO" : rlLottery(g) ? "LOTTERY" : "ROULETTE", g.phase === "ended" ? null : `R${g.rl?.round ?? 1}/${rlO(g.opts).rounds}`, ph].filter(Boolean).join(" · ");
   }
   const bj = g.kind === "bj", o = bj ? bjO(g.opts) : dfgO(g.opts);
@@ -18362,7 +18436,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v105"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v106"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;

@@ -3608,6 +3608,23 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer .cx-fan.bj-slow .pc.deal { animation-name: cxDealBJd; }
+/* v106 伏せたまま配るカード（ディーラーの2枚目・押して開く前の自分のカード）は、くるっと返さない。滑ってきて置かれるだけ（表になるのは、めくるとき＝flipup） */
+@keyframes cxDealBJback {
+  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); }
+  18% { opacity: 1; }
+  30% { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
+  36% { transform: translateY(-2px) scale(1.015); }
+  44%, 100% { opacity: 1; transform: none; } }
+@keyframes cxDealBJdBack {
+  0% { opacity: 0; transform: translate(44px, 0) rotate(8deg) scale(.82); }
+  18% { opacity: 1; }
+  30% { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
+  36% { transform: translateY(-2px) scale(1.015); }
+  44%, 100% { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: no-preference) {
+  .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJback; }
+  .cx-hand.is-bj .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJback, bjGlow; }
+  .cx-dealer .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJdBack; } }
 /* v105 ディーラーは、もっとゆっくりめくる */
 .cx-dealer .cx-fan.bj-slow.bj-dl .pc.deal, .cx-dealer .cx-fan.bj-slow.bj-dl .pc.flipup, .cx-fan.bj-slow.bj-dl .pc.deal, .cx-fan.bj-slow.bj-dl .pc.flipup { animation-duration: 2.4s; }
 .cx-fan.bj-slow.bj-dl .pc.deal:not(.back)::after, .cx-fan.bj-slow.bj-dl .pc.flipup:not(.back)::after { animation-duration: 2.4s; }
@@ -3989,7 +4006,8 @@ button.num-slot { cursor: pointer; }
 .rl-wheel.done .rl-disc { filter: drop-shadow(0 0 20px rgba(255, 232, 154, .32)); }
 /* v103 止まったポケットへズーム：円の外は切り取る */
 .rl-wheel.zoom .rl-disc { overflow: hidden; border-radius: 50%; box-shadow: 0 0 0 3px rgba(216, 196, 142, .55), 0 0 30px rgba(255, 232, 154, .25); }
-.rl-wheel.zoom .rl-svg { transform-origin: 50% 50%; will-change: transform; }
+/* v106 拡大は中のグループ（.rl-cam）で。will-change を付けると拡大前の絵が引き伸ばされてぼやける */
+.rl-cam { transform-box: view-box; transform-origin: 0 0; }
 .rl-wheel.mini .rl-vig, .rl-wheel.mini .rl-read { display: none; }
 .rl-wheel.mini.tense .rl-disc { transform: none; }
 .rl-lights circle { fill: #34315A; }
@@ -4223,8 +4241,8 @@ button.rl-cell:active { transform: scale(.94); }
 .rl-wheel.dc .dc-box { position: relative; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 50%;
   background: radial-gradient(circle at 50% 42%, #2A1D10 0%, #160E06 62%, #0B0704 100%); box-shadow: inset 0 0 0 2px rgba(216, 196, 142, .35), 0 10px 30px rgba(0, 0, 0, .5); }
 .rl-wheel.dc .rl-disc { transition: none; }
-.dc-cam { position: absolute; inset: 0; transform-style: preserve-3d; transform-origin: 50% 50%; will-change: transform; }
-.dc-tray { position: absolute; left: 50%; top: 50%; width: calc(var(--k, 3px) * 96); height: calc(var(--k, 3px) * 96); transform-style: preserve-3d; }
+.dc-cam { position: absolute; inset: 0; transform-style: preserve-3d; transform-origin: 50% 50%; }
+.dc-tray { position: absolute; left: 50%; top: 50%; width: calc(var(--k, 3px) * 120); height: calc(var(--k, 3px) * 120); transform-style: preserve-3d; }
 .dc-floor { position: absolute; inset: calc(var(--k, 3px) * 2); border-radius: 50%;
   background: radial-gradient(circle at 46% 40%, #9E1C24 0%, #7A121A 48%, #4E0A10 100%); box-shadow: inset 0 0 calc(var(--k, 3px) * 6) rgba(0, 0, 0, .55); }
 .dc-floor::after { content: ""; position: absolute; inset: 22%; border-radius: 50%; border: calc(var(--k, 3px) * .5) solid rgba(255, 214, 150, .22); }
@@ -4357,10 +4375,11 @@ button.rl-cell:active { transform: scale(.94); }
 .bc-curl.v { background: linear-gradient(90deg, rgba(0, 0, 0, .45), #F8F4EA 35%, #D8D2C4 70%, rgba(0, 0, 0, .3)); }
 .bc-curl.h { background: linear-gradient(0deg, rgba(0, 0, 0, .45), #F8F4EA 35%, #D8D2C4 70%, rgba(0, 0, 0, .3)); }
 .bc-idx { position: absolute; display: flex; flex-direction: column; align-items: center; line-height: 1; font-weight: 700; }
-.bc-idx b { font-size: 3cqw; letter-spacing: -.04em; } .bc-idx i { font-size: 2.4cqw; font-style: normal; }
-.bc-idx.tl { left: 6%; top: 4%; } .bc-idx.br { right: 6%; bottom: 4%; transform: rotate(180deg); }
-.bc-pips { position: absolute; inset: 8% 14%; }
-.bc-pips i { position: absolute; transform: translate(-50%, -50%); font-size: 3.1cqw; font-style: normal; line-height: 1; }
+/* v106 本物のトランプと同じく、角の数字の列とマークの列を分ける（「10」の角にマークがかぶっていた） */
+.bc-idx b { font-size: 2.8cqw; letter-spacing: -.1em; } .bc-idx i { font-size: 2.3cqw; font-style: normal; }
+.bc-idx.tl { left: 5%; top: 4%; } .bc-idx.br { right: 5%; bottom: 4%; transform: rotate(180deg); }
+.bc-pips { position: absolute; inset: 9% 22%; }
+.bc-pips i { position: absolute; transform: translate(-50%, -50%); font-size: 2.5cqw; font-style: normal; line-height: 1; }
 .bc-pips i.dn { transform: translate(-50%, -50%) rotate(180deg); }
 .bc-pips.ace i { font-size: 6.6cqw; }
 .bc-court { position: absolute; inset: 16% 18%; display: flex; flex-direction: column; align-items: center; justify-content: center; border: .35cqw double currentColor; border-radius: .8cqw;
@@ -4643,3 +4662,26 @@ button.rl-cell:active { transform: scale(.94); }
 .rl-wheel.cr.mini .cr-prob { display: none; }
 .cr-auto { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; line-height: 1.1; }
 .cr-auto b { font-size: 13px; font-weight: 700; } .cr-auto small { font-size: 9.5px; font-weight: 600; opacity: .7; white-space: nowrap; }
+/* v106 ルーレット：自分が賭けた（当たりになる）ポケットを、うっすら光らせる。止まって当たったところは強めに */
+.rl-mine-p { fill: rgba(255, 236, 170, .16); stroke: rgba(255, 236, 170, .5); stroke-width: .45; pointer-events: none; }
+.rl-mine-p.win { fill: rgba(255, 226, 130, .4); stroke: #FFE89A; stroke-width: 1.1; animation: rlMineWin 1s ease-in-out infinite alternate; }
+@keyframes rlMineWin { from { fill-opacity: .7; } to { fill-opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .rl-mine-p.win { animation: none; } }
+
+/* v106 大小：上から落とす台（直径約12cm）。まわりの低い壁は、高さを変えた6枚の輪を重ねて見せる */
+.dc-wall { position: absolute; inset: 0; border-radius: 50%; border: calc(var(--k, 3px) * 2.2) solid #3A3A42; transform: translateZ(calc(var(--k, 3px) * var(--z))); pointer-events: none;
+  box-shadow: inset 0 0 0 calc(var(--k, 3px) * .3) rgba(0, 0, 0, .35); }
+.dc-wall.top { border-color: #9A9AA6; box-shadow: inset 0 0 0 calc(var(--k, 3px) * .5) rgba(0, 0, 0, .45), inset 0 calc(var(--k, 3px) * .6) 0 rgba(255, 255, 255, .28), 0 0 0 calc(var(--k, 3px) * .6) #222228; }
+.dc-ring { border-color: #2A2A30; }
+/* v106 サイコロを細かくリアルに：象牙色の面に、角の丸みのつや（左上が明るく右下が暗い）・彫って塗った目（くぼみの影と、ふちの光）。チンチロも同じ */
+.dc-side { border-radius: 19%;
+  background: radial-gradient(120% 120% at 30% 25%, #FFFFFB 0%, #F7F2E6 45%, #ECE4D2 80%, #DDD3BC 100%);
+  box-shadow: inset calc(var(--k, 3px) * .45) calc(var(--k, 3px) * .45) calc(var(--k, 3px) * .9) rgba(255, 255, 255, .85),
+    inset calc(var(--k, 3px) * -.55) calc(var(--k, 3px) * -.55) calc(var(--k, 3px) * 1.1) rgba(120, 98, 60, .32),
+    inset 0 0 0 calc(var(--k, 3px) * .12) rgba(160, 140, 100, .35); }
+.dc-side b { width: 76%; height: 76%;
+  background: radial-gradient(circle at 62% 66%, #4A4A50 0%, #1E1E22 38%, #060607 72%);
+  box-shadow: inset calc(var(--k, 3px) * .22) calc(var(--k, 3px) * .28) calc(var(--k, 3px) * .32) rgba(0, 0, 0, .9),
+    calc(var(--k, 3px) * -.08) calc(var(--k, 3px) * -.1) 0 rgba(255, 255, 255, .75), calc(var(--k, 3px) * .08) calc(var(--k, 3px) * .1) calc(var(--k, 3px) * .1) rgba(120, 98, 60, .35); }
+.dc-side b.r { background: radial-gradient(circle at 62% 66%, #FF6E74 0%, #D3222C 40%, #8E0A14 76%); }
+.dc-core { background: #E2D8C2; }
