@@ -1057,6 +1057,7 @@ function h(tag, props, ...kids) {
 
 // SF Symbols 風の線アイコン（24×24、currentColor で着色）
 const ICONS = {
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
   bed: '<path d="M3 18V6"/><path d="M3 14h18v4"/><path d="M21 14v-1.5A3.5 3.5 0 0 0 17.5 9H11v5"/><circle cx="7" cy="11" r="2"/>',
   car: '<path d="M4.5 13 6.6 7.4A2 2 0 0 1 8.5 6h7a2 2 0 0 1 1.9 1.4L19.5 13"/><path d="M3 13.5A1.5 1.5 0 0 1 4.5 12h15a1.5 1.5 0 0 1 1.5 1.5V17H3Z"/><path d="M6 17v2M18 17v2"/><circle cx="7" cy="14.5" r=".6"/><circle cx="17" cy="14.5" r=".6"/>',
   megaphone: '<path d="M4 10v4a1 1 0 0 0 1 1h2l5 4V5L7 9H5a1 1 0 0 0-1 1Z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
@@ -2433,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v100"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v101"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11747,8 +11748,10 @@ function bjDeal(g, secs) {
     let bet = want >= o.betMin && want <= max ? want : 0;
     if (!bet && o.noBet > 0) bet = Math.max(o.betMin, Math.min(o.noBet, max));
     if (!bet) { skip.push(u); continue; }
-    st.hands[u] = { cards: [], bet, done: false };
+    st.hands[u] = { cards: [], bet, done: false, ...(g.opts?.tapOpen === true ? { open: g.demo && u !== S.user?.uid ? 99 : 0 } : {}) };
   }
+  if (g.opts?.tapOpen === true) st.oseq = {};
+  st.used = {};
   const inRound = Object.keys(st.hands);
   if (o.reshuffle === "each" || shoe.length < 20 + inRound.length * 8) shoe = gShuffle(newDeck(0, o.decks));
   if (!inRound.length) {
@@ -11774,10 +11777,11 @@ function bjPeek(g, st, hole, shoe, log, secrets) {
   const o = bjO(g.opts);
   const inRound = Object.keys(st.hands), manual = cardManual(g.opts);
   // 管理者がディーラーのときは、全員がブラックジャックでもディーラーがカードを開けるまで待つ（ディーラーのブラックジャックはすぐ開く）
-  if (bjIsBJ([st.dealer[0], hole]) || (!manual && inRound.every((k) => st.hands[k].done))) return { update: bjSettle(g, st, hole, shoe, log), secrets: [[DEALER, { gameId: g.id, uid: DEALER, shoe, hole: null }]] };
+  const unop = [...new Set(inRound.map(bjOwn))].filter((u) => bjUnop(st, u));
+  if (bjIsBJ([st.dealer[0], hole]) || (!manual && inRound.every((k) => st.hands[k].done) && !unop.length)) return { update: bjSettle(g, st, hole, shoe, log), secrets: [[DEALER, { gameId: g.id, uid: DEALER, shoe, hole: null }]] };
   if (st.insTaken) log = [...log, gLog("ディーラーはブラックジャックではありませんでした（保険は没収です）。", null, { type: "bjPeek", quiet: true })];
   const actors = [...new Set(inRound.map(bjOwn))];
-  return { update: { bj: st, phase: "play", actKey: "p", actors: manual ? actors.filter((u) => bjCur(st, u)) : actors, endsAt: cardEnds(g.opts, o.playSec), log }, secrets };
+  return { update: { bj: st, phase: "play", actKey: "p", actors: manual ? actors.filter((u) => bjCur(st, u) || unop.includes(u)) : actors, endsAt: cardEnds(g.opts, o.playSec), log }, secrets };
 }
 // 保険の受付を締め切る
 function bjInsure(g, secs, force = false) {
@@ -11788,18 +11792,92 @@ function bjInsure(g, secs, force = false) {
   const took = [];
   for (const u of g.actors) {
     const amt = Math.floor((st.hands[u]?.bet ?? 0) / 2);
-    if (cardAct(g, "i", u, `r${r}`) === "y" && amt >= 1 && bjFree(st, u) >= amt) { st.ins[u] = amt; took.push(`${memberName(u)} ${amt}枚`); }
+    bjApplyOpen(st, u, cardAct(g, "i", u, `r${r}`));
+    if (bjInsPick(cardAct(g, "i", u, `r${r}`)) === "y" && amt >= 1 && bjFree(st, u) >= amt) { st.ins[u] = amt; took.push(`${memberName(u)} ${amt}枚`); }
   }
   st.insTaken = took.length > 0;
   const log = [...(g.log ?? []), gLog(took.length ? `保険をかけた人：${took.join("・")}` : "保険をかけた人はいませんでした。", null, { type: "bjInsDone", quiet: true })];
   return bjPeek(g, st, dsec.hole, [...(dsec.shoe ?? [])], log, [[DEALER, { shoe: [...(dsec.shoe ?? [])] }]]);
 }
-// 操作の読み取り「h1.2」＝ 1つ目の手で、カードが2枚のときにヒット
-const bjParseAct = (a) => { const m = /^([hsdpr])(\d)\.(\d+)$/.exec(a ?? ""); return m ? { op: m[1], no: Number(m[2]), n: Number(m[3]) } : null; };
+// 操作の読み取り「h1.2」＝ 1つ目の手で、カードが2枚のときにヒット（v101：後ろに「|番号|開いた枚数」が付くことがある）
+const bjParseAct = (a) => { const m = /^([hsdpr])(\d)\.(\d+)(?:\|.*)?$/.exec(a ?? ""); return m ? { op: m[1], no: Number(m[2]), n: Number(m[3]) } : null; };
+// ---- v101 配られた自分のカードを、自分で押して開く（どきどき）
+// 本人の端末は、開いた枚数を操作の後ろに付けて送る：「h1.2|1731800000000|1.2,2.2」＝ 送った番号（増えていく）・1つ目の手は2枚、2つ目の手は2枚まで開いた
+// 開くだけのときは「o|番号|1.3」。保険は「y|番号|1.2」。ディーラー（管理者の端末）が受け取って、手ごとの open（開いた枚数）を games に書く。
+// 全員の画面は open の枚数だけ表にする（本人の端末は、送る前でも自分が開いた分は表にする）。結果が出たら全部表。
+const bjTap = (g) => g?.kind === "bj" && g.opts?.tapOpen === true;
+const bjHidePh = (g) => g.phase === "insure" || g.phase === "play";
+const bjInsPick = (a) => (a == null ? null : String(a).split("|")[0] || null);
+const BJL = new Set(); // この端末で自分が開いたカード：`${gameId}.${回}.${手}.${何枚目}.${カード}`
+// まだ開いていないカードがある人（ディーラーの端末で使う。開く仕組みがオフの回は open がないので「全部開いている」）
+const bjUnop = (st, u) => bjHandsOf(st, u).some((k) => (st.hands[k].open ?? 99) < st.hands[k].cards.length);
+const bjOpenBody = (a) => { const m = /\|(\d+)\|([\d.,]*)$/.exec(a ?? ""); return m ? { seq: Number(m[1]), list: m[2] } : null; };
+// 届いた「開いた枚数」を手に反映する（前に反映した番号より新しいものだけ。スプリットの前に送った数を、あとで当てはめないため）
+function bjApplyOpen(st, u, a) {
+  const b = bjOpenBody(a);
+  if (!b || !(b.seq > (st.oseq?.[u] ?? 0))) return false;
+  st.oseq = { ...(st.oseq ?? {}), [u]: b.seq };
+  for (const x of b.list.split(",")) {
+    const [no, n] = x.split(".").map(Number);
+    const k = bjHandsOf(st, u).find((y) => bjNo(y) === no), hd = k ? st.hands[k] : null;
+    if (hd && hd.open != null && n > hd.open) hd.open = Math.min(n, hd.cards.length);
+  }
+  return true;
+}
+const bjOpenFresh = (g, st, u) => { const r = `r${st.round}`; return [cardAct(g, "p", u, r), cardAct(g, "i", u, r)].some((a) => { const b = bjOpenBody(a); return b && b.seq > (st.oseq?.[u] ?? 0); }); };
+// この端末で表にして見せる枚数
+function bjShownN(g, st, k) {
+  const hd = st.hands[k], n = hd.cards.length;
+  if (!bjTap(g) || !bjHidePh(g) || hd.open == null) return n;
+  const u = bjOwn(k);
+  let c = Math.min(hd.open, n);
+  if (u === S.user?.uid) while (c < n && BJL.has(`${g.id}.${st.round}.${k}.${c}.${hd.cards[c]}`)) c++;
+  return c;
+}
+const bjShown = (g, st, k) => { const n = bjShownN(g, st, k); return st.hands[k].cards.map((c, i) => (i < n ? c : null)); };
+const bjFull = (g, st, k) => bjShownN(g, st, k) >= st.hands[k].cards.length;
+// 自分のまだ開いていない枚数（全部の手）
+const bjMyClosed = (g, st, u) => bjHandsOf(st, u).reduce((a, k) => a + st.hands[k].cards.length - bjShownN(g, st, k), 0);
+// 送る「開いた枚数」の文字
+const bjOpenTail = (g, st, u) => `|${Date.now()}|${bjHandsOf(st, u).map((k) => `${bjNo(k)}.${bjShownN(g, st, k)}`).join(",")}`;
+// 1枚開く（左から順に）。all なら全部
+function bjOpenCard(g, k, all = false) {
+  const st = g.bj, hd = st.hands?.[k];
+  if (!hd || bjOwn(k) !== S.user?.uid) return;
+  let c = bjShownN(g, st, k), opened = 0;
+  while (c < hd.cards.length) { BJL.add(`${g.id}.${st.round}.${k}.${c}.${hd.cards[c]}`); c++; opened++; if (!all) break; }
+  if (!opened) return;
+  navigator.vibrate?.(14);
+  scheduleRender();
+  bjSyncOpen(g, true);
+}
+// 操作（HIT・保険など）を送る：開いた枚数の送信が待っていたら取り消す（あとから上書きしないように）
+function bjSendAct(g, key, r, body) { clearTimeout(BJSENT.get(`t${g.id}`)); BJSENT.delete(`t${g.id}`); cardSend(g, key, r, body); }
+// 開いた枚数を送る（勝負の場面で、まだ反映されていない分があるとき。保険の場面は、保険の答えといっしょに送る）
+const BJSENT = new Map();
+function bjSyncOpen(g, soon = false) {
+  if (!bjTap(g) || g.phase !== "play" || !S.user || !g.actors?.includes(S.user.uid)) return;
+  const st = g.bj, u = S.user.uid;
+  if (bjPending(g, st, u)) return; // 送った操作がまだ反映されていない（上書きしない）
+  const ks = bjHandsOf(st, u);
+  if (!ks.some((k) => bjShownN(g, st, k) > (st.hands[k].open ?? 99))) return;
+  const sig = `${g.id}.${st.round}.${ks.map((k) => `${k}:${bjShownN(g, st, k)}`).join(",")}`;
+  if (BJSENT.get(g.id) === sig) return;
+  clearTimeout(BJSENT.get(`t${g.id}`));
+  BJSENT.set(`t${g.id}`, setTimeout(() => {
+    const cur = S.games.get(g.id) ?? g;
+    if (!BJSENT.has(`t${g.id}`) || cur.phase !== "play" || bjPending(cur, cur.bj, u)) return;
+    BJSENT.delete(`t${g.id}`);
+    BJSENT.set(g.id, sig);
+    cardSend(cur, "p", `r${cur.bj.round}`, `o${bjOpenTail(cur, cur.bj, u)}`);
+  }, soon ? 160 : 0));
+}
 function bjPending(g, st, u) {
   const key = bjCur(st, u);
   if (!key) return null;
-  const a = bjParseAct(cardAct(g, "p", u, `r${st.round}`));
+  const raw = cardAct(g, "p", u, `r${st.round}`);
+  if (raw != null && st.used?.[u] === raw) return null; // 反映し終えた操作は読み直さない（スプリットのあと、1つ目の手がまた2枚になるため）
+  const a = bjParseAct(raw);
   return a && a.no === bjNo(key) && a.n === st.hands[key].cards.length ? { key, ...a } : null;
 }
 // ヒット・スタンド・ダブル・スプリット・降りる（届いた操作をまとめて反映）。時間切れの人は残りの手をすべてスタンド
@@ -11812,12 +11890,14 @@ function bjPlay(g, secs) {
   let changed = false;
   const owners = [...new Set(Object.keys(st.hands).map(bjOwn))];
   for (const u of owners) {
+    if (bjApplyOpen(st, u, cardAct(g, "p", u, `r${st.round}`))) changed = true;
     const act = bjPending(g, st, u);
     if (!act) {
       if (timeUp && bjCur(st, u)) { for (const k of bjHandsOf(st, u)) st.hands[k].done = true; changed = true; lines.push(`${memberName(u)}：時間切れのためスタンド`); }
       continue;
     }
     changed = true;
+    st.used = { ...(st.used ?? {}), [u]: cardAct(g, "p", u, `r${st.round}`) };
     const key = act.key, hd = st.hands[key], can = bjCan(g, st, u, key);
     const nm = `${memberName(u)}${bjHandsOf(st, u).length > 1 ? `（${bjNo(key)}つ目の手）` : ""}`;
     let op = act.op;
@@ -11825,18 +11905,19 @@ function bjPlay(g, secs) {
     if ((op === "p" && !can.p) || (op === "r" && !can.r)) op = "s";
     if (op === "s") { hd.done = true; lines.push(`${nm}：スタンド（${bjValue(hd.cards).total}）`); continue; }
     if (op === "r") { hd.done = true; hd.surr = true; lines.push(`${nm}：降りました（賭けの半分が戻ります）`); continue; }
-    if (op === "d") { hd.bet *= 2; hd.doubled = true; hd.cards.push(bjDraw(shoe, o.decks)); hd.done = true; lines.push(`${nm}：ダブル → ${cardText(hd.cards.at(-1))}（${bjValue(hd.cards).total}）`); continue; }
+    if (op === "d") { hd.bet *= 2; hd.doubled = true; hd.cards.push(bjDraw(shoe, o.decks)); hd.done = true; lines.push([`${nm}：ダブル → ${cardText(hd.cards.at(-1))}（${bjValue(hd.cards).total}）`, `${nm}：ダブル`]); continue; }
     if (op === "p") {
       const nk = `${u}~${Math.max(...bjHandsOf(st, u).map(bjNo)) + 1}`;
       const aces = hd.cards[0][1] === "A";
-      st.hands[nk] = { cards: [hd.cards[1]], bet: hd.bet, done: false, split: true };
+      st.hands[nk] = { cards: [hd.cards[1]], bet: hd.bet, done: false, split: true, ...(hd.open != null ? { open: Math.min(hd.open, 1) } : {}) };
       hd.cards = [hd.cards[0]]; hd.split = true;
+      if (hd.open != null) hd.open = Math.min(hd.open, 1);
       for (const k of [key, nk]) {
         const x = st.hands[k];
         x.cards.push(bjDraw(shoe, o.decks));
         if (aces || bjValue(x.cards).total >= 21) x.done = true; // A のスプリットは1枚ずつ
       }
-      lines.push(`${nm}：スプリット → ${cardsText(hd.cards)} ／ ${cardsText(st.hands[nk].cards)}`);
+      lines.push([`${nm}：スプリット → ${cardsText(hd.cards)} ／ ${cardsText(st.hands[nk].cards)}`, `${nm}：スプリット`]);
       continue;
     }
     hd.cards.push(bjDraw(shoe, o.decks));
@@ -11844,16 +11925,19 @@ function bjPlay(g, secs) {
     const charlie = o.charlie && v <= 21 && hd.cards.length >= o.charlie;
     if (v >= 21 || charlie) hd.done = true;
     if (charlie) hd.charlie = true;
-    lines.push(`${nm}：ヒット → ${cardText(hd.cards.at(-1))}（${v}${v > 21 ? "・バースト" : charlie ? `・${o.charlie}枚チャーリー` : ""}）`);
+    lines.push([`${nm}：ヒット → ${cardText(hd.cards.at(-1))}（${v}${v > 21 ? "・バースト" : charlie ? `・${o.charlie}枚チャーリー` : ""}）`, `${nm}：ヒット`]);
   }
-  if (!changed) return null;
-  const log = [...(g.log ?? []), ...lines.map((x) => gLog(x, null, { type: "bjMove", quiet: true }))];
-  if (Object.values(st.hands).every((x) => x.done)) {
+  // v101 自分で開く回：全員が自分のカードを開き終わるまで、ディーラーはカードを開けない（時間切れなら開ける）
+  const unop = owners.filter((u) => bjUnop(st, u));
+  const allDone = Object.values(st.hands).every((x) => x.done);
+  if (!changed && !(allDone && timeUp && unop.length && !cardManual(g.opts))) return null;
+  const log = [...(g.log ?? []), ...lines.map((x) => (Array.isArray(x) ? gLog(x[0], null, { type: "bjMove", quiet: true, mask: x[1] }) : gLog(x, null, { type: "bjMove", quiet: true })))];
+  if (allDone && (!unop.length || timeUp)) {
     // 管理者がディーラーのときは、ディーラーが「カードを開ける」を押すまで待つ
     if (cardManual(g.opts)) return { update: { bj: st, actors: [], log }, secrets: [[DEALER, { shoe }]] };
     return { update: bjSettle(g, st, dsec.hole, shoe, log), secrets: [[DEALER, { shoe, hole: null }]] };
   }
-  return { update: { bj: st, actors: owners.filter((u) => bjCur(st, u)), log }, secrets: [[DEALER, { shoe }]] };
+  return { update: { bj: st, actors: owners.filter((u) => bjCur(st, u) || unop.includes(u)), log }, secrets: [[DEALER, { shoe }]] };
 }
 // 管理者がディーラーのとき：締め切って、ディーラーのカードを開ける（まだ選んでいない人の手はスタンド）
 function bjReveal(g, secs) {
@@ -13195,7 +13279,7 @@ function cardTick(g) {
     const st = g.bj, r = `r${st.round}`;
     if (g.phase === "bet" && !manual && (timeUp || acted("b", r))) fn = bjDeal;
     else if (g.phase === "insure" && !manual && (timeUp || acted("i", r))) fn = bjInsure;
-    else if (g.phase === "play" && (g.actors.some((u) => bjPending(g, st, u)) || (timeUp && (!manual || g.actors.some((u) => bjCur(st, u)))))) fn = bjPlay;
+    else if (g.phase === "play" && (g.actors.some((u) => bjPending(g, st, u)) || (bjTap(g) && g.actors.some((u) => bjOpenFresh(g, st, u))) || (timeUp && (!manual || g.actors.some((u) => bjCur(st, u)))))) fn = bjPlay;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = bjNext;
   } else if (g.kind === "rl") {
     // v100 ルーレット：賭けの締め切り（時間切れ・全員が準備OK）→ 回す → 全員の画面で止まってから精算 → 次の回
@@ -13279,15 +13363,16 @@ function bjSeatRows(g, me = null, skip = null) {
     return h("div", { class: `bj-seat${u === me ? " me" : ""}${keys.length === 1 && st.hands[keys[0]].res ? ` r-${st.hands[keys[0]].res}` : ""}` },
       h("div", { class: "bj-seat-head" }, h("b", null, memberName(u), pcYou(u, me)), h("span", { class: "bj-chips" }, `${st.chips[u] ?? 0} `, h("small", null, chU(g)))),
       keys.length ? keys.map((k) => {
-        const hd = st.hands[k];
+        const hd = st.hands[k], full = bjFull(g, st, k);
         return h("div", { class: `bj-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}` },
-          cardRow(hd.cards, { small: u !== me }),
-          h("div", { class: "bj-seat-sub" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${bjTotalText(hd.cards, hd.split)} · BET ${hd.bet}${hd.doubled ? " · DBL" : ""}`,
+          cardRow(bjShown(g, st, k), { small: u !== me }),
+          h("div", { class: "bj-seat-sub" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${full ? bjTotalText(hd.cards, hd.split) : "まだ開いていません"} · BET ${hd.bet}${hd.doubled ? " · DBL" : ""}`,
             hd.res ? h("b", { class: "bj-res" }, ` ${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.done && g.phase === "play" ? (hd.surr ? " · SURR" : " · STAND") : null));
       }) : h("div", { class: "bj-seat-sub" }, g.phase === "bet" ? (cardAct(g, "b", u, `r${st.round}`) != null ? `BET ${cardAct(g, "b", u, `r${st.round}`)}` : g.actors.includes(u) ? "BET 選択中…" : `${chU(g)} 不足`)
         : (st.chips[u] ?? 0) <= 0 ? `${chU(g)} 0` : g.phase !== "ended" ? "見送り" : ""),
       ins ? h("div", { class: "bj-seat-sub" }, `INS ${ins}${insRes != null ? ` · ${sgn(insRes)}` : ""}`) : null,
-      g.phase === "insure" && g.actors.includes(u) ? h("div", { class: "bj-seat-sub" }, cardAct(g, "i", u, `r${st.round}`) != null ? "INS 選択済" : "INS 選択中…") : null);
+      g.phase === "insure" && g.actors.includes(u) ? h("div", { class: "bj-seat-sub" }, cardAct(g, "i", u, `r${st.round}`) != null ? "INS 選択済" : "INS 選択中…") : null,
+      g.phase === "play" && bjTap(g) && keys.some((k) => !bjFull(g, st, k)) ? h("div", { class: "bj-seat-sub bj-opening" }, "カードを開いています…") : null);
   });
 }
 // 大富豪の席（みんなの残り枚数・あがり・パス）
@@ -13504,21 +13589,32 @@ function cardMemberBody(g) {
     const hands = keys.length
       ? h("div", { class: `cx-hands${keys.length > 1 ? " multi" : ""}` }, keys.map((k) => {
         const hd = st.hands[k];
-        const isBJ = bjIsBJ(hd.cards, hd.split);
-        const fan = cxFan(hd.cards, " bj-slow", `h${g.id}.${st.round}.${k}`, 450);
-        const bust = bjValue(hd.cards).total > 21;
+        const shown = bjShown(g, st, k), full = shown.every((c) => c != null), closed = shown.filter((c) => c == null).length;
+        const isBJ = full && bjIsBJ(hd.cards, hd.split);
+        const fan = cxFan(shown, " bj-slow", `h${g.id}.${st.round}.${k}`, 450);
+        if (closed) { // v101 押して開く（左から1枚ずつ）
+          fan.classList.add("bj-tap");
+          fan.setAttribute("role", "button"); fan.setAttribute("tabindex", "0"); fan.setAttribute("aria-label", `カードを開く（あと${closed}枚）`);
+          fan.addEventListener("click", () => bjOpenCard(S.games.get(g.id) ?? g, k));
+          fan.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); bjOpenCard(S.games.get(g.id) ?? g, k); } });
+        }
+        const bust = full && bjValue(hd.cards).total > 21;
         const bfx = bust ? fallFx(`bust:${g.id}:${st.round}:${k}`, true, Number(fan.dataset.t) || 0) : { cls: "", style: "" }; // バーストは、引いたカードがめくれ終わってから光らせる
         const bjA = isBJ || bfx.style ? { style: `${isBJ ? `--bjd:${Number(fan.dataset.t) || 0}ms;` : ""}${bfx.style}` } : {};
         return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}${isBJ ? " is-bj" : ""}${bust ? " is-bust" : ""}${bfx.cls}`, ...bjA },
           fan,
-          h("div", { class: "cx-total" }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
+          h("div", { class: `cx-total${closed ? " need" : ""}` }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${closed ? `TAP ▸ OPEN（${closed}）` : isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
           hd.res ? h("div", { class: `cx-res${lateC}`, title: BJ_RES[hd.res], ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
       }))
       : g.phase === "bet" && g.actors.includes(uid) ? null // 賭けを選ぶ間は、空の手札の枠を出さない（ボタンを1画面に収めるため）
         : h("div", { class: "cx-hands" }, h("div", { class: "cx-hand" }, cxFan([null, null], " ghost"), h("div", { class: "cx-total" }, waitText)));
     // 操作
     let ctl = null;
-    if (g.phase === "bet" && g.actors.includes(uid)) {
+    const myClosed = bjTap(g) && bjHidePh(g) ? bjMyClosed(g, st, uid) : 0;
+    if (myClosed) {
+      ctl = [h("div", { class: "cx-acts need" }, cxBtn("eye", myClosed > 1 ? `OPEN ALL（${myClosed}）` : "OPEN", "btn-filled bj-open-all", { onclick: () => { const cur = S.games.get(g.id) ?? g; for (const k of bjHandsOf(cur.bj, uid)) bjOpenCard(cur, k, true); } })),
+        h("p", { class: "cx-note" }, "カードをタップして1枚ずつ開く ・ 全部開くと HIT / STAND を選べます")];
+    } else if (g.phase === "bet" && g.actors.includes(uid)) {
       const max = bjMaxBet(o, chips);
       const input = h("input", { type: "number", class: "plain bj-amount", min: String(o.betMin), max: String(max), step: "1", inputmode: "numeric", placeholder: `${o.betMin}〜${max} ${U}`, "aria-label": "賭ける枚数" });
       const send = h("button", { class: "btn-small", onclick: () => { const v = Math.floor(Number(input.value)); if (!(v >= o.betMin && v <= max)) return toast(`${o.betMin}〜${max}枚で入れてください`); cardSend(g, "b", r, String(v)); input.value = ""; } }, "BET");
@@ -13528,31 +13624,34 @@ function cardMemberBody(g) {
         h("div", { class: "bj-custom" }, input, send),
         h("p", { class: "cx-note" }, betNow ? `BET ${betNow} ${U} ・ 締め切りまで変更できます` : o.noBet > 0 ? `未選択なら BET ${Math.max(o.betMin, Math.min(o.noBet, max))} ${U}` : "未選択ならこの回は見送り")];
     } else if (g.phase === "insure" && g.actors.includes(uid)) {
-      const pick = cardAct(g, "i", uid, r), amt = Math.floor((st.hands[uid]?.bet ?? 0) / 2);
+      const pick = bjInsPick(cardAct(g, "i", uid, r)), amt = Math.floor((st.hands[uid]?.bet ?? 0) / 2);
+      const tail = bjTap(g) ? bjOpenTail(g, st, uid) : "";
       ctl = [h("div", { class: `cx-label${pick ? "" : " need"}` }, "INSURANCE ", h("small", null, "ディーラーの表が A")),
         h("div", { class: `cx-acts${pick ? "" : " need"}` },
-          cxBtn("check", `YES ${amt}`, `btn-filled${pick === "y" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "y") }),
-          cxBtn("xmark", "NO", `btn-filled${pick === "n" ? " on" : ""}`, { onclick: () => cardSend(g, "i", r, "n") })),
+          cxBtn("check", `YES ${amt}`, `btn-filled${pick === "y" ? " on" : ""}`, { onclick: () => bjSendAct(g, "i", r, `y${tail}`) }),
+          cxBtn("xmark", "NO", `btn-filled${pick === "n" ? " on" : ""}`, { onclick: () => bjSendAct(g, "i", r, `n${tail}`) })),
         h("p", { class: "cx-note" }, `INS ${amt} ${U} ・ ディーラーが BJ なら 2倍で戻る ・ 未選択は「かけない」`)];
     } else if (cur) {
       const hd = st.hands[cur], n = hd.cards.length, can = bjCan(g, st, uid, cur);
       const pend = bjPending(g, st, uid);
-      const b = (ic, label, op, cls) => cxBtn(ic, label, cls, { disabled: !!pend || !can[op], onclick: () => cardSend(g, "p", r, `${op}${bjNo(cur)}.${n}`) });
+      const b = (ic, label, op, cls) => cxBtn(ic, label, cls, { disabled: !!pend || !can[op], onclick: () => bjSendAct(g, "p", r, `${op}${bjNo(cur)}.${n}${bjTap(g) ? bjOpenTail(g, st, uid) : `|${Date.now()}|`}`) });
       ctl = [h("div", { class: `cx-acts${pend ? "" : " need"}` }, b("dup", "DOUBLE", "d", "btn-small"), b("hand", "STAND", "s", "btn-filled alt"), b("plus", "HIT", "h", "btn-filled")),
         can.p || can.r ? h("div", { class: `cx-acts sub${pend ? "" : " need"}` },
           can.p ? b("split", "SPLIT", "p", "btn-small") : null,
           can.r ? b("wflag", "SURREND.", "r", "btn-small") : null) : null,
         h("p", { class: "cx-note" }, pend ? "送信済み ・ 反映待ち…"
           : [bjHandsOf(st, uid).length > 1 ? `#${bjNo(cur)} の手` : null, can.d ? `DOUBLE → BET ${hd.bet * 2} ・ +1枚` : null, can.p ? `SPLIT → +${hd.bet} ${U}` : null, can.r ? `SURR. → ${Math.floor(hd.bet / 2)} ${U} 戻る` : null].filter(Boolean).join(" ・ "))];
-    } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, cardManual(g.opts) && !g.actors.length ? "✓ 全員 STAND ・ ディーラーがカードを開けるのを待機中…" : "✓ STAND ・ 待機中…");
+    } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, cardManual(g.opts) && !g.actors.length ? "✓ 全員 STAND ・ ディーラーがカードを開けるのを待機中…"
+      : bjTap(g) && !bjCur(st, uid) && Object.keys(st.hands).every((k) => st.hands[k].done) && g.actors.length ? "✓ STAND ・ ほかの人がカードを開くのを待っています…" : "✓ STAND ・ 待機中…");
     // ほかの人の席
     const others = cxAfter(g.players, uid), crowd = others.length > BJ_RING_MAX;
     // バーストした人（ほかの人）：その瞬間に2秒光らせる
-    const seatFx = (u) => { const b = bjHandsOf(st, u).find((k) => bjValue(st.hands[k].cards).total > 21); return b ? fallFx(`bust:${g.id}:${st.round}:${b}`, true) : { cls: "", style: "" }; };
+    const bustK = (k) => bjFull(g, st, k) && bjValue(st.hands[k].cards).total > 21, bjK = (k) => bjFull(g, st, k) && bjIsBJ(st.hands[k].cards, st.hands[k].split);
+    const seatFx = (u) => { const b = bjHandsOf(st, u).find(bustK); return b ? fallFx(`bust:${g.id}:${st.round}:${b}`, true, bjTap(g) ? 1500 : 0) : { cls: "", style: "" }; };
     const withFx = (el, fx) => { if (fx.style) el.setAttribute("style", fx.style); return el; };
     const seatCls = (u) => {
       const ks = bjHandsOf(st, u), one = ks.length === 1 ? st.hands[ks[0]] : null;
-      return `${seatFx(u).cls}${ks.some((k) => bjValue(st.hands[k].cards).total > 21) ? " is-bust" : ""}${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}${ks.some((k) => bjIsBJ(st.hands[k].cards, st.hands[k].split)) ? " is-bj" : ""}`;
+      return `${seatFx(u).cls}${ks.some(bustK) ? " is-bust" : ""}${one?.res ? ` r-${one.res}` : ""}${ks.length && ks.every((k) => st.hands[k].done) && g.phase === "play" ? " done" : ""}${(st.chips[u] ?? 0) <= 0 && !ks.length ? " out" : ""}${ks.some(bjK) ? " is-bj" : ""}`;
     };
     const seatMeta = (u) => {
       const bet = g.phase === "bet" ? cardAct(g, "b", u, r) : null;
@@ -13561,7 +13660,7 @@ function cardMemberBody(g) {
     // 9人以上：上の帯に、頭文字・名前・合計（または結果）だけを小さく2段で並べる（横にずらして全員を見られる）
     const crowdEl = crowd ? h("div", { class: "cx-crowd", role: "list", "aria-label": `ほかの人 ${others.length}人` }, others.map((u) => {
       const ks = bjHandsOf(st, u);
-      const line = ks.length ? ks.map((k) => { const hd = st.hands[k]; return bjIsBJ(hd.cards, hd.split) ? "BJ" : hd.res ? BJ_RES_S[hd.res] : hd.surr ? "SURR" : `${bjTot(hd.cards, hd.split)}${hd.done && g.phase === "play" ? "✓" : ""}`; }).join("/") : seatMeta(u);
+      const line = ks.length ? ks.map((k) => { const hd = st.hands[k]; return !bjFull(g, st, k) ? "?" : bjIsBJ(hd.cards, hd.split) ? "BJ" : hd.res ? BJ_RES_S[hd.res] : hd.surr ? "SURR" : `${bjTot(hd.cards, hd.split)}${hd.done && g.phase === "play" ? "✓" : ""}`; }).join("/") : seatMeta(u);
       const res = ks.length === 1 ? st.hands[ks[0]] : null;
       return withFx(h("div", { class: `cx-cs${seatCls(u)}`, role: "listitem", title: memberName(u) },
         h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?"), h("b", { class: "cx-nm" }, memberName(u)),
@@ -13572,10 +13671,16 @@ function cardMemberBody(g) {
       return withFx(cxSeat(u, seatCls(u),
         `${st.chips[u] ?? 0}`,
         ks.length ? ks.map((k) => {
-          const hd = st.hands[k], tot = bjTot(hd.cards, hd.split);
-          return h("div", { class: `cx-sh${hd.res ? ` r-${hd.res}` : ""}` }, h("div", { class: "cx-mini" }, hd.cards.map((c) => cardEl(c, { small: true }))),
+          const hd = st.hands[k], full = bjFull(g, st, k), tot = full ? bjTot(hd.cards, hd.split) : "?";
+          // v101 本人が開くまで裏。開いた瞬間に、ここでもめくれる
+          const mz = `o${g.id}.${st.round}.${k}`;
+          return h("div", { class: `cx-sh${hd.res ? ` r-${hd.res}` : ""}` }, h("div", { class: "cx-mini" }, bjShown(g, st, k).map((c, i) => {
+            const el = cardEl(c, { small: true });
+            if (bjTap(g)) { if (c == null) GC.seen.add(`${mz}:${i}:null`); else if (GC.seen.has(`${mz}:${i}:null`) && cxOnce(`${mz}:${i}:${c}`)) el.classList.add("flipup"); }
+            return el;
+          })),
             hd.res ? h("div", { class: `cx-tag${lateC}`, ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-tag" }, "SURR")
-              : bjIsBJ(hd.cards, hd.split) ? h("div", { class: "cx-tag bj" }, "BLACKJACK")
+              : full && bjIsBJ(hd.cards, hd.split) ? h("div", { class: "cx-tag bj" }, "BLACKJACK")
               : h("div", { class: "cx-meta" }, `${tot} · ${hd.done && g.phase === "play" ? "✓" : "BET"} ${hd.bet}${hd.doubled ? "×2" : ""}`));
         }) : h("div", { class: "cx-meta" }, seatMeta(u)),
         st.ins?.[u] ? h("div", { class: "cx-meta" }, `INS ${st.ins[u]}${st.insRes?.[u] != null ? ` · ${sgn(st.insRes[u])}` : ""}`) : null), seatFx(u));
@@ -13677,7 +13782,7 @@ function cardMemberBody(g) {
 }
 // みんなに見せる画面
 function cardStageBody(g, spect = false) {
-  const logs = spect ? gLogPublic(g) ?? [] : g.log ?? [];
+  const logs = spect ? gLogPublic(g) ?? [] : bjLogMask(g, g.log ?? []);
   const last = [...logs].reverse().find((l) => !l.ev?.quiet) ?? logs.at(-1);
   return [
     gEndHero(g),
@@ -14092,8 +14197,16 @@ function gPtCard(g, me = null) {
     g.phase === "ended" ? (rows.length ? h("div", { class: "gl-reveal" }, rows.map((x) => h("div", { class: "gl-reveal-row" }, h("span", null, me ? x.reason : `${memberName(x.uid)}：${x.reason}`), h("b", null, x.skip ? "反映なし" : `${sgn(x.delta)} PT`))))
       : h("p", { class: "cell-sub" }, me ? "このゲームでのポイントの増減はありませんでした。" : "ポイントの増減はありませんでした。")) : null);
 }
+// v101 自分で開く回：勝負の間は、配ったカード・引いたカードをログに出さない（開く前に分かってしまうため）
+function bjLogMask(g, logs) {
+  if (!bjTap(g) || !bjHidePh(g) || !logs?.length) return logs;
+  let at = -1;
+  logs.forEach((l, i) => { if (l.ev?.type === "bjDeal") at = i; });
+  if (at < 0) return logs;
+  return logs.map((l, i) => (i < at ? l : l.ev?.type === "bjDeal" ? { ...l, detail: null } : l.ev?.type === "bjMove" && l.ev.mask ? { ...l, text: l.ev.mask, detail: null } : l));
+}
 function gLogList(g, n = 50, src = null) {
-  const items = [...(src ?? g.log ?? [])].reverse().slice(0, n);
+  const items = [...bjLogMask(g, src ?? g.log ?? [])].reverse().slice(0, n);
   return h("ul", { class: "gl-log" }, items.map((l) => h("li", null, l.text, l.detail ? h("small", null, l.detail) : null)));
 }
 // ログの中身の分類（ゲームごと）。参加者に見せるかどうかを、管理者がこの単位で選ぶ
@@ -14119,8 +14232,8 @@ function gLogPublic(g) {
   if (!p?.on) return null;
   const on = new Set(p.cats ?? []);
   const hasVotes = logCatKeys(g.kind).includes("votes");
-  return (g.log ?? []).filter((l) => on.has(logCatOf(g.kind, l)))
-    .map((l) => (hasVotes && l.ev?.type === "tally" && l.detail && !on.has("votes") ? { ...l, detail: null } : l));
+  return bjLogMask(g, (g.log ?? []).filter((l) => on.has(logCatOf(g.kind, l)))
+    .map((l) => (hasVotes && l.ev?.type === "tally" && l.detail && !on.has("votes") ? { ...l, detail: null } : l)));
 }
 const logPubText = (g) => {
   const p = g.logPub;
@@ -14159,7 +14272,7 @@ function gActProgress(g) {
   if (g.kind === "bj") {
     const st = g.bj, r = `r${st.round}`;
     if (g.phase === "bet") return { label: "BET（賭け）", rows: g.actors.map((u) => { const v = cardAct(g, "b", u, r); return { u, done: v != null, to: v != null ? `BET ${v}` : null }; }) };
-    if (g.phase === "insure") return { label: "インシュランス", rows: g.actors.map((u) => { const v = cardAct(g, "i", u, r); return { u, done: v != null, to: v == null ? null : v === "y" ? "かける" : "かけない" }; }) };
+    if (g.phase === "insure") return { label: "インシュランス", rows: g.actors.map((u) => { const v = cardAct(g, "i", u, r); return { u, done: v != null, to: v == null ? null : bjInsPick(v) === "y" ? "かける" : "かけない" }; }) };
     if (g.phase === "play") {
       const us = g.players.filter((u) => bjHandsOf(st, u).length);
       return us.length ? { label: "HIT / STAND", rows: us.map((u) => ({ u, done: bjHandsOf(st, u).every((k) => st.hands[k].done), to: null })) } : null;
@@ -14289,7 +14402,7 @@ function bjFlashCheck(g) {
   if (!st?.hands) return;
   const hide = g.phase === "play" || g.phase === "insure";
   const who = [];
-  for (const [k, hd] of Object.entries(st.hands)) if (bjIsBJ(hd.cards, hd.split) && cxOnce(`bjf${g.id}.${st.round}.${k}`)) who.push(bjOwn(k));
+  for (const [k, hd] of Object.entries(st.hands)) if (bjIsBJ(hd.cards, hd.split) && bjFull(g, st, k) && cxOnce(`bjf${g.id}.${st.round}.${k}`)) who.push(bjOwn(k));
   if (!hide && bjIsBJ(st.dealer ?? []) && cxOnce(`bjf${g.id}.${st.round}.dealer`)) who.push(null);
   if (!who.length) return;
   const me = S.user?.uid;
@@ -14392,7 +14505,7 @@ function paintGameLive() {
     return;
   }
   fab?.remove();
-  if (g.kind === "bj") bjFlashCheck(g);
+  if (g.kind === "bj") { bjFlashCheck(g); bjSyncOpen(g); }
   if (g.kind === "dfg") dfgFlashCheck(g);
   if (g.kind === "rl") rlFlashCheck(g);
   const opened = !el;
@@ -14618,7 +14731,7 @@ function gameMemberBody(g) {
 }
 // ログ：画面の下の「ログを見る」から、画面の大部分を使うシートで見る（テーブルの下の狭い枠で見なくてよいように）
 function cxLogBar(g) {
-  const n = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).length, last = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).at(-1);
+  const n = (S.isAdmin ? g.log ?? [] : gLogPublic(g) ?? []).length, last = (S.isAdmin ? bjLogMask(g, g.log ?? []) : gLogPublic(g) ?? []).at(-1);
   return h("button", { class: "cx-logbtn", "aria-haspopup": "dialog", onclick: () => { GV.log = g.id; GV.logAnim = true; paintGameLive(); } },
     h("span", { class: "cx-logbtn-ic", "aria-hidden": "true" }, "≡"), h("b", null, "ログを見る"), h("small", null, h("span", null, last ? last.text : "まだありません")), h("i", null, `${n}件`));
 }
@@ -15482,7 +15595,7 @@ function gamesAdmin() {
   const bjNoBet = pick([[0, "その回は見送る"], [1, "最小の枚数を賭ける"], [5, "5枚を賭ける"], [10, "10枚を賭ける"], [20, "20枚を賭ける"]], 10);
   const bjDouble = pick([["off", "なし"], ["any", "最初の2枚ならいつでも"], ["9-11", "合計が9〜11のときだけ"], ["10-11", "合計が10〜11のときだけ"]], "any");
   const bjSplit = pick([[0, "なし"], [2, "2つの手まで"], [3, "3つの手まで"], [4, "4つの手まで"]], 2);
-  const bjDas = toggle(true), bjIns = toggle(true), bjSurr = toggle(false), bjAuto = toggle(true);
+  const bjDas = toggle(true), bjIns = toggle(true), bjSurr = toggle(false), bjAuto = toggle(true), bjTapOpen = toggle(true);
   const bjCharlie = pick([[0, "なし"], [5, "5枚"], [6, "6枚"], [7, "7枚"]], 0);
   const bjResult = mins([5, 8, 12, 20], 8, "秒");
   const dealerPick = () => pick([["auto", "自動（この端末がディーラー）"], ["manual", "管理者が手で進める"]], "auto");
@@ -15493,6 +15606,8 @@ function gamesAdmin() {
     group("賭け", [field("賭けの最小", bjMin), field("賭けの最大", bjMax), field("賭けを選ばなかったとき", bjNoBet)]),
     group("できること", [field("ダブル（賭けを2倍にして1枚だけ引く）", bjDouble), field("スプリット（同じ数字の2枚を2つの手に分ける）", bjSplit), field("スプリットのあとのダブル", bjDas),
       field("保険（ディーラーの表が A のとき）", bjIns), field("降りる（最初の2枚で、賭けの半分を返してもらう）", bjSurr)]),
+    group("カードの開き方", [field("配られたカードを自分で押して開く", bjTapOpen)],
+      "オンにすると、配られたカードは裏向きで届き、自分のスマホでタップして1枚ずつ開きます（ヒット・ダブルで引いたカードも）。全部開くまで HIT / STAND は押せません。ほかの人の画面・表示用画面でも、本人が開くまで裏のままで、開いた瞬間にめくれます。全員が開き終わってから、ディーラーがカードを開けます（持ち時間が過ぎたら、開いていなくても進みます）。勝負の間は、ログにも引いたカードを書きません。"),
     group("進行", [field("ディーラー（進行役）", bjDealer), field("参加者の持ち時間", bjTimer), field("賭けを選ぶ時間", bjBet), field("1回の勝負の時間", bjPlay), field("保険を選ぶ時間", bjInsSec), field("結果のあと自動で次の回へ進む", bjAuto), field("結果を見せる時間", bjResult)],
       `${cardNote} 時間内に選ばなかった人はスタンドになります。Aのスプリットは1枚ずつ配り、スプリットした手の21はブラックジャックになりません。`));
   // 大富豪
@@ -15766,7 +15881,7 @@ function gamesAdmin() {
       topicOn: ngTopicOn.checked, topic: ngTopic.value.trim().slice(0, 80) };
     else if (k === "bj") o = { rounds: N(bjRounds), chips: N(bjChips), decks: N(bjDecks), reshuffle: bjShuffle.value, h17: bjH17.value === "1", pay: N(bjPay), charlie: N(bjCharlie),
       betMin: N(bjMin), betMax: N(bjMax), noBet: N(bjNoBet) === 1 ? N(bjMin) : N(bjNoBet), double: bjDouble.value, split: N(bjSplit), das: bjDas.checked, insurance: bjIns.checked, surrender: bjSurr.checked,
-      betSec: N(bjBet), playSec: N(bjPlay), insSec: N(bjInsSec), autoNext: bjAuto.checked, resultSec: N(bjResult), dealer: bjDealer.value, dealerTimer: bjTimer.checked, ...(plan.startChips ? { startChips: plan.startChips } : {}) };
+      betSec: N(bjBet), playSec: N(bjPlay), insSec: N(bjInsSec), autoNext: bjAuto.checked, resultSec: N(bjResult), dealer: bjDealer.value, dealerTimer: bjTimer.checked, tapOpen: bjTapOpen.checked, ...(plan.startChips ? { startChips: plan.startChips } : {}) };
     else if (k === "dfg") o = { rounds: N(dfgRounds), turnSec: N(dfgTurn), jokers: N(dfgJokers), score: dfgScore.value, eight: dfgEight.checked, revolution: dfgRev.checked, revN: N(dfgRevN),
       stairs: dfgStairs.checked, stairsMin: N(dfgStairsMin), stairsRev: N(dfgStairsRev), spade3: dfgSpade3.checked, jback: dfgJback.checked, shibari: dfgShibari.checked, five: dfgFive.checked,
       seven: dfgSeven.checked, ten: dfgTen.checked, nine: dfgNine.checked, miyako: dfgMiyako.checked, foul: dfgFoul.checked,
@@ -16506,7 +16621,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v100"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v101"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;

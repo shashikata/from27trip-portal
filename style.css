@@ -4150,3 +4150,14 @@ button.rl-cell:active { transform: scale(.94); }
   .rl-wheel.tense .rl-disc { transform: none; }
   .rl-wheel.tense .rl-vig, .rl-hit, .rl-cell.win, .rl-spin-btn.need, .rl-r-wait.roll { animation: none; }
 }
+
+/* ===== v101 ブラックジャック：配られたカードを自分で押して開く ===== */
+.cx-fan.bj-tap { cursor: pointer; border-radius: 12px; -webkit-tap-highlight-color: transparent; }
+.cx-fan.bj-tap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+/* まだ開いていない自分のカード：薄紫にゆっくり光って「押して」と誘う */
+.cx-fan.bj-tap .pc.back { animation: bjTapGlow 1.4s ease-in-out infinite; }
+@keyframes bjTapGlow { 0%, 100% { box-shadow: 0 0 0 1.5px rgba(162, 158, 255, .55), 0 6px 16px rgba(0, 0, 0, .45); } 50% { box-shadow: 0 0 0 2.5px rgba(162, 158, 255, .95), 0 0 22px rgba(162, 158, 255, .55); } }
+.cx-fan.bj-tap:active { transform: scale(.97); }
+.cx-total.need { color: var(--accent); letter-spacing: .06em; animation: rlPulse 1.4s ease-in-out infinite; }
+.bj-opening { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .cx-fan.bj-tap .pc.back, .cx-total.need { animation: none; } }
