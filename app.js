@@ -2434,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v101"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v102"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -12384,7 +12384,7 @@ const rlEvenMoney = (spot) => RL_SPOTS[spot]?.[1] === 1;
 const rlO = (o) => ({ mode: "casino", rounds: 5, chips: 100, betMin: 1, betMax: 0, betSec: 30, partage: false, autoNext: true, resultSec: 8,
   items: [], removeHit: false, spinner: "admin", readySec: 30, ...o });
 const rlLottery = (g) => rlO(g?.opts).mode === "lottery";
-const RL_CASINO_MS = 11500, RL_LOT_MS = 9000, RL_LEAD = 1400, RL_LOT_HOLD = 5000; // 回る長さ・回し始めるまでの間（全員の端末に届くのを待つ）
+const RL_CASINO_MS = 18000, RL_LOT_MS = 13000, RL_LEAD = 1400, RL_LOT_HOLD = 5000; // 回る長さの目安（v102〜 実際は物理の計算で毎回ちがう）・回し始めるまでの間（全員の端末に届くのを待つ）
 const RL_CHIPS = [1, 5, 10, 25, 50, 100, 500, 1000];
 // 抽選の例（「例を入れる」と体験モードで使う）
 const RL_LOT_EXAMPLE = ["ジュースをおごる", "一発ギャグ", "セーフ", "変顔で写真", "モノマネ", "最近うれしかった話", "セーフ", "全員とハイタッチ"];
@@ -12456,7 +12456,7 @@ function rlSpin(g) {
     if (!st.items.length) return null;
     const n = gRand(st.items.length);
     const sp = rlSpinner(g, st);
-    st.spin = { n, at, dur: RL_LOT_MS, seed, items: [...st.items], by: sp, round: r };
+    st.spin = { n, at, dur: Math.ceil(rlLotSim(seed, st.items.length).tEnd * 1000), seed, items: [...st.items], by: sp, round: r };
     return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null,
       log: [...(g.log ?? []), gLog(`第${r}回：${sp ? `${memberName(sp)}さんが` : ""}ルーレットを回しました。`, null, { type: "rlSpin", round: r, quiet: true })] } };
   }
@@ -12468,7 +12468,7 @@ function rlSpin(g) {
     if (rlSum(b)) bets[u] = b;
   }
   st.bets = bets; st.res = null;
-  st.spin = { n: gRand(37), at, dur: RL_CASINO_MS, seed, round: r };
+  st.spin = { n: gRand(37), at, dur: Math.ceil(rlCasinoSim(seed).tEnd * 1000), seed, round: r };
   const us = Object.keys(bets);
   return { update: { rl: st, phase: "spin", actKey: null, actors: [], endsAt: null,
     log: [...(g.log ?? []), gLog(`第${r}回：ノーモアベット（賭けを締め切りました）。${us.length ? "" : "賭けた人はいません。"}`, us.map((u) => `${memberName(u)}：${rlBetText(bets[u])}（合計 ${rlSum(bets[u])}）`).join("\n") || null, { type: "rlSpin", round: r })] } };
@@ -12552,131 +12552,213 @@ function rlPlanOf(spin, make) {
   if (!P) { if (RL_PLANS.size > 200) RL_PLANS.clear(); P = make(spin); RL_PLANS.set(k, P); }
   return P;
 }
-// カジノ：玉の動きの計画（何秒にどこへ跳ねるか）。k は「止まるポケットまで、あと何マス手前か」
-function rlCasinoPlan(spin) {
-  const rnd = rlRng(spin.seed), D = (spin.dur ?? RL_CASINO_MS) / 1000;
-  const w0 = rnd() * 360, wv = 150 + rnd() * 40; // 円盤の向きと速さ（度/秒）
-  // 最後の数回は、隣のポケットに一度落ちて止まりそうになってから、跳ねて本当のポケットへ（止まりそうで止まらない）
-  const fakeType = rnd();
-  const fake = fakeType < 0.42 ? 1 : fakeType < 0.7 ? 2 : fakeType < 0.86 ? -1 : 3;
-  const K1 = 8 + rnd() * 3; // 玉が縁から落ちるときの位置（マス）
-  const marks = [];
-  let k = Math.round(K1 - 3 - rnd() * 1.5);
-  if (k <= Math.max(fake, 0) + 1) k = Math.max(fake, 0) + 2;
-  marks.push(k);
-  while (k - Math.max(fake, 1) > 2.5) { k = Math.max(Math.max(fake, 1) + 1, k - 1 - Math.round(rnd() * 2)); marks.push(k); }
-  marks.push(fake, 0);
-  const hops = [];
-  let from = K1;
-  marks.forEach((to, i) => {
-    const dist = Math.abs(from - to), last = i === marks.length - 1, isFake = i === marks.length - 2;
-    const dt = 0.2 + Math.sqrt(dist) * (i === 0 ? 0.24 : 0.17) + (last ? 0.12 : 0);
-    const h = Math.min(1, 0.32 + dist * 0.14) * (i === 0 ? 1.25 : 1);
-    const rest = last ? 0 : isFake ? 0.95 + rnd() * 0.45 : 0.05 + rnd() * 0.16;
-    hops.push({ from, to, dt, h, rest, fake: isFake });
-    from = to;
+// ---- v102 ルーレットの動き：物理の計算で動かす（毎回ちがう長さ・ちがう跳ね方）
+// 回す瞬間に決めた「種」から、玉（円盤）の動きを、ふつうの四則演算だけで計算する（どの端末でも同じ計算になるように）。
+// 止まる数字は先に決まっている。計算して落ちたポケットが違えば、円盤の向きをポケットの幅のちょうど整数個ぶんだけずらす。
+// ポケットはどれも同じ形なので、整数個ずらしても玉の跳ね方は変わらない（作った動きにならない）。抽選の円盤も、項目の幅でずらす。
+const RL_SIM = new Map();
+function rlSimOf(key, make) {
+  let x = RL_SIM.get(key);
+  if (!x) { if (RL_SIM.size > 60) RL_SIM.clear(); x = make(); RL_SIM.set(key, x); }
+  return x;
+}
+const RL_DT = 1 / 600, RL_SAMPLE = 4; // 計算の刻み（秒）・何刻みごとに記録するか
+// カジノの玉。返すもの：縁を転がる部分の式・縁から落ちたあとの記録（玉の角度・半径・高さ）・当たった音の記録・終わる時刻
+function rlCasinoSim(seed) {
+  return rlSimOf(`c${seed}`, () => {
+    const rnd = rlRng(seed), RAD = Math.PI / 180, P = RL_POCKET;
+    // 円盤（時計回り＋）：はじめの速さと、ゆっくり遅くなる割合
+    const wv = 95 + rnd() * 70, wDec = 0.004 + rnd() * 0.004;
+    const wAt = (t) => wv * (t - 0.5 * wDec * t * t), wVel = (t) => wv * (1 - wDec * t);
+    // 玉（反時計回り）：縁を転がる時間・投げた速さ・縁から落ちる速さ・速いうちほど強く遅くなる割合
+    const T1 = 10.5 + rnd() * 6, om0 = 760 + rnd() * 240, omC = 230 + rnd() * 60, q = 0.15 + rnd() * 0.5, th0 = rnd() * 360;
+    const rimF = (x) => x - ((1 + q) * x * x) / 2 + (q * x * x * x) / 3; // 速さの形 (1−x)(1−qx) を積分したもの
+    const rimTh = (t) => th0 - (omC * t + (om0 - omC) * T1 * rimF(t / T1));
+    const rT = RL_RT, rD = 0.845, rHead = 0.785, rP = RL_RP, zF = 0.22;
+    // 縁から落ちたあと
+    let t = T1, th = rimTh(T1), r = rT, vr = 0, z = 0, vz = 0;
+    let L = r * r * omC * RAD; // 回る勢い（半径²×角速度）
+    const G = rT * (omC * RAD) ** 2; // 内側へ落ちようとする力（縁で、遠心力とちょうどつり合う）
+    const fr = 0.03 + rnd() * 0.05; // 外側の坂を転がる摩擦（小さいほど、ゆっくり渦を巻いて落ちる）
+    const fl = 0.4 + rnd() * 0.5; // ポケットの底の摩擦（毎回少しちがう。小さいほど長く跳ね回る）
+    let head = false, wb = 0, cap = -1, capC = 0, capV = 0, lastSlot = null, cool = -1, tHead = -1, tSlow = -1;
+    const ev = [], sm = []; // ev：{t, k 種類, s 強さ}／sm：[円盤に対する玉の角度, 半径, 高さ]
+    const lastHit = new Array(8).fill(-9);
+    let step = 0, tEnd = 0;
+    const tMax = T1 + 10;
+    while (true) {
+      const dt = RL_DT;
+      if (cap >= 0) {
+        // ポケットに収まった：真ん中へすっと寄って終わり（行き過ぎない・跳ねない）
+        const W = wAt(t), phi = th - W, lam = 7; // 底のくぼみへ、ゆっくり転がる（ポケットは玉1つ分の幅なので、ほんの少し）
+        const a = -lam * lam * (phi - capC) - 2 * lam * capV;
+        capV += a * dt;
+        th = wAt(t + dt) + (phi + capV * dt); // 円盤といっしょに回る
+        r += (rP - r) * Math.min(1, dt * 10); z = 0;
+        if (t - cap > 0.9) { tEnd = t; break; }
+      } else if (!head) {
+        // 円盤の外側の坂：遠心力と、内側へ落ちる力。回る勢いは摩擦で少しずつ減る
+        L -= fr * L * dt;
+        const w = L / (r * r);
+        vr += (r * w * w - G) * dt - 0.6 * vr * dt;
+        r = Math.min(rT, r + vr * dt);
+        if (r >= rT && vr > 0) vr = 0;
+        th -= (w / RAD) * dt;
+        // ひし形の突起（円盤の外の台に固定）
+        if (Math.abs(r - rD) < 0.022 && z < 0.3) {
+          const a = ((th - 22.5) % 45 + 45) % 45, near = a < 22.5 ? a : a - 45, idx = ((Math.round((th - 22.5 - near) / 45) % 8) + 8) % 8;
+          if (Math.abs(near) < 3.2 && t - lastHit[idx] > 0.25) {
+            lastHit[idx] = t;
+            if (rnd() < 0.42) { /* 上をかすめて通り過ぎた */ } else {
+            const strong = rnd() < 0.6;
+            const keep = strong ? 0.42 + rnd() * 0.3 : 0.84 + rnd() * 0.1;
+            L *= keep;
+            vz = strong ? 2.8 + rnd() * 2.6 : 0.9 + rnd() * 0.9;
+            vr += strong ? -(0.05 + rnd() * 0.25) : (rnd() - 0.5) * 0.08;
+            ev.push({ t, k: "defl", s: strong ? 1 : 0.5 });
+            }
+          }
+        }
+        if (r <= rHead) { head = true; tHead = t; wb = -(L / (r * r)) / RAD; }
+      } else {
+        // 回っている円盤の上：内側へ落ちてポケットの底へ。仕切りにぶつかると跳ね返る・乗り越える
+        const wW = wVel(t);
+        if (r > rP || vr > 0) { vr -= 1.6 * dt; r += vr * dt; if (r <= rP) { r = rP; vr = Math.abs(vr) > 0.15 ? -vr * 0.25 : 0; } }
+        let rel = wb - wW;
+        if (z > 0 || vz > 0) rel *= 1 - 0.12 * dt; // 宙にいる間は空気で少しだけ遅く
+        else rel *= 1 - (fl + (rel > -45 && rel < 45 ? 2.4 : 0)) * dt; // ポケットの底の摩擦
+        const W = wAt(t), phi0 = th - W;
+        let phi = phi0 + rel * dt;
+        const slot = Math.floor(phi / P + 0.5), slot0 = lastSlot ?? Math.floor(phi0 / P + 0.5);
+        if (slot !== slot0 && z < zF && t > cool) {
+          // 仕切りに当たった
+          const u = Math.abs(rel), over = u > 100 && rnd() < Math.min(0.65, u / 700);
+          if (over) {
+            rel *= 0.55 + rnd() * 0.3;
+            vz = Math.max(vz, Math.min(7.5, 1.8 + u * 0.009 * (0.6 + rnd() * 0.8)));
+            ev.push({ t, k: "fret", s: Math.min(1, u / 500) });
+          } else {
+            const e = u > 45 ? 0.38 + rnd() * 0.3 : 0.12 + rnd() * 0.14;
+            const edge = (slot0 + (slot > slot0 ? 0.5 : -0.5)) * P;
+            phi = edge - (slot > slot0 ? 0.02 : -0.02);
+            rel = -rel * e;
+            if (u > 45) vz = Math.max(vz, Math.min(6, 0.8 + u * 0.0085 * (0.5 + rnd())));
+            ev.push({ t, k: "fret", s: Math.min(1, u / 500) });
+          }
+          cool = t + 0.012;
+        }
+        lastSlot = Math.floor(phi / P + 0.5);
+        wb = rel + wW;
+        th = wAt(t + dt) + phi;
+        if (tSlow < 0 && Math.abs(rel) < 140) tSlow = t;
+        // 収まった：底にいて、ほとんど動いていない
+        if (z <= 0 && vz <= 0 && r <= rP + 0.005 && Math.abs(rel) < 10) { cap = t; capC = lastSlot * P; capV = rel * 0.3; ev.push({ t, k: "land", s: 1 }); }
+        if (t > tMax) { cap = t; capC = lastSlot * P; capV = 0; ev.push({ t, k: "land", s: 1 }); }
+      }
+      // 高さ（跳ね）
+      if (z > 0 || vz > 0) {
+        vz -= 32 * dt; z += vz * dt;
+        if (z <= 0) { z = 0; if (vz < -1.6) { vz = -vz * (0.34 + rnd() * 0.16); if (head) ev.push({ t, k: "bounce", s: Math.min(1, vz / 3) }); } else vz = 0; }
+      }
+      t += dt; step++;
+      if (step % RL_SAMPLE === 0) sm.push(th - wAt(t), r, z);
+    }
+    const phiEnd = th - wAt(tEnd);
+    const j = ((Math.round(phiEnd / P) % 37) + 37) % 37;
+    return { T1, th0, om0, omC, q, rimTh, wv, wDec, wAt, wVel, sm, ev, tEnd, tHead, tSlow: tSlow < 0 ? tHead : tSlow, j };
   });
-  const tail = hops.reduce((a, x) => a + x.dt + x.rest, 0);
-  const T1 = Math.max(4.2, D - tail - 0.25); // 縁を転がる時間
-  const v1 = Math.max(4, (K1 - hops[0].to) / hops[0].dt * 0.9); // 縁から落ちる瞬間の速さ（マス/秒）
-  const v0 = 66 + rnd() * 12; // 投げた瞬間の速さ（マス/秒。円盤に対して）
-  const A = (v0 - v1) / (2 * T1);
-  return { D, w0, wv, K1, T1, v1, A, K0: K1 + v1 * T1 + A * T1 * T1, hops };
 }
-// 円盤の向き（度）。止まったあとも少しずつ遅くなって止まる
-function rlWheelAngle(P, t) {
-  const D = P.D;
-  if (t <= D) return P.w0 + P.wv * (t - (0.22 * t * t) / D);
-  const vD = P.wv * (1 - 0.44), tau = 3.2, u = t - D;
-  return P.w0 + P.wv * (D - 0.22 * D) + vD * tau * (1 - Math.exp(-u / tau));
+// 止まる数字に合わせた計画（円盤の向きのずれ s を足す）。D＝games に書いた長さ（秒）。端末の計算が少しずれても D に合わせる
+function rlCasinoPlan(spin) {
+  const sim = rlCasinoSim(spin.seed), idx = RL_ORDER.indexOf(spin.n);
+  const D = (spin.dur ?? Math.ceil(sim.tEnd * 1000)) / 1000;
+  const s = (sim.j - idx) * RL_POCKET;
+  return { sim, D, s, idx, scale: sim.tEnd / D, w0: s, wv: sim.wv, T1: sim.T1 * D / sim.tEnd };
 }
-// t 秒のときの玉と円盤：{ wheel 度, ball 度, r 半径の割合, z 跳ねの高さ 0〜1, k, phase, rest, fake }
+// t 秒のときの玉と円盤：{ wheel 度, ball 度, r 半径の割合, z 跳ねの高さ, k 止まるポケットから何マスずれているか, phase, rest, ev }
 function rlCasinoPose(spin, t) {
-  const P = rlPlanOf(spin, rlCasinoPlan);
-  const idx = RL_ORDER.indexOf(spin.n);
-  const W = rlWheelAngle(P, Math.max(0, t));
-  const rT = RL_RT, rP = RL_RP; // 縁の玉の道・ポケットの半径（絵の座標 100 に対して）
-  let k, r, z = 0, phase = "rim", rest = false, fake = false, landed = -1;
-  if (t <= 0) { k = P.K0; r = rT; phase = "wait"; }
-  else if (t < P.T1) {
-    const s = P.T1 - t;
-    k = P.K1 + P.v1 * s + P.A * s * s;
-    // 縁の上で少しゆれる。最後の0.8秒で内側へ落ちていく
-    const fall = Math.max(0, 1 - s / 0.8);
-    r = rT - 0.006 * Math.sin(t * 9) * (1 - fall) - fall * fall * (rT - rP - 0.12);
+  const P = rlPlanOf(spin, rlCasinoPlan), sim = P.sim;
+  const tau = Math.max(0, t) * P.scale, idx = P.idx;
+  let W, ball, r, z = 0, phase;
+  if (t >= P.D) {
+    // 止まったあと：円盤はゆっくり遅くなって止まる。玉はポケットの中
+    const vD = sim.wVel(sim.tEnd), tau2 = 3.2, u = t - P.D;
+    W = sim.wAt(sim.tEnd) + P.s + vD * tau2 * (1 - Math.exp(-u / tau2));
+    return { wheel: W, ball: W + idx * RL_POCKET, r: RL_RP, z: 0, k: 0, phase: "done", rest: true, evT: sim.tEnd };
+  }
+  W = sim.wAt(tau) + P.s;
+  if (t <= 0) { ball = sim.th0; r = RL_RT; phase = "wait"; }
+  else if (tau < sim.T1) {
+    ball = sim.rimTh(tau); phase = "rim";
+    r = RL_RT - 0.006 * Math.sin(tau * 8.3 + sim.th0) * Math.min(1, tau / 2);
   } else {
     phase = "hop";
-    let u = t - P.T1, i = 0;
-    for (; i < P.hops.length; i++) {
-      const hp = P.hops[i];
-      if (u < hp.dt) {
-        const f = u / hp.dt, e = 1 - (1 - f) * (1 - f) * 0.35 - 0.65 * (1 - f) ** 3; // 跳ねている間は少しずつ遅く
-        k = hp.from + (hp.to - hp.from) * Math.min(1, Math.max(0, e));
-        z = 4 * f * (1 - f) * hp.h;
-        r = rP + 0.11 * z + (i === 0 ? (1 - f) * 0.12 : 0);
-        break;
-      }
-      u -= hp.dt;
-      landed = i;
-      if (u < hp.rest) {
-        // ポケットの中で止まりそう（左右に小さくゆれる）
-        rest = true; fake = hp.fake;
-        const wob = hp.fake ? Math.sin(u * 16) * 0.07 * Math.exp(-u * 1.4) : Math.sin(u * 30) * 0.05;
-        k = hp.to + wob; r = rP + Math.abs(wob) * 0.05;
-        break;
-      }
-      u -= hp.rest;
+    const f = (tau - sim.T1) / (RL_DT * RL_SAMPLE) - 1, n = sim.sm.length / 3;
+    const i = Math.max(0, Math.min(n - 2, Math.floor(f))), a = Math.max(0, Math.min(1, f - i));
+    const g = (o) => sim.sm[i * 3 + o] + (sim.sm[(i + 1) * 3 + o] - sim.sm[i * 3 + o]) * a;
+    // 円盤に対する玉の角度で補う（ポケットに入ったあとは、記録の切れ目でも円盤といっしょに回る）
+    const rel0 = sim.rimTh(sim.T1) - sim.wAt(sim.T1);
+    ball = sim.wAt(tau) + (f < 0 ? rel0 + (g(0) - rel0) * (1 + f) : g(0)); // 玉そのものの角度は、ずらす前の計算のまま
+    r = g(1); z = g(2);
+  }
+  let k = (ball - W) / RL_POCKET - idx;
+  k = ((k % 37) + 37 + 18.5) % 37 - 18.5;
+  return { wheel: W, ball, r, z: Math.min(1.3, z * 1.6), k, phase, rest: false, evT: tau };
+}
+// 抽選の円盤。摩擦でだんだん遅くなり、釘が針を押し曲げるたびに勢いを失う。最後に釘を越えられないと、針に押し戻されて少し戻って止まる
+function rlLotSim(seed, N) {
+  return rlSimOf(`l${seed}:${N}`, () => {
+    const rnd = rlRng(seed), beta = 360 / N;
+    const zone = Math.min(beta * 0.42, 11); // 針が釘に触れている範囲（度）
+    const w0 = 560 + rnd() * 380, Tt = 11 + rnd() * 4.5; // はじめの速さ・だいたいの長さ
+    const aEff = w0 / Tt;
+    let wp = 30 + rnd() * 26; // 釘をぎりぎり越えられる速さ
+    if (wp * wp / (2 * beta) > aEff - 6) wp = Math.max(14, Math.sqrt(Math.max(1, 2 * beta * (aEff - 6))));
+    const fr = Math.max(4, aEff - (wp * wp) / (2 * beta)); // 摩擦
+    const kf = (wp * wp) / (zone * zone); // 針のばねの強さ
+    let t = 0, th = 0, w = w0, step = 0, tSlow = -1, tEnd = 0;
+    const sm = [], ticks = [];
+    while (true) {
+      const dt = RL_DT;
+      const pos = ((th % beta) + beta) % beta, x = pos - (beta - zone); // x：釘が針を押している量
+      let acc = x > 0 ? -kf * x : 0;
+      if (Math.abs(w) > 0.6) acc -= fr * Math.sign(w);
+      else if (Math.abs(acc) <= fr * 1.6 || t > 40) { w = 0; tEnd = t; sm.push(th, x > 0 ? x / zone : 0); break; }
+      const w1 = w + acc * dt;
+      let th1 = th + w1 * dt;
+      const pos1 = ((th1 % beta) + beta) % beta;
+      if (w1 > 0 && pos1 < pos - beta / 2) ticks.push(t); // 釘が針の先を越えた
+      if (w1 < 0 && pos1 > pos + beta / 2) { th1 = th; w = -w1 * 0.3; } // 戻りすぎ：釘が針の反対側に当たってはね返る
+      else w = w1;
+      th = th1; t += dt; step++;
+      if (tSlow < 0 && w < 170) tSlow = t;
+      if (step % RL_SAMPLE === 0) { const p2 = ((th % beta) + beta) % beta, x2 = p2 - (beta - zone); sm.push(th, x2 > 0 ? Math.min(1, x2 / zone) : 0); }
     }
-    if (i >= P.hops.length) { phase = "done"; k = 0; r = rP - 0.004; rest = true; }
-  }
-  const rel = idx * RL_POCKET + k * RL_POCKET;
-  return { wheel: W, ball: W + rel, r, z, k, phase, rest, fake, landed };
+    const j = (((Math.floor(-th / beta)) % N) + N) % N;
+    return { beta, N, sm, ticks, tEnd, tSlow: tSlow < 0 ? 0 : tSlow, w0, j, thEnd: th };
+  });
 }
-// 抽選：円盤の向き（度）と、針のしなり。針は真上で、円盤は時計回りに回る
 function rlLotPlan(spin) {
-  const rnd = rlRng(spin.seed), D = (spin.dur ?? RL_LOT_MS) / 1000, N = Math.max(1, spin.items?.length ?? 1), beta = 360 / N;
-  const kind = rnd(); // 止まり方：creep 境目でいったん止まりかけてから越える／edge 境目の手前でぎりぎり止まる／plain ふつう
-  const type = N < 2 ? "plain" : kind < 0.5 ? "creep" : kind < 0.8 ? "edge" : "plain";
-  const f = type === "creep" ? 0.9 + rnd() * 0.06 : type === "edge" ? 0.04 + rnd() * 0.05 : 0.3 + rnd() * 0.4; // 止まる位置（項目の中の割合）
-  // 針が指す位置 φ = −円盤の向き。止まる位置 φ_f = (n + f)β。φ は減っていく
-  const phiF = (spin.n + f) * beta;
-  // 最後のゆっくりの区間：creep は手前 0.45 項目分→境目の直前で止まりかけ→越える／edge は 0.6 項目分を、ぎりぎりまで
-  const Tc = type === "creep" ? 3.1 : type === "edge" ? 2.6 : 1.8;
-  const C = type === "creep" ? (1 - f + 0.45) * beta : type === "edge" ? 0.6 * beta : 0.55 * beta;
-  const T1 = D - Tc, v1 = (C / Tc) * 2.1, v0 = 760 + rnd() * 160;
-  const A = (v0 - v1) / (2 * T1);
-  const total = C + v1 * T1 + A * T1 * T1;
-  // 始めの向き：φ(0) = φ_f + total。円盤の向き θ = −φ
-  return { D, N, beta, type, f, phiF, Tc, C, T1, v1, A, total };
-}
-function rlLotPhi(P, t) {
-  if (t <= 0) return P.phiF + P.total;
-  if (t < P.T1) { const s = P.T1 - t; return P.phiF + P.C + P.v1 * s + P.A * s * s; }
-  const u = Math.min(P.Tc, t - P.T1), x = u / P.Tc, b = P.beta;
-  if (P.type === "creep") {
-    // 境目の 0.03 項目分手前まで、だんだん遅く（6割の時間）→ そこで針が引っかかって止まりかける（25%）→ 越えて止まる
-    const gap = (1 - P.f) * b, hold = gap + 0.03 * b;
-    if (x < 0.6) { const e = 1 - (1 - x / 0.6) ** 2.2; return P.phiF + P.C - (P.C - hold) * e; }
-    if (x < 0.85) { const y = (x - 0.6) / 0.25; return P.phiF + hold - 0.022 * b * y * y + Math.sin(y * Math.PI * 6) * 0.004 * b; }
-    const y = (x - 0.85) / 0.15, e = 1 - (1 - y) ** 3;
-    return P.phiF + (hold - 0.022 * b) * (1 - e) - Math.sin(y * Math.PI) * 0.03 * b;
-  }
-  if (P.type === "edge") {
-    const e = 1 - (1 - x) ** 3.4;
-    return P.phiF + P.C * (1 - e);
-  }
-  const e = 1 - (1 - x) ** 2.6;
-  return P.phiF + P.C * (1 - e);
+  const N = Math.max(1, spin.items?.length ?? 1), sim = rlLotSim(spin.seed, N);
+  const D = (spin.dur ?? Math.ceil(sim.tEnd * 1000)) / 1000;
+  return { sim, D, N, beta: sim.beta, s: (sim.j - spin.n) * sim.beta, scale: sim.tEnd / D, w0: sim.w0 };
 }
 function rlLotPose(spin, t) {
-  const P = rlPlanOf(spin, rlLotPlan);
-  const phi = rlLotPhi(P, t);
-  // 針は、次の境目（ピン）に近づくほど押されてしなる
-  const m = ((phi % P.beta) + P.beta) % P.beta; // 針の位置から、下の境目までの距離
-  const near = Math.max(0, 1 - m / Math.min(P.beta * 0.35, 14));
-  const flap = t >= P.D ? 0 : near * 26;
+  const P = rlPlanOf(spin, rlLotPlan), sim = P.sim;
+  const tau = Math.min(sim.tEnd, Math.max(0, t) * P.scale);
+  const f = tau / (RL_DT * RL_SAMPLE) - 1, n = sim.sm.length / 2;
+  let th, fl;
+  if (f < 0) { th = sim.w0 * tau; fl = 0; }
+  else if (tau >= sim.tEnd - RL_DT * RL_SAMPLE) { const a = Math.max(0, Math.min(1, (tau - (sim.tEnd - RL_DT * RL_SAMPLE)) / (RL_DT * RL_SAMPLE))), k = sim.sm.length; th = sim.sm[k - 4] + (sim.thEnd - sim.sm[k - 4]) * a; fl = sim.sm[k - 3] + (sim.sm[k - 1] - sim.sm[k - 3]) * a; }
+  else {
+    const i = Math.max(0, Math.min(n - 2, Math.floor(f))), a = Math.max(0, Math.min(1, f - i));
+    th = sim.sm[i * 2] + (sim.sm[(i + 1) * 2] - sim.sm[i * 2]) * a;
+    fl = sim.sm[i * 2 + 1] + (sim.sm[(i + 1) * 2 + 1] - sim.sm[i * 2 + 1]) * a;
+  }
+  if (t >= P.D) { th = sim.thEnd; fl = sim.sm[sim.sm.length - 1]; }
+  const wheel = th + P.s, phi = -wheel;
   const cur = ((Math.floor(phi / P.beta) % P.N) + P.N) % P.N;
-  return { wheel: -phi, phi, flap, cur, done: t >= P.D, slow: t >= P.T1, plan: P };
+  return { wheel, phi, flap: fl * 26, cur, done: t >= P.D, slow: tau >= sim.tSlow, plan: P, tau };
 }
 
 // ---- ルーレットの絵（SVG）
@@ -12946,7 +13028,7 @@ function rlDrawLot(e, g, sp, now, loud) {
   const t = (now - sp.at) / 1000;
   const P = rlPlanOf(sp, rlLotPlan);
   let wheel, pose = null;
-  if (t < 0) wheel = rlLead(e, sp.seed, t, -(P.phiF + P.total), P.v1 + 2 * P.A * P.T1, 0);
+  if (t < 0) wheel = rlLead(e, sp.seed, t, P.s, P.w0, 0);
   else { pose = rlLotPose(sp, t); wheel = pose.wheel; e.bl = { seed: sp.seed, done: true }; }
   e.theta = wheel;
   e.rot.setAttribute("transform", `rotate(${rlF(wheel)})`);
@@ -13032,14 +13114,14 @@ function rlRoll(level) {
 }
 function rlCasinoSound(e, g, sp, pose, t, D) {
   const s = (e.snds ??= {});
-  if (s.seed !== sp.seed) { e.snds = { seed: sp.seed, landed: -1, phase: null, beat: 0, done: t >= D }; return; }
-  const P = rlPlanOf(sp, rlCasinoPlan);
-  if (pose.phase === "rim") rlRoll(Math.max(0.15, Math.min(1, 1 - t / P.T1 * 0.7)));
+  const P = rlPlanOf(sp, rlCasinoPlan), ev = P.sim.ev;
+  if (s.seed !== sp.seed) { let i = 0; while (i < ev.length && ev[i].t <= pose.evT) i++; e.snds = { seed: sp.seed, ei: i, beat: 0, done: t >= D }; return; }
+  if (pose.phase === "rim") rlRoll(Math.max(0.15, Math.min(1, 1 - (t / P.T1) * 0.7)));
   else rlRoll(0);
-  if (pose.phase === "hop" && s.phase === "rim") rlSfx("clack", 0.9);
-  if (pose.landed > s.landed) rlSfx(pose.landed === P.hops.length - 1 ? "land" : "clack", pose.landed === P.hops.length - 2 ? 0.8 : 0.6);
-  if (pose.phase === "hop" && t - s.beat > 0.72 && !pose.rest) { s.beat = t; rlSfx("beat", 0.9); }
-  s.landed = pose.landed; s.phase = pose.phase;
+  // 突起・仕切りに当たった・ポケットの底で跳ねた・収まった（1こまで鳴らすのは3つまで）
+  let n = 0;
+  while (s.ei < ev.length && ev[s.ei].t <= pose.evT) { const x = ev[s.ei++]; if (n++ < 3) rlSfx(x.k === "land" ? "land" : "clack", x.k === "land" ? 0.7 : 0.25 + x.s * 0.65); }
+  if (pose.phase === "hop" && t - s.beat > 0.72) { s.beat = t; rlSfx("beat", 0.9); }
   if (!s.done && t >= D) {
     s.done = true;
     if (t - D < 2.5) rlResultFx(g, sp);
@@ -13148,6 +13230,83 @@ const rlHistEl = (g, n = 10) => {
   const hs = (g.rl?.hist ?? []).slice(-n).reverse();
   return hs.length ? h("div", { class: "rl-hist", "aria-label": "最近出た数字" }, hs.map((x, i) => h("b", { class: `rl-hn ${rlColor(x)}${i === 0 ? " last" : ""}` }, String(x)))) : null;
 };
+// v102 当たり・はずれの表
+// 1か所の賭けの結果（win 当たり／half 0 で半分戻り／lose はずれ）と、チップの増減
+function rlBetOut(o, k, a, n) {
+  if (rlWins(k, n)) return { r: "win", d: a * rlPay(k) };
+  if (n === 0 && o.partage && rlEvenMoney(k)) return { r: "half", d: -(a - Math.floor(a / 2)) };
+  return { r: "lose", d: -a };
+}
+const RL_OUT = { win: ["○", "当たり"], half: ["△", "半分戻り"], lose: ["×", "はずれ"] };
+// 出た数字の説明（例：17 黒・奇数・1〜18）
+const rlNumBits = (n) => (n === 0 ? "緑（0）" : `${RL_CNAME[rlColor(n)]}・${n % 2 ? "奇数" : "偶数"}・${n <= 18 ? "1〜18" : "19〜36"}`);
+// その回の全員の賭け：1か所ずつ ○当たり／×はずれ と増減。自分がいちばん上
+function rlResTable(g, n) {
+  const st = g.rl, o = rlO(g.opts), U = chU(g), me = S.user?.uid;
+  const settled = g.phase !== "spin";
+  const bet = g.players.filter((u) => rlSum(st.bets?.[u]));
+  const none = g.players.filter((u) => !rlSum(st.bets?.[u]));
+  const dOf = (u) => rlJudge(o, st.bets[u], n).d;
+  bet.sort((a, b) => (b === me) - (a === me) || dOf(b) - dOf(a));
+  const cap = h("div", { class: "rl-rt-cap" }, h("small", null, `第${st.spin?.round ?? st.round}回の当たり・はずれ`),
+    h("span", { class: "rl-rt-num" }, h("b", { class: `rl-hn ${rlColor(n)}` }, String(n)), h("span", null, rlNumBits(n))));
+  if (!bet.length) return h("div", { class: "rl-res" }, cap, h("p", { class: "cx-note" }, "この回はだれも賭けていません"));
+  const rows = [];
+  for (const u of bet) {
+    const d = dOf(u), left = settled ? st.chips?.[u] ?? 0 : Math.max(0, (st.chips?.[u] ?? 0) + d);
+    rows.push(h("tr", { class: `rl-rt-who${u === me ? " me" : ""}` },
+      h("th", { colspan: "3", scope: "rowgroup" }, h("span", { class: "rl-rt-nm" }, u === me && memberName(u) !== "あなた" ? `${memberName(u)}（あなた）` : memberName(u)), h("small", null, `残り ${left} ${U}`)),
+      h("td", { class: `rl-rt-d${d > 0 ? " up" : d < 0 ? " down" : ""}` }, h("b", null, sgn(d)))));
+    for (const [k, a] of Object.entries(st.bets[u])) {
+      const x = rlBetOut(o, k, a, n);
+      rows.push(h("tr", { class: `rl-rt-bet ${x.r}${u === me ? " me" : ""}` },
+        h("td", null, rlSpotName(k)),
+        h("td", null, `${a}`, h("small", null, ` ×${rlPay(k)}`)),
+        h("td", { class: "rl-rt-r" }, h("i", null, RL_OUT[x.r][0]), RL_OUT[x.r][1]),
+        h("td", { class: "rl-rt-d" }, sgn(x.d))));
+    }
+  }
+  return h("div", { class: "rl-res" }, cap,
+    h("div", { class: "rl-tw" }, h("table", { class: "rl-rt" },
+      h("thead", null, h("tr", null, ["賭けた場所", "枚数・配当", "結果", "増減"].map((x) => h("th", { scope: "col" }, x)))),
+      h("tbody", null, rows))),
+    none.length ? h("p", { class: "rl-rt-none" }, `賭けなかった人：${none.map((u) => (u === me ? "あなた" : memberName(u))).join("・")}`) : null);
+}
+// 成績表：回ごとの出た数字と、1人ずつの増減（いちばん下に合計と残り）
+//   max：表示用画面（プロジェクター）では、画面に収まるよう直近の何回かだけ出す（合計・残りは全部の回の分）
+function rlScoreTable(g, max = 0) {
+  const st = g.rl, me = S.user?.uid, U = chU(g);
+  const all = (g.log ?? []).map((l) => l.ev).filter((e) => e?.type === "rlRound");
+  if (!all.length) return null;
+  const evs = max && all.length > max ? all.slice(-max) : all;
+  const us = [...g.players].sort((a, b) => (b === me) - (a === me) || (st.chips?.[b] ?? 0) - (st.chips?.[a] ?? 0));
+  const cell = (d, cls = "") => h("td", { class: `rl-sc-d${cls}${d > 0 ? " up" : d < 0 ? " down" : ""}` }, d == null ? "—" : sgn(d));
+  return h("div", { class: "rl-res rl-score" },
+    h("div", { class: "rl-rt-cap" }, h("small", null, evs.length < all.length ? `成績表（直近${evs.length}回 ・ 合計は${all.length}回分）` : `成績表（${all.length}回分）`)),
+    h("div", { class: "rl-tw" }, h("table", { class: "rl-rt rl-sc" },
+      h("thead", null, h("tr", null, h("th", { scope: "col" }, "回"), h("th", { scope: "col" }, "数字"),
+        us.map((u) => h("th", { scope: "col", class: `rl-sc-nm${u === me ? " me" : ""}`, title: memberName(u) }, u === me ? "あなた" : memberName(u))))),
+      h("tbody", null, evs.map((e) => h("tr", null, h("th", { scope: "row" }, `${e.round}`),
+        h("td", null, h("b", { class: `rl-hn ${rlColor(e.n)}` }, String(e.n))),
+        us.map((u) => cell(e.sum && Object.hasOwn(e.sum, u) ? e.sum[u] : null))))),
+      h("tfoot", null,
+        h("tr", null, h("th", { scope: "row", colspan: "2" }, "合計"), us.map((u) => cell((st.chips?.[u] ?? 0) - (st.start?.[u] ?? st.chips?.[u] ?? 0), " sum"))),
+        h("tr", null, h("th", { scope: "row", colspan: "2" }, `残り（${U}）`), us.map((u) => h("td", { class: "rl-sc-left" }, String(st.chips?.[u] ?? 0))))))));
+}
+// 抽選：回ごとに、だれが回して何が当たったか
+function rlLotTable(g, big = false) {
+  const st = g.rl, me = S.user?.uid;
+  const evs = (g.log ?? []).map((l) => l.ev).filter((e) => e?.type === "rlHit");
+  const hits = evs.length ? evs.map((e) => ({ r: e.round, by: e.by, item: e.item })) : (st.hist ?? []).map((x, i) => ({ r: i + 1, by: undefined, item: x }));
+  if (!hits.length) return null;
+  const who = (u) => (u === undefined ? "—" : u == null ? "管理者" : u === me ? "あなた" : memberName(u));
+  return h("div", { class: `rl-res rl-lres${big ? " big" : ""}` },
+    h("div", { class: "rl-rt-cap" }, h("small", null, `当たり ${hits.length} / ${rlO(g.opts).rounds}回`)),
+    h("div", { class: "rl-tw" }, h("table", { class: "rl-rt rl-lt" },
+      h("thead", null, h("tr", null, ["回", "回した人", "当たった項目"].map((x) => h("th", { scope: "col" }, x)))),
+      h("tbody", null, hits.map((x, i) => h("tr", { class: i === hits.length - 1 ? "last" : null },
+        h("th", { scope: "row" }, `${x.r}`), h("td", { class: "rl-lt-by" }, who(x.by)), h("td", { class: "rl-lt-it" }, x.item ?? "?")))))));
+}
 function rlBetsList(g, bets, n = null) {
   const o = rlO(g.opts), U = chU(g);
   const es = Object.entries(bets ?? {});
@@ -13190,9 +13349,7 @@ function rlMemberBody(g) {
         ctl = [h("div", { class: "cx-acts" }, b), h("p", { class: "cx-note" }, mine ? "あなたの番です。押すと回ります" : "押すと回ります（管理者）")];
       } else ctl = h("p", { class: "cx-note rl-wait" }, sp ? `${memberName(sp)}さんが回します` : "管理者が回します");
     }
-    const hits = st.hist ?? [];
-    return [h("section", { class: "cx-table rl-x lot" }, rlWheel(g, "m", { size: "big", loud: true }), ctl,
-      hits.length ? h("div", { class: "rl-hits" }, h("small", null, "HIT"), hits.map((x, i) => h("b", null, `${hits.length > 1 ? `${i + 1}. ` : ""}${x}`))) : null)];
+    return [h("section", { class: "cx-table rl-x lot" }, rlWheel(g, "m", { size: "big", loud: true }), ctl, rlLotTable(g))];
   }
   const chips = st.chips?.[uid] ?? 0;
   if (g.phase === "bet") {
@@ -13226,6 +13383,8 @@ function rlMemberBody(g) {
   const sp = st.spin, landed = sp && (g.phase !== "spin" || (nowS() - sp.at) / 1000 >= rlPlanOf(sp, rlCasinoPlan).D);
   if (g.phase === "spin" && !landed && sp) rlAtLand(g, sp);
   const n = landed && sp ? sp.n : null;
+  if (n != null) return [h("section", { class: "cx-table rl-x spin landed" }, rlWheel(g, "m", { size: "big", loud: true }), rlResTable(g, n),
+    g.phase === "spin" ? null : rlScoreTable(g))];
   return [h("section", { class: `cx-table rl-x spin${landed ? " landed" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }),
     h("div", { class: "rl-me" }, h("div", { class: "gl-label" }, "MY BETS", my ? h("small", null, ` ${rlSum(my)} ${U}${n != null && st.res?.[uid] ? ` ・ ${sgn(st.res[uid].d)}` : ""}`) : null),
       rlBetsList(g, my, n))),
@@ -13236,11 +13395,9 @@ function rlTable(g, slot = "a", big = false) {
   const st = g.rl, lot = rlLottery(g), U = chU(g);
   const wheel = rlWheel(g, slot, { size: big ? "huge" : "mid", loud: true });
   if (lot) {
-    const hits = st.hist ?? [];
     return h("div", { class: `rl-tbl lot${big ? " big" : ""}` }, wheel,
       h("div", { class: "rl-tbl-side" },
-        h("div", { class: "gl-label" }, `HIT ${hits.length} / ${rlO(g.opts).rounds}回`),
-        hits.length ? h("ol", { class: "rl-hitlist" }, hits.map((x) => h("li", null, x))) : h("p", { class: "cell-sub" }, "まだ回していません"),
+        rlLotTable(g, big) ?? [h("div", { class: "gl-label" }, `HIT 0 / ${rlO(g.opts).rounds}回`), h("p", { class: "cell-sub" }, "まだ回していません")],
         h("div", { class: "gl-label" }, `のこりの項目 ${st.items?.length ?? 0}`), h("div", { class: "rl-items" }, (st.items ?? []).map((x) => h("span", null, x)))));
   }
   const sp = st.spin, landed = sp && g.phase !== "bet" && (g.phase !== "spin" || (nowS() - sp.at) / 1000 >= rlPlanOf(sp, rlCasinoPlan).D);
@@ -13254,7 +13411,9 @@ function rlTable(g, slot = "a", big = false) {
       h("b", null, `${st.chips?.[u] ?? 0}`, h("small", null, ` ${U}`)), d != null ? h("em", null, sgn(d)) : null);
   });
   return h("div", { class: `rl-tbl${big ? " big" : ""}` }, wheel,
-    h("div", { class: "rl-tbl-side" }, rlHistEl(g, 14), h("div", { class: "gl-label" }, g.phase === "bet" ? "BET" : landed ? `RESULT ・ ${rlNumText(sp.n)}` : "NO MORE BETS"), h("div", { class: "rl-rows" }, rows)));
+    h("div", { class: "rl-tbl-side" }, rlHistEl(g, 14), h("div", { class: "gl-label" }, g.phase === "bet" ? "BET" : landed ? `RESULT ・ ${rlNumText(sp.n)}` : "NO MORE BETS"),
+      landed ? rlResTable(g, sp.n) : h("div", { class: "rl-rows" }, rows),
+      landed && g.phase !== "spin" ? rlScoreTable(g, big ? 4 : 0) : null));
 }
 
 // ================= 始める・進める（管理者の端末）
@@ -16621,7 +16780,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v101"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v102"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;

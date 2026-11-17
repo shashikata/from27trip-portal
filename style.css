@@ -4096,6 +4096,56 @@ button.rl-cell:active { transform: scale(.94); }
 .rl-hits { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; margin-top: 12px; }
 .rl-hits small { font-size: 11px; font-weight: 800; letter-spacing: .14em; color: var(--label-3); }
 .rl-hits b { padding: 4px 10px; border-radius: 999px; background: rgba(162, 158, 255, .16); color: var(--accent); font-size: 13px; overflow-wrap: anywhere; }
+/* v102 当たり・はずれの表 */
+.rl-res { margin-top: 12px; text-align: left; }
+.rl-tbl-side .rl-res { margin-top: 0; }
+.rl-rt-cap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; margin-bottom: 6px; }
+.rl-rt-cap > small { font-size: 12px; font-weight: 800; color: var(--label-2); }
+.rl-rt-num { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; }
+.rl-tw { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; background: rgba(255, 255, 255, .045); }
+.rl-rt { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.rl-rt th, .rl-rt td { padding: 6px 8px; text-align: left; white-space: nowrap; vertical-align: middle; }
+.rl-rt thead th { font-size: 11px; font-weight: 700; color: var(--label-3); border-bottom: 1px solid rgba(255, 255, 255, .1); }
+.rl-rt td:last-child, .rl-rt thead th:last-child { text-align: right; }
+.rl-rt td small { color: var(--label-3); font-weight: 600; }
+.rl-rt-who th { padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, .08); white-space: normal; }
+.rl-rt-who:first-child th, .rl-rt-who:first-child td { border-top: 0; }
+.rl-rt-who td { padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, .08); }
+.rl-rt-nm { font-weight: 800; overflow-wrap: anywhere; }
+.rl-rt-who th small { margin-left: 8px; font-size: 11px; font-weight: 600; color: var(--label-3); white-space: nowrap; }
+.rl-rt-who.me .rl-rt-nm { color: var(--accent); }
+.rl-rt-bet td:first-child { padding-left: 14px; font-weight: 700; }
+.rl-rt-r i { display: inline-grid; place-items: center; width: 1.35em; height: 1.35em; margin-right: 4px; border-radius: 50%; font-style: normal; font-weight: 900; font-size: 11px; }
+.rl-rt-bet.win { background: rgba(61, 220, 132, .12); }
+.rl-rt-bet.win .rl-rt-r { color: var(--green); font-weight: 800; }
+.rl-rt-bet.win .rl-rt-r i { background: var(--green); color: #052; }
+.rl-rt-bet.half .rl-rt-r { color: #FFC94D; font-weight: 800; }
+.rl-rt-bet.half .rl-rt-r i { background: #FFC94D; color: #3a2a00; }
+.rl-rt-bet.lose { color: var(--label-2); }
+.rl-rt-bet.lose .rl-rt-r i { background: rgba(255, 95, 87, .22); color: var(--red); }
+.rl-rt-d { font-weight: 800; }
+.rl-rt-bet.win .rl-rt-d, .rl-rt-d.up, .rl-sc-d.up { color: var(--green); }
+.rl-rt-bet.lose .rl-rt-d, .rl-rt-bet.half .rl-rt-d, .rl-rt-d.down, .rl-sc-d.down { color: var(--red); }
+.rl-rt-d b { font-size: 14px; }
+.rl-rt-none { margin: 6px 2px 0; font-size: 12px; color: var(--label-3); overflow-wrap: anywhere; }
+.rl-sc th, .rl-sc td { text-align: center; }
+.rl-sc tbody th, .rl-sc tfoot th { color: var(--label-3); font-weight: 700; font-size: 11.5px; }
+.rl-sc td:last-child, .rl-sc thead th:last-child { text-align: center; }
+.rl-sc .rl-hn { display: inline-grid; width: 22px; height: 22px; font-size: 10.5px; }
+.rl-sc-nm { max-width: 6.5em; overflow: hidden; text-overflow: ellipsis; }
+.rl-sc-nm.me { color: var(--accent); }
+.rl-sc-d { font-weight: 700; }
+.rl-sc tfoot tr:first-child th, .rl-sc tfoot tr:first-child td { border-top: 1px solid rgba(255, 255, 255, .14); }
+.rl-sc-d.sum { font-weight: 900; }
+.rl-sc-left { font-weight: 800; }
+.rl-lt th { color: var(--label-3); font-weight: 700; }
+.rl-lt thead th:last-child { text-align: left; }
+.rl-lt-by { color: var(--label-2); max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
+.rl-lt-it { width: 100%; font-weight: 800; white-space: normal !important; overflow-wrap: anywhere; text-align: left !important; }
+.rl-lt tr.last .rl-lt-it { color: var(--accent); }
+.rl-tbl.big .rl-rt { font-size: clamp(13px, 1.15vw, 20px); }
+.rl-tbl.big .rl-rt thead th, .rl-tbl.big .rl-rt-cap > small { font-size: clamp(11px, .9vw, 16px); }
+.rl-tbl.big .rl-sc .rl-hn { width: clamp(22px, 1.8vw, 32px); height: clamp(22px, 1.8vw, 32px); font-size: clamp(10.5px, .85vw, 14px); }
 /* 管理者・表示用画面 */
 .rl-tbl { display: grid; gap: 14px; }
 .rl-tbl .rl-wheel { margin: 0 auto; }
