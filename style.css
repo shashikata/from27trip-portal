@@ -3784,6 +3784,10 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .gp-act.done i { color: var(--on-accent); }
 .gp-act small { font-size: 12px; font-weight: 700; opacity: .8; overflow-wrap: anywhere; }
 .gp-acts-note { margin: 10px 0 0; font-size: 12.5px; color: var(--label-2); }
+/* v99 完了：A・B ／ まだ：C（文でも出す） */
+.gp-acts-txt { margin: 10px 0 0; font-size: 13px; line-height: 1.55; color: var(--label-2); overflow-wrap: anywhere; }
+.gp-acts-txt b { font-weight: 700; color: var(--label); }
+.gp-acts-txt .gp-acts-wait b { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .gp-acts-bar span { transition: none; } }
 /* v98 NGワード：人ごとに決める */
 .ng-assign { display: grid; gap: 8px; margin-top: 10px; }
@@ -3861,7 +3865,8 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .gp-switch-b.on small { color: var(--on-accent); opacity: .8; }
 /* v98 数字ならべ：自分の順位を選ぶ・答え合わせの ○× ・これまでの回 */
 .num-board { max-width: 420px; margin: 0 auto; }
-.num-board-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+/* v99 順位表は縦1列（上から1番目・2番目…と埋める） */
+.num-board-grid { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .num-slot { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 6px 10px; border: 0; border-radius: 12px; text-align: left;
   color: var(--label); background: rgba(255, 255, 255, .06); box-shadow: inset 0 0 0 1px var(--edge); font: inherit; }
 button.num-slot { cursor: pointer; }
@@ -3879,7 +3884,8 @@ button.num-slot { cursor: pointer; }
 .num-board-left { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--label-2); }
 .num-board-left.done { color: var(--accent); }
 .st-board .num-board { max-width: none; }
-.st-board .num-board-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.st-board .num-board { max-width: 640px; margin: 0 auto; }
+.st-board .num-board-grid { grid-template-columns: 1fr; gap: 8px; }
 .st-board .num-slot { min-height: 64px; }
 .st-board .num-slot-n { font-size: 26px; }
 .st-board .num-slot-who { font-size: 20px; }
@@ -3895,6 +3901,25 @@ button.num-slot { cursor: pointer; }
 .num-ox.ng { color: var(--red); }
 .num-row b { display: inline-flex; align-items: baseline; gap: 8px; }
 .num-guess { font-size: 11.5px; font-weight: 500; color: var(--label-2); }
+/* v99 答え合わせ：みんなの答え｜正解 を同じ段で横に並べる */
+.num-cmp { display: grid; gap: 4px; max-width: 520px; margin: 0 auto; }
+.num-cmp-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 26px; align-items: center; gap: 8px; min-height: 40px; padding: 4px 10px;
+  border-radius: 10px; background: rgba(255, 255, 255, .05); font-size: 13.5px; }
+.num-cmp-row.head { min-height: 0; padding-top: 0; padding-bottom: 2px; background: none; font-size: 11px; font-weight: 700; color: var(--label-2); letter-spacing: .04em; }
+.num-cmp-row.ok { background: rgba(162, 158, 255, .16); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .4); }
+.num-cmp-row > b { font-size: 16px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; color: var(--label-2); }
+.num-cmp-a, .num-cmp-t { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow-wrap: anywhere; font-weight: 600; }
+.num-cmp-t { border-left: 1px solid var(--separator); padding-left: 8px; }
+.num-cmp-row.head > span:nth-child(3) { border-left: 1px solid var(--separator); padding-left: 8px; }
+.num-cmp-t em { font-style: normal; font-size: 15px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+.num-cmp-nm.me { color: var(--accent); }
+.num-cmp-a small { color: var(--label-3); }
+.num-cmp-row > .num-ox { text-align: center; font-size: 16px; }
+.num-cmp-none { margin: 8px 0 0; text-align: center; font-size: 12px; color: var(--label-2); }
+.st-inner .num-cmp { max-width: 760px; }
+.st-inner .num-cmp-row { min-height: 54px; font-size: 20px; }
+.st-inner .num-cmp-row.head { font-size: 14px; }
+.st-inner .num-cmp-row > b, .st-inner .num-cmp-t em, .st-inner .num-cmp-row > .num-ox { font-size: 24px; }
 .num-hist-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
 .num-hist-list li { padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, .04); box-shadow: inset 0 0 0 1px var(--edge); }
 .num-hist-h { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-bottom: 6px; }
@@ -3905,3 +3930,36 @@ button.num-slot { cursor: pointer; }
 .num-hist-line em { font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--label); }
 .num-hist-line i { font-style: normal; font-weight: 800; }
 @media (prefers-reduced-motion: reduce) { .num-judge.pop { animation: none; } }
+
+/* v99 大富豪 12ボンバー：捨てさせる数字を選ぶ */
+.cx-acts.dfg-bomb { flex-direction: column; align-items: stretch; gap: 8px; }
+.dfg-bomb-ranks { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.dfg-bomb-r { min-height: 40px; padding: 0; font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* v99 管理者も遊んでいるゲーム */
+.gp-selfplay { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 10px 0; padding: 12px 14px; border-radius: 14px;
+  background: rgba(162, 158, 255, .12); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .35); }
+.gp-selfplay > div { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.gp-selfplay b { font-size: 15px; color: var(--accent); }
+.gp-selfplay small { font-size: 12.5px; line-height: 1.5; color: var(--label-2); }
+.gp-selfplay .btn-filled { flex: 0 0 auto; }
+.self-note { padding: 0 16px 12px; }
+
+/* v99 言葉集（NGワード・ワード人狼）：アコーディオンで開いて見る・足す */
+.fold.wb { margin: 10px 0 18px; }
+.wb .wb-n { margin-left: 6px; font-size: 12.5px; font-weight: 600; color: var(--label-2); }
+.wb-in { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.wb-addrow { display: flex; gap: 8px; align-items: flex-start; }
+.wb-addrow .wb-add { flex: 1 1 auto; min-width: 0; min-height: 64px; }
+.wb-addrow .btn-small { flex: 0 0 auto; min-height: 40px; }
+.wb-msg { margin: 0; font-size: 12.5px; color: var(--accent); overflow-wrap: anywhere; }
+.wb-msg:empty { display: none; }
+.wb-filter { width: 100%; }
+.wb-body { display: flex; flex-direction: column; gap: 12px; }
+.wb-h { margin-bottom: 6px; font-size: 12.5px; font-weight: 700; color: var(--label-2); }
+.wb-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 320px; overflow-y: auto; padding: 2px; }
+.wb-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 10px; border-radius: 999px; background: var(--fill); font-size: 13px; overflow-wrap: anywhere; }
+.wb-chip.mine { background: rgba(162, 158, 255, .16); box-shadow: inset 0 0 0 1px rgba(162, 158, 255, .4); }
+.wb-del { display: inline-grid; place-items: center; min-width: 24px; min-height: 24px; margin-right: -6px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--label-2); font-size: 15px; cursor: pointer; }
+.wb-del:hover { color: var(--red); }
+.wb-in .wb-add, .wb-in .wb-filter { padding: 10px 12px; border-radius: 12px; background: var(--cell); box-shadow: inset 0 0 0 1px var(--edge); }

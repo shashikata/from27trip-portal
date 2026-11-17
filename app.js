@@ -247,6 +247,7 @@ const S = {
   quizBets: new Map(),       // 賭け quizBets/{id}
   acks: new Map(),           // 「見ました」 acks/{annId}_{uid}（参加者は自分の分だけ）
   games: new Map(),          // ゲーム（人狼など）の進行 games/{id}
+  gameWords: null,           // v99 管理者が足した言葉 gameWords/custom（管理者だけ）
   gameSecrets: new Map(),    // ゲームで本人だけに配った内容 gameSecrets/{gameId}_{uid}（参加者は自分の分だけ）
   gameActs: new Map(),       // 夜の行動・投票 gameActs/{gameId}_{key}_{uid}（参加者は自分の分だけ）
   playLogs: new Map(),       // 管理者：終わったクイズ・ゲームの記録 playLogs/{quiz_run | game_id}
@@ -408,7 +409,7 @@ function startAdmin() {
   listen("dmRecent", query(C("dms"), orderBy("at", "desc"), limit(300)), (s) => { if (s) { S.msgSrc.dm = toMap(s); mergeMsgs(); } });
   moveDmsOut();
   listenLiveQuiz();
-  if (pid !== LOBBY) { listenGames(null); listen("playLogs", C("playLogs"), (s) => { if (s) S.playLogs = toMap(s); }); }
+  if (pid !== LOBBY) { listenGames(null); listen("playLogs", C("playLogs"), (s) => { if (s) S.playLogs = toMap(s); }); listen("gameWords", D("gameWords", "custom"), (s) => { S.gameWords = s?.exists() ? s.data() : null; }); }
 }
 
 // 1つ目の旅行（ルート直下のデータ）を、旅行の一覧に必ず登録しておく。
@@ -921,7 +922,14 @@ const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.t
 const DEMO = { games: new Map(), secrets: new Map(), acts: new Map(), names: {}, wait: new Map() };
 const isDemo = (gid) => typeof gid === "string" && gid.startsWith("demo-");
 const demoMix = (m, kind) => { for (const [k, v] of DEMO[kind]) m.set(k, v); return m; };
-const memberName = (uid) => S.members.get(uid)?.name ?? DEMO.names[uid] ?? extMemberName(uid) ?? "（削除済み）";
+const memberName = (uid) => S.members.get(uid)?.name ?? DEMO.names[uid] ?? gameNameOf(uid) ?? extMemberName(uid) ?? "（削除済み）";
+// v99 管理者もゲームで遊べる。管理者は参加者の名簿にいないので、名前はゲームに書いておく（games.names）
+function gameNameOf(uid) {
+  if (!uid) return null;
+  if (S.isAdmin && uid === S.user?.uid) return adminName(S.user.email);
+  for (const g of S.games?.values?.() ?? []) if (g.names?.[uid]) return g.names[uid];
+  return null;
+}
 const extMemberName = (uid) => {
   for (const m of S.extMembers.values()) if (m.get(uid)?.name) return m.get(uid).name;
   return S.lobbyMembers?.get(uid)?.name ?? null;
@@ -2425,7 +2433,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v98"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v99"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11077,13 +11085,40 @@ const WORD_PAIRS = [
   ["昼寝", "二度寝"], ["筋トレ", "ストレッチ"], ["ダイエット", "断食"], ["早起き", "夜ふかし"],
 ];
 const NG_WORDS = [
-  "えー", "なんで", "すごい", "ありがとう", "ほんとに", "やばい", "まじで", "たしかに", "わかる", "ちょっと", "ごめん", "いいね",
-  "おいしい", "楽しい", "眠い", "疲れた", "お腹", "写真", "旅行", "海", "名前", "明日", "今日", "時間", "どこ", "だれ", "なに",
-  "いくら", "好き", "嫌い", "最高", "かわいい", "かっこいい", "うそ", "本当", "大丈夫", "了解", "おつかれ", "ふつう", "あとで",
-  "ちがう", "そうそう", "なるほど", "へー", "うける", "ねえ", "いや", "でも", "だから", "結局", "なんか", "あれ", "それ", "これ",
-  "先輩", "後輩", "部活", "授業", "テスト", "バイト", "お金", "スマホ", "ゲーム", "ごはん", "お酒", "ジュース", "アイス", "部屋",
-  "寝る", "起きる", "早い", "遅い", "暑い", "寒い", "高い", "安い", "大きい", "小さい", "いっしょに", "そういえば", "とりあえず", "めっちゃ",
+  "えー", "なんで", "すごい", "ありがとう", "ほんとに", "やばい", "まじで", "たしかに", "わかる", "ちょっと", "ごめん", "いいね", "おいしい", "楽しい", "眠い", "疲れた", "お腹", "写真", "旅行",
+  "海", "名前", "明日", "今日", "時間", "どこ", "だれ", "なに", "いくら", "好き", "嫌い", "最高", "かわいい", "かっこいい", "うそ", "本当", "大丈夫", "了解", "おつかれ", "ふつう", "あとで",
+  "ちがう", "そうそう", "なるほど", "へー", "うける", "ねえ", "いや", "でも", "だから", "結局", "なんか", "あれ", "それ", "これ", "先輩", "後輩", "部活", "授業", "テスト", "バイト", "お金",
+  "スマホ", "ゲーム", "ごはん", "お酒", "ジュース", "アイス", "部屋", "寝る", "起きる", "早い", "遅い", "暑い", "寒い", "高い", "安い", "大きい", "小さい", "いっしょに", "そういえば", "とりあえず",
+  "めっちゃ", "うん", "はい", "そう", "そうなんだ", "ほんと", "えっ", "あー", "おー", "うわ", "やった", "よし", "オッケー", "ごめんね", "すみません", "お願い", "どうぞ", "ばいばい", "またね",
+  "おはよう", "こんにちは", "こんばんは", "おやすみ", "いただきます", "ごちそうさま", "すごいね", "さすが", "えらい", "やるじゃん", "いいじゃん", "天才", "神", "えぐい", "ガチ", "ほぼ", "絶対", "たぶん",
+  "きっと", "一応", "わりと", "けっこう", "かなり", "すごく", "まあ", "まあまあ", "ちなみに", "つまり", "要するに", "ていうか", "てか", "逆に", "普通に", "確かに", "実は", "正直", "意外と",
+  "やっぱり", "もう", "まだ", "ずっと", "すぐ", "いつも", "たまに", "全然", "全部", "みんな", "自分", "わたし", "僕", "俺", "あなた", "きみ", "誰か", "何か", "どれ", "どっち", "いつ",
+  "どうして", "どうする", "どうしよう", "どうやって", "本気", "冗談", "ノリ", "テンション", "雰囲気", "気持ち", "感じ", "意味", "理由", "話", "質問", "答え", "問題", "正解", "間違い", "当たり",
+  "ハズレ", "勝ち", "負け", "一番", "最後", "最初", "次", "前", "後ろ", "上", "下", "右", "左", "真ん中", "外", "中", "朝", "昼", "夜", "夕方", "昨日", "明後日", "来週", "先週",
+  "今年", "去年", "来年", "週末", "土曜", "日曜", "月曜", "夏", "冬", "春", "秋", "天気", "雨", "晴れ", "雪", "風", "星", "空", "月", "太陽", "家", "学校", "大学", "教室", "駅",
+  "電車", "バス", "車", "自転車", "タクシー", "飛行機", "新幹線", "空港", "ホテル", "旅館", "温泉", "お風呂", "シャワー", "トイレ", "布団", "ベッド", "枕", "タオル", "歯ブラシ", "荷物",
+  "カバン", "財布", "鍵", "チケット", "地図", "お土産", "観光", "景色", "ビーチ", "山", "川", "島", "船", "プール", "公園", "コンビニ", "スーパー", "カフェ", "レストラン", "居酒屋", "カラオケ",
+  "映画", "遊園地", "水族館", "動物園", "神社", "お寺", "お祭り", "花火", "水", "お茶", "コーヒー", "紅茶", "ビール", "牛乳", "コーラ", "ラーメン", "カレー", "寿司", "焼肉", "ピザ", "パン",
+  "お米", "おにぎり", "卵", "肉", "魚", "野菜", "果物", "お菓子", "チョコ", "ケーキ", "ポテト", "唐揚げ", "うどん", "そば", "パスタ", "朝ごはん", "昼ごはん", "晩ごはん", "おやつ", "甘い",
+  "辛い", "しょっぱい", "すっぱい", "苦い", "熱い", "冷たい", "お腹すいた", "お腹いっぱい", "のど乾いた", "犬", "猫", "鳥", "虫", "動物", "花", "木", "草", "服", "靴", "帽子", "メガネ",
+  "サングラス", "髪", "化粧", "顔", "目", "鼻", "口", "耳", "手", "足", "頭", "体", "声", "歯", "背", "身長", "携帯", "充電", "電池", "Wi-Fi", "ネット", "LINE", "インスタ",
+  "ツイッター", "TikTok", "YouTube", "動画", "アプリ", "通知", "既読", "スタンプ", "自撮り", "カメラ", "パソコン", "テレビ", "イヤホン", "友達", "親友", "彼氏", "彼女", "恋人", "家族",
+  "お母さん", "お父さん", "兄", "姉", "弟", "妹", "おばあちゃん", "おじいちゃん", "先生", "店員", "社長", "上司", "同期", "クラス", "サークル", "チーム", "仲間", "相手", "他人", "人", "楽しみ",
+  "うれしい", "悲しい", "怖い", "寂しい", "恥ずかしい", "悔しい", "むかつく", "面白い", "つまらない", "暇", "忙しい", "元気", "しんどい", "だるい", "痛い", "かゆい", "気持ちいい", "気持ち悪い", "最悪",
+  "微妙", "びっくり", "安心", "心配", "不安", "緊張", "感動", "興奮", "幸せ", "平和", "食べる", "飲む", "行く", "来る", "帰る", "見る", "聞く", "言う", "話す", "思う", "知る", "分かる",
+  "待つ", "走る", "歩く", "座る", "立つ", "遊ぶ", "働く", "休む", "笑う", "泣く", "怒る", "歌う", "踊る", "買う", "売る", "払う", "作る", "使う", "探す", "見つける", "忘れる", "覚える",
+  "決める", "選ぶ", "始める", "終わる", "開ける", "閉める", "持つ", "置く", "撮る", "送る", "呼ぶ", "頑張る", "頑張って", "頑張ろう", "新しい", "古い", "長い", "短い", "重い", "軽い", "近い",
+  "遠い", "強い", "弱い", "多い", "少ない", "広い", "狭い", "明るい", "暗い", "白い", "黒い", "赤い", "青い", "きれい", "汚い", "うるさい", "静か", "簡単", "難しい", "便利", "不便", "大事",
+  "大切", "特別", "普通", "変", "自由", "無理", "余裕", "ラク", "楽勝", "貯金", "給料", "値段", "半額", "無料", "タダ", "割り勘", "おごる", "予約", "予定", "約束", "集合", "解散",
+  "出発", "到着", "遅刻", "寝坊", "早起き", "二度寝", "昼寝", "徹夜", "夜更かし", "準備", "片付け", "掃除", "洗濯", "料理", "買い物", "いっせーの", "せーの", "じゃんけん", "乾杯", "いえーい",
+  "ナイス", "どんまい", "おめでとう", "お疲れさま", "気をつけて", "いってらっしゃい", "おかえり", "ただいま", "アニメ", "漫画", "ドラマ", "音楽", "歌", "ライブ", "アイドル", "芸能人", "ニュース", "本",
+  "雑誌", "スポーツ", "サッカー", "野球", "バスケ", "テニス", "卓球", "バレー", "水泳", "筋トレ", "ダイエット", "運動", "試合", "練習", "大会", "優勝", "ルール", "作戦", "チャンス", "ピンチ",
+  "ミス", "セーフ", "ラッキー", "アンラッキー", "ドキドキ", "ワクワク", "ニコニコ", "イライラ", "ぼーっと", "ゆっくり", "のんびり", "さっさと", "はやく", "急いで", "ちょっと待って", "まって",
 ];
+// v99 管理者が足した言葉（gameWords/custom。参加者は読めない）。{ ng: ["…"], word: [{ a: 多数派, b: 少数派 }] }
+const gwCustom = () => S.gameWords ?? {};
+const ngWordsAll = () => [...new Set([...NG_WORDS, ...(gwCustom().ng ?? []).filter((w) => typeof w === "string" && w)])];
+const wordPairsAll = () => [...WORD_PAIRS, ...(gwCustom().word ?? []).filter((x) => x?.a && x?.b).map((x) => [x.a, x.b])];
 const NUM_THEMES = [
   "人気の食べ物（1＝不人気 → 100＝大人気）", "旅行に持っていきたい物（1＝いらない → 100＝絶対いる）", "強そうな動物（1＝弱い → 100＝最強）",
   "怖いもの（1＝平気 → 100＝めちゃくちゃ怖い）", "テンションが上がるもの（1＝上がらない → 100＝最高に上がる）", "もらってうれしい物（1＝いらない → 100＝最高）",
@@ -11115,7 +11150,7 @@ const gNames = (uids) => (uids ?? []).map(memberName).join("・");
 // その端末の時計がずれていると（例：PC の時計が遅れている）新しいゲームが古い扱いになり、参加者の画面が切り替わらなかった
 const gStart = (g) => ts(g.createdAt) || g.no || 0;
 const sortedGames = () => [...S.games.values()].filter((g) => !g.demo).sort((a, b) => gStart(b) - gStart(a));
-const GV = { pick: null, hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
+const GV = { play: null, pick: null, hidden: new Set(), roleShow: new Set(), watchOpen: null, show: new Set(), flipN: new Map(), stage: null, demo: null, log: null, fall: new Map(), outPrev: new Map(), cut: new Set() }; // 参加者：閉じたゲーム・役職を表示中のゲーム／管理者：大きく表示中のゲーム
 const GA = { tab: "quiz", open: null, showAns: false, kind: "wolf" }; // 管理者の画面の状態
 const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面）
 const GBUSY = new Set(); // 進めている最中のゲーム
@@ -11164,7 +11199,7 @@ async function startGame(kind, players, o, demo = false) {
   const now = nowS();
   const order = gShuffle(players);
   const sec = (uid, data) => b.set(D("gameSecrets", `${gid}_${uid}`), { gameId: gid, uid, ...data });
-  const base = { kind, title: GAME_KINDS[kind].label, players, no: now, createdAt: demo ? null : serverTimestamp(), ...(demo ? { demo: true } : {}), step: 0, phase: "play", day: 1,
+  const base = { kind, title: GAME_KINDS[kind].label, players, no: now, ...(S.isAdmin && !demo && players.includes(S.user?.uid) ? { names: { [S.user.uid]: adminName(S.user.email) } } : {}), createdAt: demo ? null : serverTimestamp(), ...(demo ? { demo: true } : {}), step: 0, phase: "play", day: 1,
     actKey: null, actors: [], candidates: [], endsAt: null, log: [], result: null, reveal: null, opts: o,
     logPub: o.logPub ?? { on: false, cats: logCatKeys(kind) }, watch: !!o.watch };
   let g;
@@ -11179,7 +11214,7 @@ async function startGame(kind, players, o, demo = false) {
       log: [gLog(`役職を配りました。1日目の夜です。全員、自分のスマホで1人を選んでください。${o.firstNightSafe ? "今夜は人狼の襲撃はありません。" : ""}`, null, { type: "night", day: 1 })] };
   } else if (kind === "word") {
     // 決めた言葉は [多数派, 少数派] のとおりに配る（「くじで決める」がオンのときだけ入れ替えることがある）。ランダムの組は、どちらが少数派かもくじ
-    const [a, c] = pair ?? gPick(WORD_PAIRS);
+    const [a, c] = pair ?? gPick(wordPairsAll());
     const flip = pair && !o.pairFlip ? false : gRand(2) === 1;
     const major = flip ? c : a, minor = flip ? a : c;
     const minors = new Set(order.slice(0, o.minority));
@@ -11189,7 +11224,7 @@ async function startGame(kind, players, o, demo = false) {
     // 決めた人の分はそのまま。空欄の人は、リスト（なければ用意した言葉）からランダム（決めた言葉とは重ならないように）
     const fixed = new Map(players.map((u) => [u, String(assign[u] ?? "").trim().slice(0, 30)]).filter(([, w]) => w));
     const used = new Set(fixed.values());
-    const pool0 = [...new Set([...(o.words ?? []), ...gShuffle(NG_WORDS.filter((w) => !(o.words ?? []).includes(w)))])];
+    const pool0 = [...new Set([...(o.words ?? []), ...gShuffle(ngWordsAll().filter((w) => !(o.words ?? []).includes(w)))])];
     const pool = pool0.filter((w) => !used.has(w)).length ? pool0.filter((w) => !used.has(w)) : pool0;
     const rest = order.filter((u) => !fixed.has(u));
     const words = new Map([...fixed, ...rest.map((u, i) => [u, pool[i % pool.length]])]);
@@ -11523,7 +11558,7 @@ function numToRank(g) {
   if (g.phase !== "play" || !numRankOn(g)) return null;
   const r = g.round ?? 1, sec = Math.max(10, Number(g.opts?.rankSec) || 60);
   return { update: { phase: "rank", actKey: `p${r}`, actors: g.players, board: {}, endsAt: g.opts?.auto ? nowS() + sec * 1000 : null,
-    log: [...(g.log ?? []), gLog(`話し合いの時間が終わりました。みんなで順位表を埋めましょう。自分の数字が小さいほうから何番目か、入る段を自分のスマホでタップしてください（1番目＝いちばん小さい）。`, null, { type: "numRank", round: r })] } };
+    log: [...(g.log ?? []), gLog(`順位表${numRounds(g) > 1 ? `（${r}/${numRounds(g)}）` : ""}：自分の段をタップ（1＝いちばん小さい）`, null, { type: "numRank", round: r })] } };
 }
 const numEnd = (g) => numJudgeEnd(g, false);
 function numJudgeEnd(g, force) {
@@ -11543,12 +11578,12 @@ function numJudgeEnd(g, force) {
   const base = { reveal: nums, hist, judge, actKey: null, actors: [], board: null };
   if (r < R && !force) {
     const gap = g.opts?.auto ? Math.max(5, Number(g.opts.gapSec) || 15) : 0;
-    return { update: { ...base, phase: "result", result: { text: `第${r}回の答え合わせ${score ? ` ・ ${score}` : ""}` }, endsAt: gap ? nowS() + gap * 1000 : null,
-      log: [...(g.log ?? []), gLog(`第${r}回の答え合わせ：${line}${score ? `。${score}` : ""}`, detail, { type: "numRound", round: r })] } };
+    return { update: { ...base, phase: "result", result: { text: `答え合わせ（${r}/${R}）${score ? ` ・ ${score}` : ""}` }, endsAt: gap ? nowS() + gap * 1000 : null,
+      log: [...(g.log ?? []), gLog(`答え合わせ（${r}/${R}）：${line}${score ? `。${score}` : ""}`, detail, { type: "numRound", round: r })] } };
   }
   const text = force && r < R ? `全${R}回のうち、第${r}回までで終わりました${score ? ` ・ ${score}` : ""}` : R > 1 ? `全${R}回が終わりました${score ? `（第${r}回 ${score}）` : ""}` : score ? `答え合わせ ・ ${score}` : "答え合わせ";
   return { update: { ...base, phase: "ended", result: { text }, ...(R > 1 || judge ? { endsAt: null } : {}),
-    log: [...(g.log ?? []), gLog(`${R > 1 ? `第${r}回の` : ""}答え合わせ：${line}${score ? `。${score}` : ""}`, detail, { type: "end" })] } };
+    log: [...(g.log ?? []), gLog(`答え合わせ${R > 1 ? `（${r}/${R}）` : ""}：${line}${score ? `。${score}` : ""}`, detail, { type: "end" })] } };
 }
 function numFinish(g) {
   const R = numRounds(g), r = g.round ?? 1;
@@ -11564,7 +11599,7 @@ function numNextRound(g) {
   const pool = NUM_THEMES.filter((t) => !used.has(t));
   const theme = gPick(pool.length ? pool : NUM_THEMES);
   return { update: { phase: "play", round: r, theme, reveal: null, result: null, judge: null, actKey: null, actors: [], endsAt: g.opts?.limitMin ? nowS() + g.opts.limitMin * 60000 : null,
-      log: [...(g.log ?? []), gLog(`第${r}回（全${R}回）。新しい数字（1〜${max}）を配りました。お題：${theme}`, null, { type: "numDeal", round: r })] },
+      log: [...(g.log ?? []), gLog(`第${r}回（${r}/${R}）・お題：${theme}`, null, { type: "numDeal", round: r })] },
     secrets: new Map(gShuffle(g.players).map((u, i) => [u, { number: nums[i] }])) };
 }
 // どのゲームでも「ここで終える」（答えを公開）
@@ -11886,7 +11921,9 @@ const DFG_TITLE_PT = { 大富豪: 2, 富豪: 1, 平民: 0, 貧民: -1, 大貧民
 //   stairsMin 階段の最小枚数／revN 革命になる枚数／stairsRev 階段の革命（0＝なし、N＝N枚以上）／jback 11バック／shibari 縛り／miyako 都落ち／foul 反則上がり
 //   five 5スキップ／seven 7渡し／ten 10捨て／nine 9リバース／exBig・exSmall 交換の枚数／score "rank"|"title"／exSec 交換の時間／autoNext・resultSec
 const dfgO = (o) => ({ jokers: 1, eight: true, revolution: true, stairs: true, spade3: true, exchange: true, stairsMin: 3, revN: 4, stairsRev: 0, jback: false, shibari: false,
-  miyako: false, foul: false, five: false, seven: false, ten: false, nine: false, exBig: 2, exSmall: 1, score: "rank", exSec: 40, autoNext: true, resultSec: 9, turnSec: 45, rounds: 3, ...o });
+  miyako: false, foul: false, five: false, seven: false, ten: false, nine: false,
+  // v99 追加のローカルルール（はじめは全部オフ）：sand 砂嵐／qq 救急車／rokuro ろくろ首／stop4 4止め／coup クーデター／numLock 数字しばり／qrev Qリバース／bomber 12ボンバー
+  sand: false, qq: false, rokuro: false, stop4: false, coup: false, numLock: false, qrev: false, bomber: false, exBig: 2, exSmall: 1, score: "rank", exSec: 40, autoNext: true, resultSec: 9, turnSec: 45, rounds: 3, ...o });
 // 進め方（ブラックジャック・大富豪で共通）
 //   dealer "auto"（既定）：管理者の端末が自動でディーラーになり、時間や全員の操作で次へ進む
 //   dealer "manual"：管理者がディーラー。配る・保険を締め切る・ディーラーのカードを開ける・交換を締め切る・次の回へ は管理者がボタンで進める
@@ -11933,6 +11970,8 @@ function dfgBeats(p, f, rev, o, cs) {
   if (!f) return true;
   if (p.kind !== f.kind || p.n !== f.n) return false;
   if (p.kind === "set") {
+    // v99 砂嵐：3の3枚は、どんな3枚組にも勝つ
+    if (o.sand && p.n === 3 && p.v === 0 && f.n === 3) return true;
     if (f.v === 13) return !!(o.spade3 && f.n === 1 && p.n === 1 && cs?.[0] === "S3");
     if (p.v === 13) return true;
     return rev ? p.v < f.v : p.v > f.v;
@@ -11954,6 +11993,10 @@ function dfgCheck(g, hand, cs) {
   if (!p) return o.stairs ? `同じ数字のカードか、同じマークの${o.stairsMin}枚以上の連番（階段）を選んでください` : "同じ数字のカードを選んでください";
   if (st.field && (p.kind !== st.field.kind || p.n !== st.field.n)) return `場と同じ形（${st.field.kind === "seq" ? "階段" : "同じ数字"}・${st.field.n}枚）で出してください`;
   if (st.lock && st.field && !dfgLockOk(st.lock, cs)) return `縛り中です。${[...st.lock].map((s) => CARD_SUITS[s]).join("")} のマークで出してください`;
+  // v99 4止め：8切りのあとは、同じ枚数の4でだけ止められる
+  if (st.stop8 && st.field) return p.kind === "set" && p.n === st.field.n && dfgCount(p, "4") === p.n ? null : `4止めの番です。止めるなら4を${st.field.n}枚、止めないならパス`;
+  // v99 数字しばり：続いた数字の次（革命中は1つ下）だけ
+  if (st.nlock && st.field?.kind === "set" && p.v !== 13 && p.v !== st.field.v + (rev ? -1 : 1)) return `数字しばり中です。${CARD_RANKS[st.field.v + (rev ? -1 : 1)] === "T" ? "10" : CARD_RANKS[st.field.v + (rev ? -1 : 1)] ?? "?"}を出してください`;
   if (!dfgBeats(p, st.field, rev, o, cs)) return rev ? "いまは強さが逆です。場より弱いカード（数字の小さいカード）しか出せません" : "場より強いカードを出してください";
   return null;
 }
@@ -11964,7 +12007,9 @@ function dfgExtra(g, hand, cs) {
   const give = o.seven ? Math.min(dfgCount(p, "7"), left) : 0;
   left -= give;
   const disc = o.ten ? Math.min(dfgCount(p, "T"), left) : 0;
-  return { give, disc };
+  // v99 12ボンバー：Qを出したら、数字を1つ選んで全員の手札からその数字を捨てる
+  const bomb = !!(o.bomber && dfgCount(p, "Q") > 0);
+  return { give, disc, bomb };
 }
 const dfgOut = (st) => [...st.done, ...(st.down ?? [])];
 const dfgActive = (st) => st.seats.filter((u) => !dfgOut(st).includes(u));
@@ -12045,7 +12090,13 @@ function dfgExchangeDone(g, secs, force = false) {
   return { update: dfgStartPlay(g, st, log), secrets: st.seats.map((u) => [u, { hand: sortHand(hands.get(u)) }]) };
 }
 // 場を流す
-function dfgFlow(st) { st.field = null; st.passes = []; st.lock = null; st.jback = false; }
+function dfgFlow(st) { st.field = null; st.passes = []; st.lock = null; st.jback = false; st.stop8 = false; st.nlock = false; }
+// 12ボンバーで選ばなかったとき：自分の手札で一番多い数字（同じなら弱いほう）。手札がなければ3
+function dfgBombPick(hand) {
+  const cnt = new Map();
+  for (const c of hand) if (!isJoker(c)) cnt.set(c[1], (cnt.get(c[1]) ?? 0) + 1);
+  return [...cnt].sort((a, b) => b[1] - a[1] || CARD_RANKS.indexOf(a[0]) - CARD_RANKS.indexOf(b[0]))[0]?.[0] ?? "3";
+}
 // 番の人の操作（出す・パス・時間切れ）。操作の中身は「出すカード|渡すカード|捨てるカード」（カードは . でつなぐ）
 function dfgMove(g, secs, force = false) {
   const st = structuredClone(g.dfg), o = dfgO(g.opts), u = st.turn;
@@ -12054,17 +12105,17 @@ function dfgMove(g, secs, force = false) {
   const a = cardAct(g, "t", u, st.tseq); // force（ディーラーが進める）でも、届いている操作があればそれを使う
   const timeUp = force || (g.endsAt && nowS() >= g.endsAt + 1000);
   const revBefore = dfgRevNow(st);
-  let play = null, wantGive = [], wantDisc = [];
+  let play = null, wantGive = [], wantDisc = [], wantBomb = null;
   if (a === "pass") play = st.field ? [] : null;
   else if (a) {
-    const [p0, g0 = "", d0 = ""] = a.split("|");
+    const [p0, g0 = "", d0 = "", b0 = ""] = a.split("|");
     const cs = [...new Set(p0.split(".").filter(Boolean))];
-    if (!dfgCheck(g, hand, cs)) { play = cs; wantGive = g0.split(".").filter(Boolean); wantDisc = d0.split(".").filter(Boolean); }
+    if (!dfgCheck(g, hand, cs)) { play = cs; wantGive = g0.split(".").filter(Boolean); wantDisc = d0.split(".").filter(Boolean); wantBomb = CARD_RANKS.includes(b0) && b0.length === 1 ? b0 : null; }
   }
   if (play == null && timeUp) play = st.field ? [] : [dfgWeakest(hand, revBefore)];
   if (play == null) return null;
   const log = [...(g.log ?? [])];
-  const secrets = [];
+  let secrets = [];
   let skip = 0;
   if (!play.length) {
     st.passes = [...st.passes, u];
@@ -12075,14 +12126,30 @@ function dfgMove(g, secs, force = false) {
     const notes = [];
     const prevField = st.field;
     // 縛り（同じマークが続いたら、流れるまでそのマークだけ）
+    const stopped = !!(st.stop8 && prevField); // 4止めで8切りを止めた
+    if (stopped) { st.stop8 = false; notes.push("4止め"); }
+    // 数字しばり：同じ数字の組で、1つ上（革命中は1つ下）が続いたら
+    if (o.numLock && !stopped && !st.nlock && prevField?.kind === "set" && p.kind === "set" && prevField.v !== 13 && p.v !== 13 && p.v === prevField.v + (revBefore ? -1 : 1)) { st.nlock = true; notes.push("数字しばり"); }
     if (o.shibari && prevField && !st.lock && !play.some(isJoker) && !(prevField.cards ?? []).some(isJoker) && dfgSuits(play) === dfgSuits(prevField.cards ?? [])) { st.lock = dfgSuits(play); notes.push(`${[...st.lock].map((s) => CARD_SUITS[s]).join("")}縛り`); }
-    const revNow = o.revolution && ((p.kind === "set" && p.n >= o.revN) || (p.kind === "seq" && o.stairsRev && p.n >= o.stairsRev));
-    if (revNow) { st.rev = !st.rev; notes.push(`革命！${st.rev ? "強さが逆になりました" : "強さが元に戻りました"}`); }
+    // v99 クーデター：9の3枚で革命（革命のオン・オフとは別）
+    const coup = o.coup && p.kind === "set" && p.n === 3 && p.v === CARD_RANKS.indexOf("9");
+    const revNow = coup || (o.revolution && ((p.kind === "set" && p.n >= o.revN) || (p.kind === "seq" && o.stairsRev && p.n >= o.stairsRev)));
+    if (revNow) { st.rev = !st.rev; notes.push(`${coup ? "クーデター（革命）" : "革命"}！${st.rev ? "強さが逆になりました" : "強さが元に戻りました"}`); }
     if (o.spade3 && prevField?.kind === "set" && prevField.n === 1 && prevField.v === 13 && play.length === 1 && play[0] === "S3") notes.push("スペ3返し");
     if (o.jback && dfgCount(p, "J") > 0) { st.jback = !st.jback; notes.push("11バック"); }
     if (o.nine && dfgCount(p, "9") > 0) { st.dir = -(st.dir ?? 1); notes.push("9リバース"); }
+    if (o.qrev && dfgCount(p, "Q") > 0) { st.dir = -(st.dir ?? 1); notes.push("Qリバース"); }
     if (o.five) { skip = dfgCount(p, "5"); if (skip) notes.push(`5スキップ（${skip}人）`); }
-    const cut = o.eight && dfgCount(p, "8") > 0;
+    // 場が流れる：8切り・砂嵐（3の3枚）・救急車（9の2枚）・ろくろ首（6の2枚）
+    const isSet = (n, r) => p.kind === "set" && p.n === n && p.v === CARD_RANKS.indexOf(r);
+    const cut8 = o.eight && dfgCount(p, "8") > 0;
+    const sand = o.sand && isSet(3, "3"), qq = o.qq && isSet(2, "9"), rokuro = o.rokuro && isSet(2, "6");
+    if (sand) notes.push("砂嵐");
+    if (qq) notes.push("救急車");
+    if (rokuro) notes.push("ろくろ首");
+    // 4止め：8切りは、ほかの人が4で止めるか、全員がパスしたら流れる
+    const wait4 = cut8 && o.stop4 && !sand && !qq && !rokuro;
+    const cut = (cut8 && !wait4) || sand || qq || rokuro;
     // 7渡し・10捨て
     const ex = dfgExtra(g, hand, play);
     const others = dfgActive(st).filter((x) => x !== u);
@@ -12103,9 +12170,25 @@ function dfgMove(g, secs, force = false) {
       left = left.filter((c) => !thrown.includes(c));
       notes.push(`10捨て（${thrown.length}枚）`);
     }
+    // 12ボンバー：選んだ数字を、まだ遊んでいる全員の手札から捨てる
+    let bombR = null, bombed = 0;
+    if (ex.bomb) {
+      bombR = wantBomb ?? dfgBombPick(left);
+      const hit = (c) => !isJoker(c) && c[1] === bombR;
+      bombed += left.filter(hit).length; left = left.filter((c) => !hit(c));
+      for (const x of dfgActive(st)) {
+        if (x === u) continue;
+        const hx = hands.get(x) ?? [], keep = hx.filter((c) => !hit(c));
+        if (keep.length === hx.length) continue;
+        bombed += hx.length - keep.length;
+        hands.set(x, keep); secrets.push([x, { hand: sortHand(keep) }]); st.counts[x] = keep.length;
+      }
+      notes.push(`12ボンバー（${bombR === "T" ? "10" : bombR}を${bombed}枚）`);
+    }
     secrets.push([u, { hand: left }]);
     st.counts[u] = left.length;
     st.field = { cards: play, by: u, ...p };
+    st.stop8 = wait4;
     st.lastPlay = { by: u, cards: play };
     st.passes = [];
     const fin = left.length === 0;
@@ -12125,12 +12208,15 @@ function dfgMove(g, secs, force = false) {
         }
       }
     }
-    log.push(gLog(`${memberName(u)}：${cardsText(play)}${!a ? "（時間切れのため自動）" : ""}${notes.length ? `　${notes.join("　")}` : ""}${cut ? "　8切り！" : ""}`,
-      null, { type: "dfgPlay", uid: u, cards: play, rev: revNow, cut, fin: fin && !foul, foul, place: fin && !foul ? st.done.length : null, notes, given: given.length, to, thrown: thrown.length, quiet: !(revNow || fin || fell) }));
-    if (cut) { dfgFlow(st); log.push(gLog("8切りで場が流れました。", null, { type: "dfgFlow", quiet: true })); }
+    // 12ボンバーで手札がなくなったほかの人は、出した人のあとの順にあがり
+    if (bombR) for (const x of cxAfter(st.seats, u)) if (dfgActive(st).includes(x) && (hands.get(x) ?? []).length === 0) { st.done = [...st.done, x]; notes.push(`${memberName(x)}さんもあがり（${st.done.length}番目）`); }
+    log.push(gLog(`${memberName(u)}：${cardsText(play)}${!a ? "（時間切れのため自動）" : ""}${notes.length ? `　${notes.join("　")}` : ""}${cut8 && !wait4 ? "　8切り！" : wait4 ? "　8切り（4止めの番）" : ""}`,
+      null, { type: "dfgPlay", uid: u, cards: play, rev: revNow, cut: cut8 && !wait4, wait4, fin: fin && !foul, foul, place: fin && !foul ? st.done.length : null, notes, given: given.length, to, thrown: thrown.length, quiet: !(revNow || fin || fell) }));
+    if (cut) { dfgFlow(st); log.push(gLog(`${sand ? "砂嵐" : qq ? "救急車" : rokuro ? "ろくろ首" : "8切り"}で場が流れました。`, null, { type: "dfgFlow", quiet: true })); }
   }
   // 次の番
   const active = dfgActive(st);
+  secrets = [...new Map(secrets)];
   if (active.length <= 1) return { update: dfgRoundEnd(g, st, log), secrets };
   const dir = st.dir ?? 1;
   if (!st.field) {
@@ -12281,7 +12367,8 @@ const dfgSeatsEl = (g, me = null) => {
       st.titles?.[u] ? h("small", null, st.titles[u]) : null);
   }));
 };
-const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック中" : null, st.lock && st.field ? `${[...st.lock].map((s) => CARD_SUITS[s]).join("")}縛り` : null, (st.dir ?? 1) < 0 ? "順番が逆回り" : null].filter(Boolean);
+const dfgFlags = (st) => [st.rev ? "革命中" : null, st.jback ? "11バック中" : null, st.lock && st.field ? `${[...st.lock].map((s) => CARD_SUITS[s]).join("")}縛り` : null,
+  st.nlock && st.field ? "数字しばり" : null, st.stop8 && st.field ? "4止めの番" : null, (st.dir ?? 1) < 0 ? "順番が逆回り" : null].filter(Boolean);
 
 // ---- トランプの参加者の画面（黒いテーブル・ガラスのカード・丸いボタン）
 // カードを少し重ねて並べる
@@ -12580,8 +12667,9 @@ function cardMemberBody(g) {
   const sentT = cardAct(g, "t", uid, st.tseq);
   let step = GC.step.get(g.id);
   if (step && (!myTurn || step.tseq !== st.tseq || step.play.some((c) => !hand.includes(c)))) { GC.step.delete(g.id); step = null; }
-  const stage = step ? (step.give.length < step.need.give ? "give" : "disc") : null;
-  const shown = step ? hand.filter((c) => !step.play.includes(c) && !(stage === "disc" && step.give.includes(c))) : hand;
+  // 出したあとに選ぶ順番：7渡し（give）→ 10捨て（disc）→ 12ボンバーの数字（bomb）
+  const stage = step ? (step.give.length < step.need.give ? "give" : step.need.disc && !step.disc ? "disc" : step.need.bomb ? "bomb" : "disc") : null;
+  const shown = step ? hand.filter((c) => !step.play.includes(c) && !(stage !== "give" && step.give.includes(c)) && !(stage === "bomb" && (step.disc ?? []).includes(c))) : hand;
   for (const c of [...sel]) if (!shown.includes(c)) sel.delete(c);
   const picked = shown.filter((c) => sel.has(c));
   const err = myTurn && !step ? dfgCheck(g, hand, picked) : null;
@@ -12598,18 +12686,28 @@ function cardMemberBody(g) {
     const others = dfgActive(st).filter((x) => x !== uid);
     const to = dfgNextAfter(st.seats, uid, others, st.dir ?? 1);
     const k = stage === "give" ? step.need.give : step.need.disc;
-    actions = h("div", { class: "cx-acts" },
-      cxBtn(stage === "give" ? "chevron" : "xmark", stage === "give" ? `${picked.length}/${k}枚を渡す` : `${picked.length}/${k}枚を捨てる`, "btn-filled", { disabled: picked.length !== k || sentT != null, onclick: () => {
-        if (stage === "give") { step.give = picked; sel.clear(); if (step.need.disc) return paintGameLive(); return send(`${step.play.join(".")}|${step.give.join(".")}|`); }
-        send(`${step.play.join(".")}|${step.give.join(".")}|${picked.join(".")}`);
-      } }),
-      h("button", { class: "text-btn cx-redo", onclick: () => { GC.step.delete(g.id); sel.clear(); paintGameLive(); } }, "↺ 選び直す"));
-    note = h("p", { class: "cell-sub" }, stage === "give" ? `7渡し → ${memberName(to)} ×${k}` : `10捨て ×${k}`);
+    const body = (b = "") => `${step.play.join(".")}|${step.give.join(".")}|${(step.disc ?? []).join(".")}${b ? `|${b}` : ""}`;
+    const redo = h("button", { class: "text-btn cx-redo", onclick: () => { GC.step.delete(g.id); sel.clear(); paintGameLive(); } }, "↺ 選び直す");
+    if (stage === "bomb") {
+      // v99 12ボンバー：捨てさせる数字を選ぶ（全員の手札から、その数字が捨てられる）
+      actions = h("div", { class: "cx-acts dfg-bomb" }, h("div", { class: "dfg-bomb-ranks", role: "group", "aria-label": "捨てさせる数字" },
+        [...CARD_RANKS].map((r) => h("button", { type: "button", class: "btn-small dfg-bomb-r", disabled: sentT != null, onclick: () => send(body(r)) }, r === "T" ? "10" : r))), redo);
+      note = h("p", { class: "cell-sub" }, "12ボンバー → 全員が捨てる数字をタップ");
+    } else {
+      actions = h("div", { class: "cx-acts" },
+        cxBtn(stage === "give" ? "chevron" : "xmark", stage === "give" ? `${picked.length}/${k}枚を渡す` : `${picked.length}/${k}枚を捨てる`, "btn-filled", { disabled: picked.length !== k || sentT != null, onclick: () => {
+          if (stage === "give") { step.give = picked; sel.clear(); if (step.need.disc || step.need.bomb) { if (!step.need.disc) step.disc = []; return paintGameLive(); } return send(body()); }
+          step.disc = picked; sel.clear();
+          if (step.need.bomb) return paintGameLive();
+          send(body());
+        } }), redo);
+      note = h("p", { class: "cell-sub" }, stage === "give" ? `7渡し → ${memberName(to)} ×${k}` : `10捨て ×${k}`);
+    }
   } else if (myTurn) {
     actions = h("div", { class: "cx-acts" },
       cxBtn("up", picked.length ? `PLAY ×${picked.length}` : "PLAY", "btn-filled", { disabled: !!err || !picked.length || sentT != null, onclick: () => {
         const ex = dfgExtra(g, hand, picked);
-        if (ex.give || ex.disc) { GC.step.set(g.id, { tseq: st.tseq, play: picked, give: [], need: ex }); sel.clear(); return paintGameLive(); }
+        if (ex.give || ex.disc || ex.bomb) { GC.step.set(g.id, { tseq: st.tseq, play: picked, give: [], disc: ex.disc ? null : [], need: ex }); sel.clear(); return paintGameLive(); }
         send(picked.join("."));
       } }),
       cxBtn("skip", "PASS", "btn-small", { disabled: !st.field || sentT != null, onclick: () => send("pass") }),
@@ -12633,7 +12731,7 @@ function cardMemberBody(g) {
     h("div", { class: `cx-me dfg-hand${myTurn ? " turn" : ""}${myTurn && sentT == null ? " need" : ""}` },
     h("div", { class: "gl-label" }, step ? "PLAY" : myTurn ? "YOUR TURN" : `HAND ×${hand.length}`),
     step ? h("div", { class: "dfg-cards fixed" }, cardRow(step.play)) : null,
-    step ? h("div", { class: "gl-label" }, stage === "give" ? "GIVE" : "DISCARD") : null,
+    step ? h("div", { class: "gl-label" }, stage === "give" ? "GIVE" : stage === "bomb" ? "BOMB ・ 数字を選ぶ" : "DISCARD") : null,
     shown.length ? cxHandFan(g, shown, sel, tap)
       : h("p", { class: "cell-sub" }, st.done.includes(uid) ? `✓ ${st.done.indexOf(uid) + 1}位あがり` : (st.down ?? []).includes(uid) ? (st.fallen === uid ? "都落ち（最下位）" : "反則上がり（最下位）") : "…"),
     actions, note)));
@@ -12999,24 +13097,23 @@ function gPhaseText(g) {
   if (g.phase === "ended") return "ゲーム終了";
   if (g.kind === "wolf") return g.phase === "night" ? `${g.day}日目の夜` : g.phase === "day" ? `${g.day}日目の昼` : g.actKey?.endsWith("b") ? `${g.day}日目の決選投票` : `${g.day}日目の投票`;
   if (g.kind === "word") return g.phase === "talk" ? "話し合い" : g.phase === "guess" ? "お題当て（逆転のチャンス）" : g.actKey?.endsWith("b") ? "決選投票" : "投票";
-  const numPh = g.phase === "result" ? "・答え合わせ" : g.phase === "rank" ? "・順位の回答" : "";
-  if (g.kind === "num" && numRounds(g) > 1) return `第${g.round ?? 1}回${numPh}（全${numRounds(g)}回）`;
-  if (g.kind === "num" && g.phase === "rank") return "順位の回答";
+  // v99 案内は短く（例：答え合わせ（1/2））
+  if (g.kind === "num") return `${g.phase === "result" ? "答え合わせ" : g.phase === "rank" ? "順位表" : "話し合い"}${numRounds(g) > 1 ? `（${g.round ?? 1}/${numRounds(g)}）` : ""}`;
   return "プレイ中";
 }
 function gPrompt(g) {
   if (isCardKind(g.kind)) return cardPrompt(g);
   if (g.phase === "ended") return g.result?.text ?? "";
   if (g.kind === "wolf") {
-    if (g.phase === "night") return `人狼・占い師・騎士は行動を、ほかの人は怪しいと思う人を、自分のスマホで1人選んでください。${g.opts?.firstNightSafe && g.day === 1 ? "今夜は襲撃はありません。" : ""}`;
-    if (g.phase === "day") return "話し合いの時間です。だれが人狼か話し合いましょう。";
-    return g.actKey?.endsWith("b") ? `決選投票です（候補：${gNames(g.candidates)}）。` : "処刑する人を1人選んで投票してください。";
+    if (g.phase === "night") return `夜：スマホで1人選ぶ${g.opts?.firstNightSafe && g.day === 1 ? "（今夜は襲撃なし）" : ""}`;
+    if (g.phase === "day") return "話し合い：人狼はだれ？";
+    return g.actKey?.endsWith("b") ? `決選投票（${gNames(g.candidates)}）` : "投票：処刑する人を1人";
   }
-  if (g.kind === "word") return g.phase === "talk" ? "お題そのものは言わずに、お題について話しましょう。" : g.phase === "guess" ? `${memberName(g.voted)}さんは少数派でした。少数派の人は、多数派のお題を当てると逆転勝ちです。`
-    : g.actKey?.endsWith("b") ? `決選投票です（候補：${gNames(g.candidates)}）。` : "少数派だと思う人を1人選んで投票してください。";
-  if (g.kind === "num" && g.phase === "rank") return "みんなで順位表を埋めましょう。自分の数字が小さいほうから何番目か、入る段をタップしてください（1番目＝いちばん小さい）。";
-  if (g.kind === "num" && g.phase === "result") return `第${g.round ?? 1}回の答え合わせです。次は第${(g.round ?? 1) + 1}回（全${numRounds(g)}回）。${g.endsAt ? "少したつと、新しい数字が配られます。" : "管理者が次の回へ進めます。"}`;
-  if (g.kind === "ng") return `自分のNGワードを言ったらアウトです。言った人を見つけたら「アウト」を押してください。${g.opts?.auto && g.opts?.endAtOne !== false ? "残りが1人になったら終わります。" : ""}`;
+  if (g.kind === "word") return g.phase === "talk" ? "お題は言わずに話す" : g.phase === "guess" ? `${memberName(g.voted)}さんは少数派 → 多数派のお題を当てれば逆転`
+    : g.actKey?.endsWith("b") ? `決選投票（${gNames(g.candidates)}）` : "投票：少数派だと思う人を1人";
+  if (g.kind === "num" && g.phase === "rank") return "自分の段をタップ（1＝いちばん小さい）";
+  if (g.kind === "num" && g.phase === "result") return g.endsAt ? `まもなく次の回（${(g.round ?? 1) + 1}/${numRounds(g)}）` : "管理者が次の回へ進めます";
+  if (g.kind === "ng") return `NGワードを言ったら OUT・言った人の OUT を押す${g.opts?.auto && g.opts?.endAtOne !== false ? "（残り1人で終了）" : ""}`;
   return `お題：${g.theme ?? ""}`;
 }
 // このゲームのポイント（説明と、終わったあとの反映結果）
@@ -13106,7 +13203,7 @@ function gActProgress(g) {
   if (g.phase === "play" && st.turn) return { label: "手番", turn: true, rows: [{ u: st.turn, done: false, to: null }] };
   return null;
 }
-function gProgressEl(g, showSecret) {
+function gProgressEl(g, showSecret, selfIn = false) {
   const p = gActProgress(g);
   if (!p || !p.rows.length) return null;
   const done = p.rows.filter((r) => r.done).length, n = p.rows.length;
@@ -13117,7 +13214,10 @@ function gProgressEl(g, showSecret) {
     h("div", { class: "gp-acts-list" }, [...p.rows.filter((r) => !r.done), ...p.rows.filter((r) => r.done)].map((r) =>
       h("span", { class: `gp-act${r.done ? " done" : ""}` }, h("i", { role: "img", "aria-label": r.done ? "済み" : "まだ" }, r.done ? "✓" : "…"), h("span", { class: "gp-act-nm" }, memberName(r.u)),
         r.to && (!p.secret || showSecret) ? h("small", null, r.to) : null))),
-    p.secret && done ? h("p", { class: "gp-acts-note" }, showSecret ? "投票先は「答えを隠す」で隠せます。" : "だれに入れたかは、下の「答えを見る」を押すと出ます。") : null);
+    // v99 「完了：A・B ／ まだ：C」の文でも出す
+    h("p", { class: "gp-acts-txt" }, h("span", null, h("b", null, "完了："), done ? gNames(p.rows.filter((r) => r.done).map((r) => r.u)) : "—"), h("span", { class: "gp-acts-sep" }, " ／ "),
+      h("span", { class: done === n ? "" : "gp-acts-wait" }, h("b", null, "まだ："), done === n ? "なし" : gNames(p.rows.filter((r) => !r.done).map((r) => r.u)))),
+    p.secret && done && !selfIn ? h("p", { class: "gp-acts-note" }, showSecret ? "投票先は「答えを隠す」で隠せます。" : "だれに入れたかは、下の「答えを見る」を押すと出ます。") : null);
 }
 // v98 NGワード：話題のお題を変える（管理者）。null で消す
 function setGameTopic(g, topic) {
@@ -13170,10 +13270,7 @@ function gRevealList(g) {
   const minors = new Set(g.minors ?? []);
   const order = g.kind === "num" ? [...g.players].sort((a, b) => (g.reveal[a] ?? 0) - (g.reveal[b] ?? 0)) : g.players;
   if (isCardKind(g.kind)) return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "最終結果"), h("div", { class: "gl-reveal" }, (g.result?.ranking ?? []).map((x) => h("div", { class: `gl-reveal-row${cardPlace(g.result.ranking, x) === 1 ? " hl" : ""}` }, h("span", null, `${cardPlace(g.result.ranking, x)}位 ${memberName(x.uid)}`), h("b", null, String(g.reveal[x.uid] ?? "").replace(/^(-?\d+)枚$/, `$1 ${chU(g)}`).replace(/^(-?\d+)点$/, "$1 PT")))))) ;
-  if (g.kind === "num" && g.judge) return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, "みんなの数字（小さい順）と答え合わせ"),
-    h("div", { class: "gl-reveal" }, order.map((u) => { const j = g.judge[u], ok = j && j.guess === j.pos;
-      return h("div", { class: `gl-reveal-row num-row${ok ? " hl" : ""}` }, h("span", null, `${j?.pos ?? "?"}. ${memberName(u)}`),
-        h("b", null, String(g.reveal[u] ?? "?"), h("small", { class: "num-guess" }, j ? (j.guess ? `回答 ${j.guess}番目` : "回答なし") : ""), h("em", { class: `num-ox ${ok ? "ok" : "ng"}` }, ok ? "○" : "×"))); })));
+  if (g.kind === "num" && g.judge) return numCompareEl(g, g.judge, g.reveal, g.round);
   return h("div", { class: "gl-card" }, h("div", { class: "gl-label" }, g.kind === "wolf" ? "みんなの役職" : g.kind === "num" ? "みんなの数字（小さい順）" : g.kind === "ng" ? "みんなのNGワード" : "みんなのお題"),
     h("div", { class: "gl-reveal" }, order.map((u) => h("div", { class: `gl-reveal-row${minors.has(u) ? " hl" : ""}` }, h("span", null, memberName(u)), h("b", null, String(g.reveal[u] ?? "?"), minors.has(u) ? "（少数派）" : "")))));
 }
@@ -13235,6 +13332,7 @@ function bjFlashCheck(g) {
 function dfgFlashItems(ev) {
   const out = [];
   if (ev.cut) out.push(["8切り", "場が流れます"]);
+  if (ev.wait4) out.push(["8切り？", "4で止められます"]);
   for (const n of ev.notes ?? []) {
     if (n.startsWith("革命")) out.push(["革命", n.includes("逆") ? "数字の強さが逆になりました" : "数字の強さが元に戻りました"]);
     else if (n === "11バック") out.push(["イレブンバック", "場が流れるまで強さが逆"]);
@@ -13244,6 +13342,14 @@ function dfgFlashItems(ev) {
     else if (n.startsWith("7渡し")) out.push(["7渡し", n.replace(/^7渡し（(.*)）$/, "$1")]);
     else if (n.startsWith("10捨て")) out.push(["10捨て", n.replace(/^10捨て（(.*)）$/, "$1を捨てました")]);
     else if (n === "9リバース") out.push(["9リバース", "順番が逆回りになりました"]);
+    else if (n === "Qリバース") out.push(["Qリバース", "順番が逆回りになりました"]);
+    else if (n === "砂嵐") out.push(["砂嵐", "3の3枚！場が流れます"]);
+    else if (n === "救急車") out.push(["救急車", "9の2枚！場が流れます"]);
+    else if (n === "ろくろ首") out.push(["ろくろ首", "6の2枚！場が流れます"]);
+    else if (n === "4止め") out.push(["4止め", "8切りを止めました"]);
+    else if (n === "数字しばり") out.push(["数字しばり", "次は1つ上の数字だけ"]);
+    else if (n.startsWith("クーデター")) out.push(["クーデター", n.includes("逆") ? "9の3枚で革命！強さが逆に" : "9の3枚で革命！強さが元に"]);
+    else if (n.startsWith("12ボンバー")) out.push(["12ボンバー", n.replace(/^12ボンバー（(.*)）$/, "全員の$1を捨てました")]);
     else if (n.startsWith("反則上がり")) out.push(["反則上がり", "最下位になります"]);
     else if (n.startsWith("都落ち")) out.push(["都落ち", n.replace(/^都落ち（(.*)）$/, "$1")]);
     else if (n.startsWith("あがり")) out.push(["あがり！", `${ev.place ?? ""}番目`]);
@@ -13280,7 +13386,10 @@ function paintGameLive() {
   const picked = !S.isAdmin && GV.pick ? S.games.get(GV.pick) : null; // 左上のボタンで開いたゲーム（進行中の間だけ優先）
   if (GV.pick && !(picked && gLive(picked) && picked.players?.includes(S.user?.uid))) GV.pick = null;
   const mine0 = S.isAdmin ? null : GV.pick ? picked : myGame(), w0 = S.isAdmin ? null : watchGame();
-  const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : null) : mine0 && (gLive(mine0) || !w0) ? mine0 : w0;
+  if (GV.play && !(S.isAdmin && S.games.get(GV.play)?.players?.includes(S.user?.uid))) GV.play = null;
+  const g = S.isAdmin ? (GV.stage ? S.games.get(GV.stage) : GV.demo ? S.games.get(GV.demo) ?? null : GV.play ? S.games.get(GV.play) ?? null : null) : mine0 && (gLive(mine0) || !w0) ? mine0 : w0;
+  // v99 管理者が遊ぶ人として自分の画面を開いている（デモも同じ扱い）
+  const adminPlay = !!g && S.isAdmin && GV.stage !== g.id && (!!g.demo || GV.play === g.id);
   // 観戦：遊ぶ人ではないので、「観戦する」ボタンを押したときだけ表示用の画面（秘密なし）を開く
   const spect = !!g && !S.isAdmin && !g.players?.includes(S.user.uid);
   if (!spect && GV.watchOpen) GV.watchOpen = null;
@@ -13302,7 +13411,7 @@ function paintGameLive() {
   document.querySelector(".demo-fab")?.remove();
   if (!g) { el?.remove(); fab?.remove(); if (S.isAdmin && GV.stage) { GV.stage = null; if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); } return; }
   if (S.isAdmin) gameNarrate(g);
-  if ((!S.isAdmin || (g.demo && GV.stage !== g.id)) && !spect && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
+  if ((!S.isAdmin || adminPlay) && !spect && GV.hidden.has(`${g.id}:${g.phase === "ended"}`)) {
     el?.remove();
     if (gLive(g) && !fab) document.body.append(h("button", { class: "game-fab", onclick: () => { GV.hidden.delete(`${g.id}:false`); paintGameLive(); } }, icon("people"), `${g.title}に戻る`));
     if (!gLive(g)) fab?.remove();
@@ -13319,8 +13428,8 @@ function paintGameLive() {
   GV.pk = pk;
   if (turned && (gLive(g) || !opened)) setTimeout(() => phaseBanner(g), opened ? 260 : 0);
   const enter = (inner) => { if (opened) vtIn(el, "gl-open"); else if (turned) vtIn(inner, isCardKind(g.kind) ? "vt-soft" : "vt-phase"); return inner; };
-  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (spect) { GV.watchOpen = null; return paintGameLive(); } if (S.isAdmin && GV.stage) return closeGameStage(); if (g.demo) return demoEnd(); GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
-  if (spect || (S.isAdmin && (!g.demo || GV.stage === g.id))) {
+  const close = h("button", { class: "ql-close gl-close", "aria-label": "閉じる", onclick: () => { if (spect) { GV.watchOpen = null; return paintGameLive(); } if (S.isAdmin && GV.stage) return closeGameStage(); if (g.demo) return demoEnd(); if (S.isAdmin && GV.play === g.id) { GV.play = null; return scheduleRender(); } GV.hidden.add(`${g.id}:${g.phase === "ended"}`); paintGameLive(); } }, icon("xmark"));
+  if (spect || (S.isAdmin && !adminPlay)) {
     // みんなに見せる画面（秘密の内容は出さない）。デモのゲームも、管理者の画面から開ける
     el.className = `game-live stage ph-${g.phase === "vote" ? "vote" : g.phase === "night" ? "night" : g.phase === "ended" ? "ended" : "day"}`;
     const ic = g.phase === "night" ? "☾" : g.phase === "vote" ? "✋" : g.phase === "ended" ? "★" : g.kind === "wolf" ? "☀" : isCardKind(g.kind) ? "♠" : "💬";
@@ -13409,7 +13518,7 @@ function numBoardEl(g, me = null) {
     const pos = i + 1, who = g.players.filter((u) => b[u] === pos), mine = !!me && b[me] === pos, taken = who.length > 0 && !mine;
     const inner = [h("b", { class: "num-slot-n" }, String(pos)),
       h("span", { class: "num-slot-who" }, who.length ? who.map((u) => h("i", { class: u === me ? "me" : "" }, memberName(u))) : h("small", null, i === 0 ? "いちばん小さい" : i === n - 1 ? "いちばん大きい" : "あき")),
-      mine ? h("small", { class: "num-slot-x" }, "押すと外れる") : null];
+      mine ? h("small", { class: "num-slot-x" }, "外す") : null];
     return me ? h("button", { type: "button", class: `num-slot${mine ? " on" : ""}${taken ? " taken" : ""}`, disabled: taken, "aria-pressed": String(mine),
         "aria-label": mine ? `${pos}番目から外れる` : taken ? `${pos}番目（${gNames(who)}が入っています）` : `${pos}番目に入る`,
         onclick: () => gameChoose(g, mine ? "0" : String(pos)) }, inner)
@@ -13420,8 +13529,8 @@ function numBoardEl(g, me = null) {
   const lost = me && my > 0 && b[me] !== my ? g.players.find((u) => u !== me && b[u] === my) : null;
   const left = g.players.filter((u) => !b[u]);
   return h("div", { class: "num-board" }, h("div", { class: "num-board-grid" }, rows),
-    lost ? h("p", { class: "num-board-lost", role: "status" }, `${my}番目には先に${memberName(lost)}さんが入りました。空いている段を選んでください`) : null,
-    h("p", { class: `num-board-left${left.length ? "" : " done"}` }, left.length ? `まだ入っていない人：${gNames(left)}` : "全員が入りました"));
+    lost ? h("p", { class: "num-board-lost", role: "status" }, `${my}番目は${memberName(lost)}さんが先に入りました`) : null,
+    h("p", { class: `num-board-left${left.length ? "" : " done"}` }, left.length ? `まだ：${gNames(left)}` : "全員OK"));
 }
 // 管理者の端末：参加者の答え（本人しか読めない）を、みんなが見られる games.board に書き写す
 const NUM_BD = new Map();
@@ -13432,6 +13541,25 @@ function numSyncBoard(g) {
   NUM_BD.set(g.id, sig);
   if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), board: want });
   updateDoc(D("games", g.id), { board: want }).catch((e) => { NUM_BD.delete(g.id); console.warn("num board", e); });
+}
+// v99 数字ならべの答え合わせ：左に「みんなの答え（順位表）」、右に「正解（数字の小さい順）」を同じ段で並べる
+function numCompareEl(g, judge, nums, round = null, me = S.user?.uid) {
+  const us = Object.keys(judge ?? {}), n = us.length;
+  const ansAt = {}, truthAt = {};
+  for (const u of us) { truthAt[judge[u].pos] = u; if (judge[u].guess) ansAt[judge[u].guess] = u; }
+  const okN = us.filter((u) => judge[u].guess === judge[u].pos).length;
+  const none = us.filter((u) => !judge[u].guess);
+  const nm = (u) => h("span", { class: `num-cmp-nm${u === me ? " me" : ""}` }, memberName(u));
+  return h("div", { class: "gl-card num-cmp-card" },
+    h("div", { class: "gl-label" }, `答え合わせ${round && numRounds(g) > 1 ? `（${round}/${numRounds(g)}）` : ""} `, h("small", null, `正解 ${okN} / ${n}人`)),
+    h("div", { class: "num-cmp", role: "table", "aria-label": "みんなの答えと正解" },
+      h("div", { class: "num-cmp-row head", role: "row" }, h("span", { role: "columnheader" }, "順"), h("span", { role: "columnheader" }, "みんなの答え"), h("span", { role: "columnheader" }, "正解"), h("span", { role: "columnheader", "aria-label": "判定" }, "")),
+      Array.from({ length: n }, (_, i) => { const pos = i + 1, a = ansAt[pos], t = truthAt[pos], ok = !!a && a === t;
+        return h("div", { class: `num-cmp-row${ok ? " ok" : ""}`, role: "row" }, h("b", { role: "cell" }, String(pos)),
+          h("span", { role: "cell", class: "num-cmp-a" }, a ? nm(a) : h("small", null, "—")),
+          h("span", { role: "cell", class: "num-cmp-t" }, t ? [nm(t), h("em", null, String(nums?.[t] ?? "?"))] : "?"),
+          h("i", { role: "cell", class: `num-ox ${ok ? "ok" : "ng"}` }, ok ? "○" : "×")); })),
+    none.length ? h("p", { class: "num-cmp-none" }, `回答なし：${gNames(none)}`) : null);
 }
 // v98 数字ならべ：これまでの回の答え（いま答え合わせ中の回は、上の「みんなの数字」に出るので除く）
 function numHistCard(g) {
@@ -13501,8 +13629,9 @@ function gameMemberBody(g) {
   const tables = main.filter((x) => x.classList?.contains("cx-table"));
   const end = gEndHero(g, S.user.uid);
   const stage = end ? [end] : tables;
-  const rest = [S.isAdmin && g.demo ? h("div", { class: "gl-card gp-ctl-card" }, h("div", { class: "gl-label" }, "ADMIN ", h("small", null, "場面の操作")), gameCtlBar(g, true),
-      h("button", { class: "btn-small gp-demo-admin", onclick: () => demoView(true) }, icon("arrows"), "管理者の画面で見る（デモ）")) : null,
+  const rest = [S.isAdmin && (g.demo || GV.play === g.id) ? h("div", { class: "gl-card gp-ctl-card" }, h("div", { class: "gl-label" }, "ADMIN ", h("small", null, "場面の操作")), gameCtlBar(g, true),
+      g.demo ? h("button", { class: "btn-small gp-demo-admin", onclick: () => demoView(true) }, icon("arrows"), "管理者の画面で見る（デモ）")
+        : h("button", { class: "btn-small gp-demo-admin", onclick: () => { GV.play = null; scheduleRender(); } }, icon("arrows"), "管理者の画面に戻る")) : null,
     // トランプの順位は終了の札に出すので、下の「最終結果」は出さない（人狼などは、みんなの役職・お題を出す）
     end && isCardKind(g.kind) ? null : gRevealList(g), numHistCard(g),
     end ? h("div", { class: "g-end-last" }, h("div", { class: "gl-label" }, "最後の場面"), tables) : null,
@@ -13691,8 +13820,8 @@ function partyMemberBody(g) {
   // v98 数字ならべ：みんなで1つの順位表を埋める（自分が入る段をタップ。ほかの人がどこに入ったかも見える）
   if (g.kind === "num" && g.phase === "rank") {
     const my = numBoard(g)[uid], can = g.actors.includes(uid);
-    me.push(h("div", { class: `cx-label${can && !my ? " need" : ""}` }, "RANKING ", h("small", null, "みんなで小さい順に並べる")), numBoardEl(g, can ? uid : null),
-      can ? (() => { const at = numBoard(g)[uid]; return h("p", { class: `cx-note${at ? "" : " need"}` }, at ? `✓ ${at}番目に入りました ・ 締切まで動かせます（ほかの段に入り直すか、自分の段を押して外れる）` : "▲ 空いている段をタップ（1＝いちばん小さい。1つの段に1人まで）"); })() : null);
+    me.push(h("div", { class: `cx-label${can && !my ? " need" : ""}` }, "RANKING ", h("small", null, "小さい順")), numBoardEl(g, can ? uid : null),
+      can ? (() => { const at = numBoard(g)[uid]; return h("p", { class: `cx-note${at ? "" : " need"}` }, at ? `✓ ${at}番目 ・ 締切まで変更可` : "▲ 空いている段をタップ"); })() : null);
   }
   // 答え合わせ（回と回の間）：自分の正解・不正解
   if (numCheck && g.judge?.[uid]) { const j = g.judge[uid], ok = j.guess === j.pos;
@@ -14187,6 +14316,57 @@ function quizAndGames(opts = {}) {
   return view;
 }
 
+// v99 言葉集：用意した言葉と、管理者が足した言葉を見る・足す・消す（開いたときだけ中身を描く）
+function wordBook(kind) {
+  const isNg = kind === "ng";
+  const box = h("div", { class: "wb-body" });
+  const filter = h("input", { type: "search", class: "plain wb-filter", placeholder: "絞り込み", "aria-label": "言葉を絞り込む" });
+  const add = h("textarea", { class: "plain wb-add", rows: "3", maxlength: "3000", placeholder: isNg ? "足す言葉（1行に1つ）" : "足す組（1行に1組。例：うどん／そば）" });
+  const msg = h("p", { class: "wb-msg", role: "status" });
+  const sum = h("span", { class: "wb-n" });
+  const key = (x) => (isNg ? x : `${x[0]}／${x[1]}`);
+  const builtin = () => (isNg ? NG_WORDS : WORD_PAIRS).map(key);
+  const custom = () => (isNg ? (gwCustom().ng ?? []) : (gwCustom().word ?? []).filter((x) => x?.a && x?.b).map((x) => [x.a, x.b])).map(key);
+  const save = (list) => guard(null, () => setDoc(D("gameWords", "custom"), { [isNg ? "ng" : "word"]: isNg ? list : list.map((t) => { const [a, b] = t.split("／"); return { a, b }; }), at: serverTimestamp() }, { merge: true }));
+  const addBtn = h("button", { type: "button", class: "btn-small", onclick: async () => {
+    const have = new Set([...builtin(), ...custom()]);
+    const rows = add.value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+    const okRows = [], bad = [];
+    for (const r of rows) {
+      if (isNg) { const w = r.slice(0, 30); if (have.has(w)) bad.push(w); else { okRows.push(w); have.add(w); } continue; }
+      const m = r.split(/\s*[／/,，、|]\s*/).filter(Boolean);
+      if (m.length !== 2) { bad.push(r); continue; }
+      const t = `${m[0].slice(0, 30)}／${m[1].slice(0, 30)}`;
+      if (have.has(t) || m[0] === m[1]) bad.push(r); else { okRows.push(t); have.add(t); }
+    }
+    if (!okRows.length) { msg.textContent = bad.length ? `足せませんでした（同じものがあるか、形が違います）：${bad.slice(0, 5).join("・")}` : "言葉を入れてください"; return; }
+    await save([...custom(), ...okRows]);
+    add.value = "";
+    msg.textContent = `${okRows.length}${isNg ? "語" : "組"}を足しました${bad.length ? `（足せなかったもの：${bad.slice(0, 5).join("・")}）` : ""}`;
+  } }, "足す");
+  const chip = (t, del) => h("span", { class: `wb-chip${del ? " mine" : ""}` }, t, del ? h("button", { type: "button", class: "wb-del", "aria-label": `${t}を消す`, onclick: () => { if (confirm(`「${t}」を消しますか？`)) { msg.textContent = `「${t}」を消しました`; save(custom().filter((x) => x !== t)); } } }, "×") : null);
+  let sig = "";
+  const paint = () => {
+    sum.textContent = `${builtin().length + custom().length}${isNg ? "語" : "組"}`;
+    if (!el.open) return;
+    const q = filter.value.trim(), hit = (t) => !q || t.includes(q);
+    const now = `${q}\n${custom().join("\n")}`;
+    if (now === sig && box.childElementCount) return; // 変わっていなければ描き直さない
+    sig = now;
+    const mine = custom().filter(hit), base = builtin().filter(hit);
+    setKids(box,
+      h("div", { class: "wb-sec" }, h("div", { class: "wb-h" }, `足した${isNg ? "言葉" : "組"}（${custom().length}）`),
+        mine.length ? h("div", { class: "wb-chips" }, mine.map((t) => chip(t, true))) : h("p", { class: "cell-sub" }, custom().length ? "当てはまるものはありません" : "まだありません")),
+      h("div", { class: "wb-sec" }, h("div", { class: "wb-h" }, `はじめから入っている${isNg ? "言葉" : "組"}（${builtin().length}）`),
+        base.length ? h("div", { class: "wb-chips" }, base.map((t) => chip(t, false))) : h("p", { class: "cell-sub" }, "当てはまるものはありません")));
+  };
+  filter.addEventListener("input", paint);
+  const el = h("details", { class: "fold wb" }, h("summary", null, h("span", null, isNg ? "NGワード集を見る・足す " : "ワード人狼の言葉集を見る・足す ", sum), icon("chevron")),
+    h("div", { class: "wb-in" }, h("div", { class: "wb-addrow" }, add, addBtn), msg, filter, box,
+      h("p", { class: "cell-sub" }, isNg ? "足した言葉は、ランダムで配るときに、はじめからある言葉と混ぜて使います。この旅行の管理者だけが見られます（参加者には見えません）。" : "多数派・少数派の順に入れます（ランダムのときは、どちらが少数派になるかはくじで決めます）。この旅行の管理者だけが見られます（参加者には見えません）。")));
+  el.addEventListener("toggle", paint);
+  return { el, paint };
+}
 function gamesAdmin() {
   const kind = segmented(Object.entries(GAME_KINDS).map(([value, k]) => ({ value, label: k.label })), GA.kind);
   const desc = h("p", { class: "game-desc" });
@@ -14194,6 +14374,9 @@ function gamesAdmin() {
   const players = memberChecks([], { note: (id) => { const t = gBusyMap().get(id); return t ? `${t.join("・")}で遊び中` : null; } });
   const busyBtn = h("button", { type: "button", class: "text-btn busy-off", onclick: () => { const b = gBusyMap(); players.set(players.value().filter((u) => !b.has(u))); paintOpts(); } }, "ほかのゲームで遊んでいる人を外す");
   let inited = false, lastOpen = null;
+  // v99 管理者（この端末の人）も遊ぶ人に入れる。役職・答えは管理者の画面にも出さない
+  const selfPlay = toggle(false);
+  selfPlay.addEventListener("change", () => paintOpts());
   // 人狼の設定
   let roles = null; // null＝人数に合わせておまかせ
   const roleBox = h("div", { class: "game-roles" });
@@ -14212,13 +14395,14 @@ function gamesAdmin() {
       field("騎士が同じ人を続けて守れる", knightRepeat), field("だれがだれに投票したかを公開する", votePublic), field("投票が同じ数のとき", wolfTie),
       field("話し合いの時間", talk), field("夜の時間", nightSec), field("投票の時間", voteSec)]), autoNote);
   // ワード人狼
+  const wordBk = wordBook("word"), ngBk = wordBook("ng");
   const minority = mins([1, 2, 3], 1, "人");
   // v98 配る言葉：ランダム（用意した組）／自分で決める（多数派・少数派をはっきり分けて入れる）
-  const wordMode = segmented([{ value: "random", label: `ランダム（用意した${WORD_PAIRS.length}組）` }, { value: "pick", label: "自分で決める" }], "random");
+  const wordMode = segmented([{ value: "random", label: "ランダム（用意した組）" }, { value: "pick", label: "自分で決める" }], "random");
   const wordA = h("input", { type: "text", class: "plain", maxlength: "30", placeholder: "例：うどん", "aria-label": "多数派の言葉" });
   const wordB = h("input", { type: "text", class: "plain", maxlength: "30", placeholder: "例：そば", "aria-label": "少数派の言葉" });
   const wordFlip = toggle(false);
-  const wordFill = h("button", { type: "button", class: "text-btn", onclick: () => { const [a, b] = gPick(WORD_PAIRS); wordA.value = a; wordB.value = b; paintOpts(); } }, "↻ 用意した組から入れる");
+  const wordFill = h("button", { type: "button", class: "text-btn", onclick: () => { const [a, b] = gPick(wordPairsAll()); wordA.value = a; wordB.value = b; paintOpts(); } }, "↻ 用意した組から入れる");
   // 話題のお題（ワード人狼は、はじめはオフ。これまでどおりの遊び方が変わらないように）
   const wordTopicOn = toggle(false);
   const wordTopic = h("input", { type: "text", class: "plain", maxlength: "80", placeholder: "話題のお題（空欄の場合は自動で選びます。例：休みの日の過ごし方）" });
@@ -14231,7 +14415,8 @@ function gamesAdmin() {
     field("少数派が当てられたら、多数派のお題を当てて逆転できる", wordGuess), field("お題を当てる時間", wordGuessSec)],
   "逆転のお題当ては、ひらがな・カタカナ・大文字小文字の違いを区別せずに判定します。"),
   group("配る言葉（お題）", [h("div", { class: "cell seat-cell" }, wordMode), field("多数派の言葉", wordA), field("少数派の言葉", wordB), field("どちらが少数派かはくじで決める", wordFlip), h("div", { class: "cell" }, wordFill)],
-    `お題は似ている2つの言葉です（例：うどん／そば）。「ランダム」では、用意した${WORD_PAIRS.length}組から選び、どちらが少数派になるかもくじで決めます。「自分で決める」では、入れたとおりに多数派・少数派へ配ります（「くじで決める」をオンにすると、どちらが少数派になるかだけくじにします）。言葉は参加者に見られないように保存します。`),
+    `お題は似ている2つの言葉です（例：うどん／そば）。「ランダム」では、用意した組（下の「言葉集」で見られます）から選び、どちらが少数派になるかもくじで決めます。「自分で決める」では、入れたとおりに多数派・少数派へ配ります（「くじで決める」をオンにすると、どちらが少数派になるかだけくじにします）。言葉は参加者に見られないように保存します。`),
+  wordBk.el,
   group("話題のお題", [field("テーブルの真ん中に話題のお題を出す", wordTopicOn), h("div", { class: "cell" }, wordTopic)],
     "オンにすると、全員のスマホのテーブルの真ん中と表示用画面に、話す話題を出します（配る言葉とは別のものです）。ゲーム中も、管理者の画面から変えられます。"));
   // NGワード
@@ -14243,9 +14428,9 @@ function gamesAdmin() {
   const ngAssignBox = h("div", { class: "ng-assign" });
   const ngIn = new Map(); // uid → 入力欄（描き直しても、入れた言葉が消えないように使い回す）
   let ngSig = "";
-  const ngPool = () => [...new Set([...ngList.value.split(/\r?\n/).map((x) => x.trim().slice(0, 30)).filter(Boolean), ...gShuffle(NG_WORDS)])];
+  const ngPool = () => [...new Set([...ngList.value.split(/\r?\n/).map((x) => x.trim().slice(0, 30)).filter(Boolean), ...gShuffle(ngWordsAll())])];
   function paintNgAssign(force = false) {
-    const ch = ngMode.value === "pick" ? chosen() : [];
+    const ch = ngMode.value === "pick" ? chosen().filter((u) => u !== S.user?.uid) : []; // 自分（管理者）のNGワードは、見えないようにいつもランダム
     const sig = `${ngMode.value}:${ch.join(",")}`;
     if (!force && sig === ngSig) return;
     ngSig = sig;
@@ -14275,6 +14460,7 @@ function gamesAdmin() {
   const ngOpts = h("div", null,
     group("設定", [field("司会を自動で進行する", ngAuto), field("制限時間", ngLimit), field("残りが1人になったら終える", ngOne)],
       "自動の司会がオンのときは、制限時間になるか（「残りが1人」がオンなら）残りが1人になった時点で、答え合わせまで進みます。"),
+    ngBk.el,
     group("NGワードの決め方", [h("div", { class: "cell seat-cell" }, ngMode, ngAssignBox), h("div", { class: "cell" }, ngList)],
       "「人ごとに決める」では、遊ぶ人ごとにNGワードを入れられます。空欄の人には、リスト（空欄なら用意した言葉）からランダムで配ります。決めた言葉は本人には見えず、ほかの人のスマホにだけ出ます。NGワードには、ふだんの会話でうっかり言いそうな言葉がおすすめです（例：すごい、なんで、えー）。"),
     group("話題のお題", [field("テーブルの真ん中に話題のお題を出す", ngTopicOn), h("div", { class: "cell" }, ngTopic)],
@@ -14319,6 +14505,8 @@ function gamesAdmin() {
   const dfgEight = toggle(true), dfgRev = toggle(true), dfgStairs = toggle(true), dfgSpade3 = toggle(true), dfgEx = toggle(true);
   const dfgRevN = mins([4, 5], 4, "枚以上"), dfgStairsMin = mins([3, 4, 5], 3, "枚以上"), dfgStairsRev = pick([[0, "なし"], [4, "4枚以上の階段"], [5, "5枚以上の階段"]], 0);
   const dfgJback = toggle(false), dfgShibari = toggle(false), dfgFive = toggle(false), dfgSeven = toggle(false), dfgTen = toggle(false), dfgNine = toggle(false), dfgMiyako = toggle(false), dfgFoul = toggle(false), dfgAuto = toggle(true);
+  // v99 追加のローカルルール（はじめは全部オフ）
+  const dfgSand = toggle(false), dfgQq = toggle(false), dfgRokuro = toggle(false), dfgStop4 = toggle(false), dfgCoup = toggle(false), dfgNumLock = toggle(false), dfgQrev = toggle(false), dfgBomber = toggle(false);
   const dfgExBig = mins([1, 2, 3], 2, "枚"), dfgExSmall = mins([0, 1, 2], 1, "枚"), dfgExSec = mins([20, 30, 40, 60], 40, "秒");
   const dfgScore = pick([["rank", "順位（1位＝人数−1点 … 最下位＝0点）"], ["title", "身分（大富豪+2・富豪+1・平民0・貧民−1・大貧民−2）"]], "rank");
   const dfgResult = mins([5, 9, 15, 20], 9, "秒");
@@ -14329,6 +14517,11 @@ function gamesAdmin() {
     group("ローカルルール", [field("イレブンバック（11バック）：Jを出すと、場が流れるまで強さが逆", dfgJback), field("縛り（同じマークが続くと、場が流れるまでそのマークだけ）", dfgShibari),
       field("5スキップ（5の枚数だけ次の人をとばす）", dfgFive), field("7渡し（7の枚数だけ次の人にカードを渡す）", dfgSeven), field("10捨て（10の枚数だけカードを捨てる）", dfgTen),
       field("9リバース（9を出すと順番が逆回り）", dfgNine), field("都落ち（前の回の大富豪が1番にあがれないと最下位）", dfgMiyako), field("反則上がり（ジョーカー・2・8などであがると最下位）", dfgFoul)]),
+    group("ローカルルール（ほかにもよくあるもの）", [field("砂嵐：3を3枚出すと、どんな3枚組にも勝ち、場が流れる", dfgSand), field("救急車：9を2枚出すと場が流れる", dfgQq),
+      field("ろくろ首：6を2枚出すと場が流れる", dfgRokuro), field("4止め：8切りのあと、同じ枚数の4を出すと止められる", dfgStop4),
+      field("クーデター：9を3枚出すと革命", dfgCoup), field("数字しばり：1つ上の数字が続くと、流れるまで次の数字だけ", dfgNumLock),
+      field("Qリバース：Qを出すと順番が逆回り", dfgQrev), field("12ボンバー：Qを出したら数字を1つ選び、全員がその数字を捨てる", dfgBomber)],
+      "どれも、はじめはオフです。「縛り」と「数字しばり」を両方オンにすると、マークと数字の両方がしばられます（激しば）。4止めは、8切りのあと次の人から順に4で止めるか選べ、全員がパスすると8切りで流れます。12ボンバーで手札がなくなった人は、その時点であがりです。ルールの呼び方や細かい決まりは地域で違うので、遊ぶ前にみんなで確かめてください。"),
     group("カードの交換（2回目から）", [field("交換する", dfgEx), field("大富豪と大貧民", dfgExBig), field("富豪と貧民", dfgExSmall), field("お返しを選ぶ時間", dfgExSec)],
       "貧しい人からは一番強いカードを自動で渡し、お金持ちは好きなカードを同じ枚数返します。"),
     group("進行", [field("ディーラー（進行役）", dfgDealer), field("参加者の持ち時間", dfgTimer), field("1人の持ち時間", dfgTurn), field("結果のあと自動で次の回へ進む", dfgAuto), field("結果を見せる時間", dfgResult)],
@@ -14356,6 +14549,7 @@ function gamesAdmin() {
   function ptPlan() {
     const k = kind.value, pay = ptPay.value, ps = chosen();
     if (!GAME_PT_KINDS.includes(k) || !pay) return { pt: null, startChips: null, err: null, info: "" };
+    if (ps.includes(S.user?.uid)) return { err: "管理者も遊ぶときは、旅行のポイントは使えません（「使うポイント」を「使わない」にしてください）" };
     const cfg = { pay, setId: pay === "team" ? ptSet.value || null : null };
     if (pay === "team" && !cfg.setId) return { err: "ポイントを使うチーム表を選んでください（まだない場合は、先に「チーム」でチーム表を作ってください）" };
     const payers = new Map(ps.map((u) => [u, payerOf(cfg, u)]));
@@ -14426,7 +14620,8 @@ function gamesAdmin() {
   const demoBtn = h("button", { class: "btn-small game-demo-btn" }, icon("play"), "デモプレイ（自分＋CPU）");
   const setup = h("div", { class: "game-setup" },
     h("div", { class: "group-header standalone" }, "新しいゲーム"), h("div", { class: "seg-wrap" }, kind), desc,
-    group("遊ぶ人", [h("div", { class: "cell" }, players.el), h("div", { class: "cell busy-cell" }, busyBtn)],
+    group("遊ぶ人", [h("div", { class: "cell" }, players.el), h("div", { class: "cell busy-cell" }, busyBtn), field("自分（管理者）も遊ぶ", selfPlay),
+      h("p", { class: "cell-sub self-note" }, "オンにすると、あなたも1人の参加者として遊びます。役職・お題・数字・手札・だれに投票したかは、管理者の画面にも出しません。進める・戻す・時間を止める・増やすはできます。NGワードを人ごとに決めるときも、あなたの分はランダムです（ワード人狼で言葉を自分で決めると、あなたにも分かります）。ポイントは使えません。")],
       "ゲームは、遊ぶ人を分ければいくつでも同時に進められます（進行中のゲームは、管理者の画面の上で切り替えられます）。ほかのゲームで遊んでいる人を選ぶと、その人のスマホは新しいゲームに切り替わります。"),
     group("テーブルの席順", [h("div", { class: "cell seat-cell" }, seatMode, seatList)], "参加者の画面の丸テーブルに、この順で時計回りに座ります（大富豪は出す順番も同じ）。↑↓で入れ替えられます。"),
     wolfOpts, wordOpts, ngOpts, numOpts, bjOpts, dfgOpts, ptOpts,
@@ -14438,7 +14633,7 @@ function gamesAdmin() {
   const panel = h("div");
   const el = h("div", { class: "games-admin" }, panel, list, setup);
 
-  const chosen = () => players.value().filter((u) => S.members.has(u));
+  const chosen = () => [...players.value().filter((u) => S.members.has(u)), ...(selfPlay.checked && S.user ? [S.user.uid] : [])];
   function paintOpts() {
     const k = kind.value;
     GA.kind = k;
@@ -14468,6 +14663,7 @@ function gamesAdmin() {
     wordTopic.closest(".cell").hidden = !wordTopicOn.checked;
     for (const x of [wordA, wordB, wordFlip, wordFill]) x.closest(".cell").hidden = wordMode.value !== "pick";
     if (k === "ng") paintNgAssign();
+    if (k === "ng") ngBk.paint(); else if (k === "word") wordBk.paint();
     const n = chosen().length;
     paintSeats();
     paintLog(k);
@@ -14539,6 +14735,7 @@ function gamesAdmin() {
     else if (k === "dfg") o = { rounds: N(dfgRounds), turnSec: N(dfgTurn), jokers: N(dfgJokers), score: dfgScore.value, eight: dfgEight.checked, revolution: dfgRev.checked, revN: N(dfgRevN),
       stairs: dfgStairs.checked, stairsMin: N(dfgStairsMin), stairsRev: N(dfgStairsRev), spade3: dfgSpade3.checked, jback: dfgJback.checked, shibari: dfgShibari.checked, five: dfgFive.checked,
       seven: dfgSeven.checked, ten: dfgTen.checked, nine: dfgNine.checked, miyako: dfgMiyako.checked, foul: dfgFoul.checked,
+      sand: dfgSand.checked, qq: dfgQq.checked, rokuro: dfgRokuro.checked, stop4: dfgStop4.checked, coup: dfgCoup.checked, numLock: dfgNumLock.checked, qrev: dfgQrev.checked, bomber: dfgBomber.checked,
       exchange: dfgEx.checked, exBig: N(dfgExBig), exSmall: N(dfgExSmall), exSec: N(dfgExSec), autoNext: dfgAuto.checked, resultSec: N(dfgResult), dealer: dfgDealer.value, dealerTimer: dfgTimer.checked };
     else o = { auto: numAuto.checked, limitMin: N(numLimit), max: N(numMax), theme: theme.value.trim(), rounds: N(numRoundsSel), gapSec: N(numGap), rank: numRank.checked, rankSec: N(numRankSec) };
     if (plan.pt) o.pt = plan.pt;
@@ -14572,6 +14769,7 @@ function gamesAdmin() {
     const gid = await startGame(k, ps, o);
     if (o.auto) { GSPEAK.said.set(gid, 0); gameSpeak("ゲームを始めます。"); }
     GA.open = gid;
+    if (ps.includes(S.user?.uid)) GV.play = gid; // 自分も遊ぶときは、自分の画面（参加者の画面）を開く
     roles = null; wordA.value = wordB.value = ""; ngList.value = ""; theme.value = ""; ngTopic.value = ""; wordTopic.value = "";
     for (const x of ngIn.values()) x.value = "";
     toast("配りました");
@@ -14587,7 +14785,7 @@ function gamesAdmin() {
     else if (isCardKind(g.kind) && cardManual(g.opts)) next = null; // 下の「ディーラーの操作」で進める
     else if (isCardKind(g.kind) && g.phase === "result") next = btn("次の回へ", g.kind === "bj" ? bjNext : dfgNextRound);
     else if (g.kind === "num" && g.phase === "result") next = btn(`次の回へ（第${(g.round ?? 1) + 1}回）`, numNextRound);
-    else if (g.kind === "num" && g.phase === "play" && numRankOn(g)) next = btn("話し合いを終えて、順位を答える", numToRank);
+    else if (g.kind === "num" && g.phase === "play" && numRankOn(g)) next = btn("順位表へ進む", numToRank);
     else if (g.kind === "num" && g.phase === "rank") next = btn("締め切って答え合わせ", numEnd);
     else if (gLive(g) && !isCardKind(g.kind)) next = btn(g.kind === "num" && numRounds(g) > 1 ? `第${g.round ?? 1}回の答え合わせ` : "終了して答え合わせ", g.kind === "ng" ? ngEnd : numEnd);
     const ans = (u) => {
@@ -14601,6 +14799,9 @@ function gamesAdmin() {
       return (other && gSecret(g, other)?.others?.[u]) ?? "…";
     };
     const dead = (u) => (g.kind === "wolf" && !(g.alive ?? g.players).includes(u)) || (g.kind === "ng" && !!g.outs?.[u]);
+    // v99 管理者も遊んでいるゲーム：役職・お題・手札・投票先は、この画面にも出さない（進める・戻す・時間の操作はできる）
+    const meIn = !g.demo && g.players.includes(S.user?.uid);
+    if (meIn) GA.showAns = false;
     if (gLive(g)) gameNarrate(g);
     const pkWas = GA.pk; queueMicrotask(() => { if (GA.pk === pkWas) GA.pk = phaseKey(g); });
     return h("div", { class: `game-panel${g.demo ? " demo" : ""}` },
@@ -14609,6 +14810,8 @@ function gamesAdmin() {
           h("button", { class: "text-btn destructive", onclick: () => { demoEnd(); scheduleRender(); } }, "デモを終える")))
         : h("button", { class: "text-btn", onclick: () => { GA.open = null; scheduleRender(); } }, "‹ ゲームの一覧へ"),
       g.demo ? null : gSwitchBar(g),
+      meIn ? h("div", { class: "gp-selfplay" }, h("div", null, h("b", null, "あなたも遊んでいます"), h("small", null, "役職・答え・手札・投票先は、この画面にも出しません。進める・戻す・時間の操作はここと自分の画面の両方でできます。")),
+        h("button", { class: "btn-filled", onclick: () => { GV.play = g.id; GV.hidden.delete(`${g.id}:false`); GV.hidden.delete(`${g.id}:true`); paintGameLive(); } }, icon("people"), "自分の画面で遊ぶ")) : null,
       h("div", { class: "gp-head" }, h("h2", null, g.title), h("span", { class: `gp-phase${gLive(g) ? " live" : ""}${GA.pk !== phaseKey(g) ? " pop" : ""}` }, gPhaseText(g)), gTimer(g)),
       h("p", { class: `gl-prompt${g.phase === "ended" ? " gp-final" : ""}` }, gPrompt(g)),
       !isCardKind(g.kind) && g.opts?.auto && gLive(g) ? h("div", { class: "gp-auto" }, icon("play"), "自動の司会がオンです。管理者の端末（この操作用の画面か、表示用画面）のどれか1台でアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
@@ -14617,7 +14820,7 @@ function gamesAdmin() {
         ? "あなた（管理者）がディーラーです。下の「ディーラーの操作」のボタンで、配る・カードを開ける・次の回へ を進めてください。参加者のヒット・スタンドなどはこの端末が反映するので、この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください。"
         : "管理者の端末がディーラー（進行役）です。この操作用の画面か表示用画面のどれか1台で、終わるまでアプリを開いたままにしてください（すべて閉じると進行が止まります）。") : null,
       isCardKind(g.kind) ? h("div", { class: "gl-card" }, g.kind === "bj" ? bjTable(g) : dfgTable(g)) : null,
-      gProgressEl(g, GA.showAns),
+      gProgressEl(g, GA.showAns && !meIn, meIn),
       (g.kind === "ng" || g.kind === "word") && gLive(g) ? ngTopicBox(g) : null,
       isCardKind(g.kind) && cardManual(g.opts) && gLive(g) ? cardDealerBox(g) : null,
       h("div", { class: "gp-actions" }, next,
@@ -14628,7 +14831,7 @@ function gamesAdmin() {
       gLive(g) || gameCanUndo(g) ? group("場面の操作", [h("div", { class: "cell" }, gameCtlBar(g))], GAME_CTL_NOTE) : null,
       g.kind === "num" && g.phase === "rank" ? group("みんなの順位表（小さい順）", [h("div", { class: "cell" }, numBoardEl(g))]) : null,
       gRevealList(g), numHistCard(g),
-      g.kind === "bj" ? null : group(null, [
+      g.kind === "bj" || meIn ? null : group(null, [
         h("button", { class: "cell cell-button", onclick: () => { GA.showAns = !GA.showAns; scheduleRender(); } }, icon("lock"), GA.showAns ? (g.kind === "dfg" ? "手札を隠す" : "答えを隠す") : g.kind === "dfg" ? "全員の手札を見る（進行役用）" : `答えを見る（${g.kind === "wolf" ? "役職" : g.kind === "num" ? "数字" : g.kind === "ng" ? "NGワード" : "お題"}を表示。司会用）`),
         GA.showAns ? h("div", { class: "cell gp-answers" }, g.players.map((u) => h("div", { class: `gp-ans${dead(u) ? " dead" : ""}` }, h("span", null, memberName(u)), h("b", null, ans(u)),
           g.actKey && gAct(g, g.actKey, u) && !isCardKind(g.kind) ? h("small", null, g.phase === "guess" ? `答え「${gAct(g, g.actKey, u)}」` : `→ ${memberName(gAct(g, g.actKey, u))}`) : null))) : null,
@@ -14688,6 +14891,7 @@ const DEV_ACCESS = [
   ["games", "ゲーム（人狼など）の進行", "全員", "NGワードの「アウト」だけ（遊んでいる人）"],
   ["gameSecrets / gameActs", "配った役職・お題・手札／夜の行動・投票・カードの操作", "本人の分だけ", "自分の行動・投票・カードの操作（受付中の回だけ）"],
   ["playLogs", "終わったクイズ・ゲームの記録（役職や全員の回答を含む）", "読めない", "—"],
+  ["gameWords", "管理者が足したNGワード・ワード人狼の言葉", "読めない", "—"],
   ["boards / matches", "作戦ボード・試合の記録（フットサル）", "公開したものだけ", "許可・指名されたときだけ"],
   ["personFields / personInfo", "参加者の情報（住所・大学など）", "読めない（本人の分も）", "—"],
   ["pushSubs / pwChanged", "通知の宛先・パスワード変更の記録", "本人の分だけ", "自分の分"],
@@ -15259,7 +15463,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v98"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v99"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
