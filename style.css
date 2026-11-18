@@ -4723,3 +4723,7 @@ html, body { touch-action: manipulation; }
 .rl-ok-mid small { font-size: 9px; letter-spacing: .08em; color: rgba(255,255,255,.5); }
 .rl-okrow.all .rl-ok-mid { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .rl-okrow.all .rl-ok-mid small { color: var(--accent); }
+
+/* v107 NGワード：自分が OUT を押した（まだ確定していない）ときは薄紫。人数（2/4）も出す */
+.cx-out { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cx-out.on:not(.ghost-out) { color: #fff; background: color-mix(in srgb, var(--accent) 30%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent); }
