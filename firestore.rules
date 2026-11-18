@@ -62,7 +62,7 @@ service cloud.firestore {
     function readAll(coll) {
       return coll in ['config', 'members', 'announcements', 'pointLogs', 'stats', 'quizAnswers', 'live',
         'quizSabo', 'quizBets', 'polls', 'votes', 'payments', 'expenses', 'checklists', 'locGroups', 'locations',
-        'mapPins', 'messages', 'files', 'fileChunks', 'assignments', 'games'];
+        'mapPins', 'messages', 'files', 'fileChunks', 'assignments', 'games', 'gameLobbies'];
     }
     // 1件ずつなら読めるもの（一覧は読めない）
     function getOnly(coll) {
@@ -200,6 +200,12 @@ service cloud.firestore {
         || (coll == 'games' && request.method == 'update' && resource.data.get('kind', '') == 'ng' && resource.data.get('phase', '') == 'play'
             && me() in resource.data.get('players', []) && changed().hasOnly(['outs', 'uid', 'at']) && serverTime('at')
             && d().get('outs', {}) is map && d().get('outs', {}).size() <= 100)
+        // ゲームの参加の受付（自由参加）：受付中のあいだ、自分の申請（req.<自分>）だけを付け外しできる。OK を出すのは管理者だけ
+        || (coll == 'gameLobbies' && request.method == 'update' && resource.data.get('open', false) == true
+            && changed().hasOnly(['req', 'uid', 'at']) && serverTime('at')
+            && d().get('req', {}) is map && d().get('req', {}).size() <= 200
+            && d().get('req', {}).diff(resource.data.get('req', {})).affectedKeys().hasOnly([me()])
+            && (!(me() in d().get('req', {})) || d().get('req', {})[me()] == true))
         // 通知の宛先
         || (coll == 'pushSubs' && only(['uid', 'sub', 'ua', 'at']) && str(d().get('ua', ''), 200) && d().sub is map && serverTime('at'))
         // パスワードを変えた記録
@@ -220,7 +226,7 @@ service cloud.firestore {
     }
     // 書き換えのときに、前のデータも自分のものか（共有のチェックと、みんなの合計 stats・作戦ボードは除く）
     function ownsBefore(coll) {
-      return request.method == 'create' || coll == 'stats' || coll == 'boards' || coll == 'matches' || coll == 'games' || wasMine() || (coll == 'checks' && resource.data.shared == true);
+      return request.method == 'create' || coll == 'stats' || coll == 'boards' || coll == 'matches' || coll == 'games' || coll == 'gameLobbies' || wasMine() || (coll == 'checks' && resource.data.shared == true);
     }
 
     // 最初に答えた時刻：はじめて（＝今）か、前の回答のまま（あとから早い時刻にすり替えられない）

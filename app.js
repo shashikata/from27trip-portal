@@ -249,6 +249,7 @@ const S = {
   games: new Map(),          // ゲーム（人狼など）の進行 games/{id}
   gameWords: null,           // v99 管理者が足した言葉 gameWords/custom（管理者だけ）
   gameSecrets: new Map(),    // ゲームで本人だけに配った内容 gameSecrets/{gameId}_{uid}（参加者は自分の分だけ）
+  gameLobbies: new Map(),    // v109 ゲームの参加の受付（自由参加） gameLobbies/{id}（全員が読める。参加者は自分の申請だけ付け外し）
   gameActs: new Map(),       // 夜の行動・投票 gameActs/{gameId}_{key}_{uid}（参加者は自分の分だけ）
   playLogs: new Map(),       // 管理者：終わったクイズ・ゲームの記録 playLogs/{quiz_run | game_id}
   lobbySrc: {},              // 参加者：旅行の分と、合流した確定前ページの分（S.polls などはこの2つを合わせたもの）
@@ -281,7 +282,7 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 // 頻繁に更新されるデータは、関係する所だけ描き直す（全体を描き直すと人数・件数が増えたときに重くなる）
 //   loc  : 位置（地図だけ）
 //   quiz : クイズの進行・解答（クイズの画面だけ）
-const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz", games: "game", gameSecrets: "game", gameActs: "game", playLogs: "game" };
+const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz", games: "game", gameSecrets: "game", gameActs: "game", gameLobbies: "game", playLogs: "game" };
 
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
@@ -2276,7 +2277,7 @@ function memberSummary() {
 
 // ---------------------------------------------------------------- 旅行（プロファイル）の管理
 
-const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches", "annPrivate", "games", "gameSecrets", "gameActs", "playLogs"];
+const PROFILE_COLLECTIONS = ["config", "members", "teamSets", "teams", "memberships", "assignments", "announcements", "pointLogs", "acks", "notes", "locations", "stats", "quizzes", "quizAnswers", "live", "quizSabo", "quizBets", "mapPins", "polls", "votes", "payments", "payReports", "pwChanged", "messages", "chatImages", "expenses", "checklists", "checks", "locGroups", "ptQrs", "ptClaims", "attrDefs", "memberAttrs", "files", "fileChunks", "archives", "allocs", "dms", "pushSubs", "videos", "pollRequests", "boards", "matches", "annPrivate", "games", "gameSecrets", "gameActs", "gameLobbies", "playLogs"];
 
 const sortedProfiles = () => {
   const list = [...S.profiles.values()];
@@ -2434,7 +2435,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v108"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v109"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11212,6 +11213,7 @@ const GDONE = new Map(); // 全員そろった時刻（自動の司会で、最�
 
 function listenGames(uid) {
   listen("games", C("games"), (s) => { if (s) S.games = demoMix(toMap(s), "games"); });
+  listen("gameLobbies", C("gameLobbies"), (s) => { if (s) S.gameLobbies = toMap(s); });
   listen("gameSecrets", uid ? query(C("gameSecrets"), where("uid", "==", uid)) : C("gameSecrets"), (s) => { if (s) S.gameSecrets = demoMix(toMap(s), "secrets"); });
   // 管理者の端末は、操作が届いたらすぐ進める（トランプは1秒待たずに反映する）
   listen("gameActs", uid ? query(C("gameActs"), where("uid", "==", uid)) : C("gameActs"), (s) => { if (s) { S.gameActs = demoMix(toMap(s), "acts"); if (!uid) setTimeout(gameAutoTick, 30); } });
@@ -16437,6 +16439,23 @@ function gameGoHome(g) {
   GV.hidden.add(`${g.id}:${g.phase === "ended"}`);
   paintGameLive();
 }
+// v109 参加者：管理者が自由参加の受付を始めたら、画面の下に「参加を申請する」ボタンを出す（申請中・OK のときは、その状態を出す）
+function paintLobbyFab() {
+  let fab = document.querySelector(".lobby-fab");
+  const me = S.user?.uid;
+  const L = S.isAdmin || !me || document.querySelector(".game-live") ? null
+    : [...S.gameLobbies.values()].filter((x) => x.open).sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0] ?? null;
+  if (!L) { fab?.remove(); return; }
+  const asked = L.req?.[me] === true, ok = asked && (L.ok ?? []).includes(me);
+  const send = (on) => guard(null, () => updateDoc(D("gameLobbies", L.id), { [`req.${me}`]: on ? true : deleteField(), uid: me, at: serverTimestamp() }));
+  const key = `${L.id}:${asked}:${ok}`;
+  if (fab?.dataset.k === key) { fab.classList.toggle("up", !!document.querySelector(".game-fab")); return; }
+  const el = h("div", { class: `lobby-fab${ok ? " ok" : asked ? " asked" : ""}${document.querySelector(".game-fab") ? " up" : ""}`, "data-k": key, role: "status" },
+    h("div", { class: "lobby-fab-t" }, h("small", null, ok ? "参加 OK ・ 開始を待っています" : asked ? "申請中 ・ 管理者の OK 待ち" : "参加を受け付けています"), h("b", null, L.label ?? "ゲーム")),
+    asked ? h("button", { type: "button", class: "lobby-fab-x", onclick: () => { if (confirm("参加の申請を取り消しますか？")) send(false); } }, "取り消す")
+      : h("button", { type: "button", class: "lobby-fab-go", onclick: () => send(true) }, "参加を申請する"));
+  if (fab) fab.replaceWith(el); else { document.body.append(el); vtIn(el, "vt-soft"); }
+}
 function paintGameLive() {
   let el = document.querySelector(".game-live");
   let fab = document.querySelector(".game-fab");
@@ -17489,6 +17508,33 @@ function gamesAdmin() {
   // v99 管理者（この端末の人）も遊ぶ人に入れる。役職・答えは管理者の画面にも出さない
   const selfPlay = toggle(false);
   selfPlay.addEventListener("change", () => paintOpts());
+  // v109 遊ぶ人の決め方：管理者が選ぶ（今までどおり）／自由参加（受付）。受付では、参加者が申請し、管理者が OK を出した人で始める
+  const joinMode = segmented([{ value: "pick", label: "管理者が選ぶ" }, { value: "free", label: "自由参加（受付）" }], "pick");
+  const lobbyBox = h("div", { class: "lobby-box" });
+  const curLobby = () => [...S.gameLobbies.values()].filter((x) => x.open && x.kind === kind.value).sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0] ?? null;
+  const lobbyApplied = (L) => Object.keys(L?.req ?? {}).filter((u) => L.req[u] === true && S.members.has(u));
+  const lobbyOk = (L) => (L?.ok ?? []).filter((u) => L.req?.[u] === true && S.members.has(u));
+  const lobbyLabel = () => (kind.value === "rl" ? (rlModeV() === "lottery" ? "抽選ルーレット" : "ルーレット") : GAME_KINDS[kind.value]?.label ?? "ゲーム");
+  function paintLobby() {
+    const L = curLobby();
+    if (!L) {
+      setKids(lobbyBox, h("p", { class: "cell-sub" }, "「受付を始める」を押すと、参加者のスマホに「参加を申請する」ボタンが出ます。申請した人に OK を出すと、遊ぶ人に入ります。受付は「配って始める」を押すまでです。"),
+        h("button", { type: "button", class: "btn-small lobby-open", onclick: (e) => guard(e.currentTarget, () => addDoc(C("gameLobbies"), { kind: kind.value, label: lobbyLabel(), open: true, req: {}, ok: [], createdAt: serverTimestamp() })) }, icon("people"), `${lobbyLabel()}の受付を始める`));
+      return;
+    }
+    const ap = lobbyApplied(L), ok = new Set(lobbyOk(L)), busy = gBusyMap();
+    const setOk = (u, on) => guard(null, () => updateDoc(D("gameLobbies", L.id), { ok: on ? arrayUnion(u) : arrayRemove(u) }));
+    setKids(lobbyBox,
+      h("div", { class: "lobby-head" }, h("span", { class: "live-dot" }), h("b", null, `${L.label ?? lobbyLabel()}の受付中`), h("span", { class: "lobby-count" }, `申請 ${ap.length}人 ・ OK ${ok.size}人`)),
+      ap.length ? h("div", { class: "lobby-list" }, ap.map((u) => h("div", { class: `lobby-row${ok.has(u) ? " ok" : ""}` },
+        h("span", { class: "lobby-nm" }, memberName(u), busy.has(u) ? h("small", null, `${busy.get(u).join("・")}で遊び中`) : null),
+        h("button", { type: "button", class: ok.has(u) ? "btn-small lobby-ok on" : "btn-small lobby-ok", "aria-pressed": String(ok.has(u)), onclick: () => setOk(u, !ok.has(u)) }, ok.has(u) ? "✓ OK" : "OK"))))
+        : h("p", { class: "cell-sub" }, "まだ申請はありません。参加者のスマホに「参加を申請する」ボタンが出ています。"),
+      h("div", { class: "lobby-btns" },
+        ap.some((u) => !ok.has(u)) ? h("button", { type: "button", class: "btn-small", onclick: () => guard(null, () => updateDoc(D("gameLobbies", L.id), { ok: arrayUnion(...ap) })) }, "申請した人を全員 OK") : null,
+        h("button", { type: "button", class: "text-btn destructive", onclick: () => { if (confirm("受付をやめますか？（申請はすべて消えます）")) guard(null, () => deleteDoc(D("gameLobbies", L.id))); } }, "受付をやめる")));
+  }
+  joinMode.addEventListener("change", () => paintOpts());
   // 人狼の設定
   let roles = null; // null＝人数に合わせておまかせ
   const roleBox = h("div", { class: "game-roles" });
@@ -17786,7 +17832,7 @@ function gamesAdmin() {
   const demoBtn = h("button", { class: "btn-small game-demo-btn" }, icon("play"), "デモプレイ（自分＋CPU）");
   const setup = h("div", { class: "game-setup" },
     h("div", { class: "group-header standalone" }, "新しいゲーム"), h("div", { class: "seg-wrap" }, kind), desc,
-    group("遊ぶ人", [h("div", { class: "cell" }, players.el), h("div", { class: "cell busy-cell" }, busyBtn), field("自分（管理者）も遊ぶ", selfPlay),
+    group("遊ぶ人", [h("div", { class: "cell seat-cell join-cell" }, joinMode), h("div", { class: "cell pick-cell" }, players.el), h("div", { class: "cell lobby-cell" }, lobbyBox), h("div", { class: "cell busy-cell" }, busyBtn), field("自分（管理者）も遊ぶ", selfPlay),
       h("p", { class: "cell-sub self-note" }, "オンにすると、あなたも1人の参加者として遊びます。役職・お題・数字・手札・だれに投票したかは、管理者の画面にも出しません。進める・戻す・時間を止める・増やすはできます。NGワードを人ごとに決めるときも、あなたの分はランダムです（ワード人狼で言葉を自分で決めると、あなたにも分かります）。ポイントは使えません。")],
       "ゲームは、遊ぶ人を分ければいくつでも同時に進められます（進行中のゲームは、管理者の画面の上で切り替えられます）。ほかのゲームで遊んでいる人を選ぶと、その人のスマホは新しいゲームに切り替わります。"),
     group("テーブルの席順", [h("div", { class: "cell seat-cell" }, seatMode, seatList)], "参加者の画面の丸テーブルに、この順で時計回りに座ります（大富豪は出す順番も同じ）。↑↓で入れ替えられます。"),
@@ -17799,7 +17845,7 @@ function gamesAdmin() {
   const panel = h("div");
   const el = h("div", { class: "games-admin" }, panel, list, setup);
 
-  const chosen = () => [...players.value().filter((u) => S.members.has(u)), ...(selfPlay.checked && S.user ? [S.user.uid] : [])];
+  const chosen = () => [...(joinMode.value === "free" ? lobbyOk(curLobby()) : players.value().filter((u) => S.members.has(u))).filter((u) => u !== S.user?.uid), ...(selfPlay.checked && S.user ? [S.user.uid] : [])];
   function paintOpts() {
     const k0 = kind.value, k = gkOf(k0), dice = rlModeV() === "dice", bac = rlModeV() === "bac", crash = rlModeV() === "crash", ccm = rlModeV() === "cc";
     GA.kind = k0;
@@ -17837,7 +17883,10 @@ function gamesAdmin() {
     bjDas.closest(".cell").hidden = bjSplit.value === "0" || bjDouble.value === "off";
     ngOne.closest(".cell").hidden = !ngAuto.checked;
     ngTopic.closest(".cell").hidden = !ngTopicOn.checked;
-    busyBtn.closest(".cell").hidden = !players.value().some((u) => gBusyMap().has(u));
+    const free = joinMode.value === "free";
+    players.el.closest(".cell").hidden = free; lobbyBox.closest(".cell").hidden = !free;
+    if (free) paintLobby();
+    busyBtn.closest(".cell").hidden = free || !players.value().some((u) => gBusyMap().has(u));
     wordTopic.closest(".cell").hidden = !wordTopicOn.checked;
     for (const x of [wordA, wordB, wordFlip, wordFill]) x.closest(".cell").hidden = wordMode.value !== "pick";
     if (k === "ng") paintNgAssign();
@@ -17954,7 +18003,9 @@ function gamesAdmin() {
         : `${GAME_KINDS[k].label}を ${n}人で始めます。遊ぶ人のスマホに${k === "wolf" ? "役職" : k === "num" ? "数字" : k === "ng" ? "NGワード" : "お題"}が届きます。よろしいですか？`) + ptNote)) return;
     // 読み上げは、ボタンを押した流れで一度鳴らしておかないと、iPhone などでは鳴らない
     if (o.auto) { GSPEAK.on = true; }
+    const lobby = joinMode.value === "free" ? curLobby() : null;
     const gid = await startGame(k, ps, o);
+    if (lobby) fire(deleteDoc(D("gameLobbies", lobby.id))); // v109 始めたら受付を閉じる（参加者の申請ボタンも消える）
     if (o.auto) { GSPEAK.said.set(gid, 0); gameSpeak("ゲームを始めます。"); }
     GA.open = gid;
     if (ps.includes(S.user?.uid)) GV.play = gid; // 自分も遊ぶときは、自分の画面（参加者の画面）を開く
@@ -18670,7 +18721,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v108"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v109"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
@@ -18721,7 +18772,7 @@ function render(kinds) {
       if (open && ((kinds.has("loc") && open.key === "map") || ((kinds.has("quiz") || kinds.has("game")) && open.key === "quiz") || (kinds.has("chat") && open.key === "chat"))) open.view.update();
     }
     shell.partial?.(kinds); // v107 タブ・欄に置いたクイズ・チャット
-    if (kinds.has("game")) paintGameLive();
+    if (kinds.has("game")) { paintGameLive(); paintLobbyFab(); }
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
     if (kinds.has("game") || kinds.has("quiz")) paintLiveButtons();
@@ -18777,6 +18828,7 @@ function render(kinds) {
   paintChatBadges();
   paintQuizLive();
   paintGameLive();
+  paintLobbyFab();
 }
 
 const $app = document.getElementById("app");

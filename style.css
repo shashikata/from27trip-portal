@@ -4727,3 +4727,34 @@ html, body { touch-action: manipulation; }
 /* v107 NGワード：自分が OUT を押した（まだ確定していない）ときは薄紫。人数（2/4）も出す */
 .cx-out { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .cx-out.on:not(.ghost-out) { color: #fff; background: color-mix(in srgb, var(--accent) 30%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent); }
+/* v109 ゲームの参加の受付（自由参加） */
+.lobby-box { display: grid; gap: 10px; width: 100%; }
+.lobby-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lobby-head b { font-size: 15px; }
+.lobby-count { margin-left: auto; color: var(--label-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.lobby-list { display: grid; gap: 6px; }
+.lobby-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 4px 4px 12px; border-radius: 12px; background: rgba(255, 255, 255, .04); }
+.lobby-row.ok { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.lobby-nm { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.lobby-nm small { color: var(--label-2); font-size: 11.5px; }
+.lobby-ok { min-width: 72px; min-height: 36px; }
+.lobby-ok.on { color: var(--on-accent); background: var(--accent); }
+.lobby-btns { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.lobby-open { justify-self: start; }
+.lobby-fab {
+  position: fixed; left: 16px; right: 16px; bottom: calc(140px + env(safe-area-inset-bottom)); z-index: 63; max-width: 520px; margin: 0 auto;
+  display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 18px; border-radius: 20px;
+  background: rgba(28, 28, 34, .94); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent), 0 10px 28px rgba(0, 0, 0, .55);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+}
+.lobby-fab.up { bottom: calc(200px + env(safe-area-inset-bottom)); }
+.lobby-fab-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lobby-fab-t small { color: var(--label-2); font-size: 12px; }
+.lobby-fab-t b { font-size: 16px; overflow-wrap: anywhere; }
+.lobby-fab-go { flex: none; min-height: 44px; padding: 0 16px; border: none; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 800; }
+.lobby-fab-x { flex: none; min-height: 44px; padding: 0 14px; border: none; border-radius: 999px; background: rgba(255, 255, 255, .1); color: var(--label); font-weight: 700; }
+.lobby-fab.ok { box-shadow: 0 0 0 1.5px var(--accent), 0 10px 28px rgba(0, 0, 0, .55); }
+.lobby-fab.ok .lobby-fab-t small { color: var(--accent); }
+/* 申請ボタンが出ている間は、本文の最後までボタンの上にスクロールできるように下の余白を広げる */
+body:has(> .lobby-fab) .shell.single .page { padding-bottom: calc(230px + env(safe-area-inset-bottom)); }
+body:has(> .lobby-fab.up) .shell.single .page { padding-bottom: calc(290px + env(safe-area-inset-bottom)); }

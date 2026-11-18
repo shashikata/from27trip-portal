@@ -435,6 +435,23 @@ await test("ゲーム：NGワードの「アウト」だけは遊んでいる人
   await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), "games/g3"), { players: ["alice", "bob"], phase: "ended" }));
   await assertFails(updateDoc(doc(alice(), "games/g3"), { outs: {}, uid: "alice", at: serverTimestamp() }));              // 終わったあと
 });
+await test("ゲームの参加の受付：申請は自分の分だけ・受付中だけ・OK は管理者だけ", async () => {
+  await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), "gameLobbies/L1"), { kind: "wolf", label: "人狼", open: true, req: { bob: true }, ok: [] }));
+  await assertSucceeds(getDoc(doc(alice(), "gameLobbies/L1")));                                                   // 受付は全員が読める
+  await assertSucceeds(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true, alice: true }, uid: "alice", at: serverTimestamp() })); // 自分の申請
+  await assertSucceeds(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true }, uid: "alice", at: serverTimestamp() }));              // 取り消し
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { alice: true }, uid: "alice", at: serverTimestamp() }));               // ほかの人の申請を消す
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true, carol: true }, uid: "alice", at: serverTimestamp() }));    // ほかの人になりすまし
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true, alice: "x" }, uid: "alice", at: serverTimestamp() }));     // true 以外
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { ok: ["alice"], uid: "alice", at: serverTimestamp() }));                      // OK は管理者だけ
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true, alice: true }, uid: "alice", at: new Date(0) }));          // 端末の時刻
+  await assertFails(setDoc(doc(alice(), "gameLobbies/L2"), { kind: "wolf", open: true, req: {}, uid: "alice", at: serverTimestamp() }));     // 受付を作るのは管理者だけ
+  await assertFails(deleteDoc(doc(alice(), "gameLobbies/L1")));
+  await assertSucceeds(updateDoc(doc(admin(), "gameLobbies/L1"), { ok: ["bob"] }));
+  await env.withSecurityRulesDisabled((ctx) => updateDoc(doc(ctx.firestore(), "gameLobbies/L1"), { open: false }));
+  await assertFails(updateDoc(doc(alice(), "gameLobbies/L1"), { req: { bob: true, alice: true }, uid: "alice", at: serverTimestamp() }));    // 締め切ったあと
+  await assertFails(getDoc(doc(carol(), "gameLobbies/L1")));                                                      // 入っていない旅行
+});
 await test("クイズ・ゲームの記録（playLogs）は管理者だけが読み書きできる", async () => {
   await assertSucceeds(setDoc(doc(admin(), "playLogs/game_g1"), { kind: "game", title: "人狼", secrets: { alice: { role: "wolf" } } }));
   await assertSucceeds(getDocs(collection(admin(), "playLogs")));
