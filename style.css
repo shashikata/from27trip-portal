@@ -3573,58 +3573,65 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
 .gp-dealer-btn.need { box-shadow: 0 0 0 2px var(--need, #C9B8FF); animation: needPulse 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .gp-dealer-btn.need { animation: none; } }
 
-/* v94 ブラックジャック：配る・めくるを約1.5秒で。飛んできて、少し浮いてためてから、くるっと表に返し、一瞬明るく光る */
+/* v94 ブラックジャック：配る・めくるを約1.5秒で。飛んできて、少し浮いてためてから、くるっと表に返す
+   v107 かくかくして見えたのを直した：
+   ・すべての段で transform の並びを同じにした（並びが変わると行列で計算し直され、途中でガクッとなる）
+   ・段ごとの速さを、つながるように決めた（前は段の終わりごとに止まり、真横＝細い線の所で一瞬止まって「消えてもう1枚来た」ように見えた）
+     真横までは だんだん速く、真横からは 速いまま出て ゆっくり止まる
+   ・明るさ（filter）の点滅をやめた（毎コマ描き直しになり、スマホで引っかかる） */
 @keyframes cxDealBJ {
-  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); }
+  0% { opacity: 0; transform: perspective(600px) translate(0, -80px) rotate(-12deg) rotateY(0deg) scale(.82); animation-timing-function: cubic-bezier(.2, .7, .35, 1); }
   18% { opacity: 1; }
-  30% { transform: translate(0, 0) rotate(0) scale(1); }
-  42% { transform: perspective(600px) translateY(-5px) rotateY(0) scale(1.05); }
-  66% { transform: perspective(600px) translateY(-7px) rotateY(90deg) scale(1.12); filter: brightness(1); }
-  80% { filter: brightness(1.45); }
-  100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
+  32% { transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  44% { transform: perspective(600px) translate(0, -6px) rotate(0deg) rotateY(0deg) scale(1.06); animation-timing-function: cubic-bezier(.55, 0, 1, .8); }
+  64% { transform: perspective(600px) translate(0, -7px) rotate(0deg) rotateY(90deg) scale(1.1); animation-timing-function: cubic-bezier(0, .35, .35, 1); }
+  100% { opacity: 1; transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); } }
 /* ディーラーのカードは、上の「DEALER」の文字の上を通らないように、右横（カードの山）から滑ってくる */
 @keyframes cxDealBJd {
-  0% { opacity: 0; transform: translate(44px, 0) rotate(8deg) scale(.82); }
+  0% { opacity: 0; transform: perspective(600px) translate(44px, 0) rotate(8deg) rotateY(0deg) scale(.82); animation-timing-function: cubic-bezier(.2, .7, .35, 1); }
   18% { opacity: 1; }
-  30% { transform: translate(0, 0) rotate(0) scale(1); }
-  42% { transform: perspective(600px) translateY(-4px) rotateY(0) scale(1.05); }
-  66% { transform: perspective(600px) translateY(-5px) rotateY(90deg) scale(1.1); filter: brightness(1); }
-  80% { filter: brightness(1.45); }
-  100% { opacity: 1; transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
+  32% { transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  44% { transform: perspective(600px) translate(0, -5px) rotate(0deg) rotateY(0deg) scale(1.05); animation-timing-function: cubic-bezier(.55, 0, 1, .8); }
+  64% { transform: perspective(600px) translate(0, -6px) rotate(0deg) rotateY(90deg) scale(1.09); animation-timing-function: cubic-bezier(0, .35, .35, 1); }
+  100% { opacity: 1; transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); } }
 @keyframes cxFlipUpBJ {
-  0% { transform: perspective(600px) rotateY(0) scale(1); }
-  14% { transform: perspective(600px) translateY(-4px) rotateZ(-2deg) scale(1.04); }
-  26% { transform: perspective(600px) translateY(-5px) rotateZ(2deg) scale(1.05); }
-  36% { transform: perspective(600px) translateY(-6px) rotateZ(0) scale(1.06); }
-  58% { transform: perspective(600px) translateY(-7px) rotateY(90deg) scale(1.12); filter: brightness(1); }
-  74% { filter: brightness(1.45); }
-  100% { transform: perspective(600px) rotateY(0) scale(1); filter: brightness(1); } }
-@keyframes cxBackOffBJ { 0%, 65% { opacity: 1; } 66%, 100% { opacity: 0; } }
-@keyframes cxBackOffBJ2 { 0%, 57% { opacity: 1; } 58%, 100% { opacity: 0; } }
-.cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both; }
-.cx-fan.bj-slow .pc.flipup, .cx-mini.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both; }
+  0% { transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  14% { transform: perspective(600px) translate(0, -4px) rotate(-2deg) rotateY(0deg) scale(1.04); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  26% { transform: perspective(600px) translate(0, -5px) rotate(2deg) rotateY(0deg) scale(1.05); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  38% { transform: perspective(600px) translate(0, -6px) rotate(0deg) rotateY(0deg) scale(1.06); animation-timing-function: cubic-bezier(.55, 0, 1, .8); }
+  58% { transform: perspective(600px) translate(0, -7px) rotate(0deg) rotateY(90deg) scale(1.1); animation-timing-function: cubic-bezier(0, .35, .35, 1); }
+  100% { transform: perspective(600px) translate(0, 0) rotate(0deg) rotateY(0deg) scale(1); } }
+@keyframes cxBackOffBJ { 0%, 63.9% { opacity: 1; } 64%, 100% { opacity: 0; } }
+@keyframes cxBackOffBJ2 { 0%, 57.9% { opacity: 1; } 58%, 100% { opacity: 0; } }
+.cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s linear both; }
+.cx-fan.bj-slow .pc.flipup, .cx-mini.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s linear both; }
 .cx-fan.bj-slow .pc.deal:not(.back)::after { animation: cxBackOffBJ 1.5s step-end both; animation-delay: inherit; }
 .cx-fan.bj-slow .pc.flipup:not(.back)::after, .cx-mini.bj-slow .pc.flipup:not(.back)::after { animation: cxBackOffBJ2 1.5s step-end both; animation-delay: inherit; }
-.cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s cubic-bezier(.3, .7, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
-.cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s cubic-bezier(.4, .1, .3, 1) both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-hand.is-bj .cx-fan.bj-slow .pc.deal { animation: cxDealBJ 1.5s linear both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
+.cx-dealer.is-bj .cx-fan.bj-slow .pc.flipup { animation: cxFlipUpBJ 1.5s linear both, bjGlow 1.4s ease-in-out var(--bjd, 0ms) infinite; }
 .cx-dealer .cx-fan.bj-slow .pc.deal { animation-name: cxDealBJd; }
 /* v106 伏せたまま配るカード（ディーラーの2枚目・押して開く前の自分のカード）は、くるっと返さない。滑ってきて置かれるだけ（表になるのは、めくるとき＝flipup） */
 @keyframes cxDealBJback {
-  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); }
+  0% { opacity: 0; transform: translate(0, -80px) rotate(-12deg) scale(.82); animation-timing-function: cubic-bezier(.2, .7, .35, 1); }
   18% { opacity: 1; }
-  30% { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
-  36% { transform: translateY(-2px) scale(1.015); }
-  44%, 100% { opacity: 1; transform: none; } }
+  32% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  38% { transform: translate(0, -2px) rotate(0deg) scale(1.015); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  46%, 100% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); } }
 @keyframes cxDealBJdBack {
-  0% { opacity: 0; transform: translate(44px, 0) rotate(8deg) scale(.82); }
+  0% { opacity: 0; transform: translate(44px, 0) rotate(8deg) scale(.82); animation-timing-function: cubic-bezier(.2, .7, .35, 1); }
   18% { opacity: 1; }
-  30% { opacity: 1; transform: translate(0, 0) rotate(0) scale(1); }
-  36% { transform: translateY(-2px) scale(1.015); }
-  44%, 100% { opacity: 1; transform: none; } }
+  32% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  38% { transform: translate(0, -2px) rotate(0deg) scale(1.015); animation-timing-function: cubic-bezier(.45, 0, .55, 1); }
+  46%, 100% { opacity: 1; transform: translate(0, 0) rotate(0deg) scale(1); } }
 @media (prefers-reduced-motion: no-preference) {
   .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJback; }
   .cx-hand.is-bj .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJback, bjGlow; }
   .cx-dealer .cx-fan.bj-slow .pc.back.deal { animation-name: cxDealBJdBack; } }
+/* v107 ボタンは、カードが表になってから出す。待つ間は見えず、押せない（visibility: hidden） */
+@keyframes cxWaitIn { 0% { opacity: 0; visibility: hidden; transform: translateY(6px); } 1% { visibility: visible; } 100% { opacity: 1; visibility: visible; transform: none; } }
+.cx-acts.wait, .cx-note.wait, .cx-label.wait, .cx-bets.wait { animation: cxWaitIn .35s ease-out var(--late, 0ms) both; }
+.cx-acts.wait.need > .cx-btn.btn-filled:not(:disabled):not(.on) { animation-delay: var(--late, 0ms); }
+@media (prefers-reduced-motion: reduce) { .cx-acts.wait, .cx-note.wait, .cx-label.wait, .cx-bets.wait { animation: cxWaitIn .01s linear var(--late, 0ms) both; } }
 /* v105 ディーラーは、もっとゆっくりめくる */
 .cx-dealer .cx-fan.bj-slow.bj-dl .pc.deal, .cx-dealer .cx-fan.bj-slow.bj-dl .pc.flipup, .cx-fan.bj-slow.bj-dl .pc.deal, .cx-fan.bj-slow.bj-dl .pc.flipup { animation-duration: 2.4s; }
 .cx-fan.bj-slow.bj-dl .pc.deal:not(.back)::after, .cx-fan.bj-slow.bj-dl .pc.flipup:not(.back)::after { animation-duration: 2.4s; }
@@ -3668,7 +3675,7 @@ button.cx-seat { border: none; background: none; font: inherit; color: inherit; 
   .cx-hand.fallen .cx-fan, .cx-dealer.fallen .cx-fan, .cx-hand.fallen > .cx-total, .cx-dealer.fallen > .cx-total { animation: fallBox 2s ease var(--fd, 0ms) both; }
 }
 /* ディーラーの合計は、めくり終わってから出す（late）のと、バーストの赤を両方かける */
-.cx-dealer.fallen > .cx-total.late { animation: cxLate .45s cubic-bezier(.2, 1.4, .4, 1) var(--late, 0ms) both, fallText 2s ease var(--fd, 0ms) both; }
+.cx-dealer.fallen > .cx-total.late, .cx-hand.fallen > .cx-total.late { animation: cxLate .45s cubic-bezier(.2, 1.4, .4, 1) var(--late, 0ms) both, fallText 2s ease var(--fd, 0ms) both; }
 
 /* v94 クイズの自動進行：操作用の画面の下に、次の動きを出す */
 .op-auto { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; color: var(--label-2, #c9c9cf); background: rgba(201, 184, 255, .1); border-top: 1px solid rgba(201, 184, 255, .25); }
@@ -4065,7 +4072,8 @@ button.rl-cell:active { transform: scale(.94); }
 .rl-cell.blank small { font-size: 10px; font-weight: 600; color: rgba(255, 255, 255, .55); white-space: nowrap; }
 .rl-chip-on { position: absolute; z-index: 1; top: 50%; right: 3px; transform: translateY(-50%); min-width: 22px; height: 22px; padding: 0 4px; border-radius: 999px; display: grid; place-items: center;
   background: var(--accent); color: var(--on-accent); font-style: normal; font-size: 10.5px; font-weight: 900; box-shadow: 0 0 0 2px #fff, 0 2px 6px rgba(0, 0, 0, .5);
-  animation: rlChipIn .25s cubic-bezier(.2, 1.4, .3, 1); pointer-events: none; }
+  pointer-events: none; }
+.rl-chip-on.pop { animation: rlChipIn .25s cubic-bezier(.2, 1.4, .3, 1); }
 @keyframes rlChipIn { from { scale: .6; opacity: 0; } to { scale: 1; opacity: 1; } }
 .rl-chip-o { position: absolute; z-index: 1; top: 50%; left: 3px; transform: translateY(-50%); min-width: 16px; height: 16px; padding: 0 3px; border-radius: 999px; display: grid; place-items: center;
   background: #F5F5F7; color: #111; font-style: normal; font-size: 9.5px; font-weight: 900; pointer-events: none; }
@@ -4231,11 +4239,14 @@ button.rl-cell:active { transform: scale(.94); }
 .cx-fan.bj-tap:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 /* まだ開いていない自分のカード：薄紫にゆっくり光って「押して」と誘う */
 .cx-fan.bj-tap .pc.back { animation: bjTapGlow 1.4s ease-in-out infinite; }
+/* v107 配っている途中の伏せ札は「配る動き（1回だけ）＋光る（くり返し）」。
+   v106 では上の指定と混ざって、配る動きが 1.4 秒ごとにくり返され、何度も配り直されて見えていた */
+.cx-fan.bj-tap .pc.back.deal { animation: cxDealBJback 1.5s linear both, bjTapGlow 1.4s ease-in-out infinite; }
 @keyframes bjTapGlow { 0%, 100% { box-shadow: 0 0 0 1.5px rgba(162, 158, 255, .55), 0 6px 16px rgba(0, 0, 0, .45); } 50% { box-shadow: 0 0 0 2.5px rgba(162, 158, 255, .95), 0 0 22px rgba(162, 158, 255, .55); } }
 .cx-fan.bj-tap:active { transform: scale(.97); }
 .cx-total.need { color: var(--accent); letter-spacing: .06em; animation: rlPulse 1.4s ease-in-out infinite; }
 .bj-opening { color: var(--accent); }
-@media (prefers-reduced-motion: reduce) { .cx-fan.bj-tap .pc.back, .cx-total.need { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .cx-fan.bj-tap .pc.back, .cx-fan.bj-tap .pc.back.deal, .cx-total.need { animation: none; } }
 
 /* ===== v103 大小（サイコロ3個）：透明なドームの中の丸い台（CSS の 3D） ===== */
 .rl-wheel.dc .dc-box { position: relative; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 50%;
@@ -4664,6 +4675,8 @@ button.rl-cell:active { transform: scale(.94); }
 .cr-auto b { font-size: 13px; font-weight: 700; } .cr-auto small { font-size: 9.5px; font-weight: 600; opacity: .7; white-space: nowrap; }
 /* v106 ルーレット：自分が賭けた（当たりになる）ポケットを、うっすら光らせる。止まって当たったところは強めに */
 .rl-mine-p { fill: rgba(255, 236, 170, .16); stroke: rgba(255, 236, 170, .5); stroke-width: .45; pointer-events: none; }
+.rl-mine-d { fill: #A29EFF; stroke: #fff; stroke-width: .6; pointer-events: none; filter: drop-shadow(0 0 1.2px rgba(162, 158, 255, .9)); }
+.rl-mine-d.win { fill: #C9B8FF; }
 .rl-mine-p.win { fill: rgba(255, 226, 130, .4); stroke: #FFE89A; stroke-width: 1.1; animation: rlMineWin 1s ease-in-out infinite alternate; }
 @keyframes rlMineWin { from { fill-opacity: .7; } to { fill-opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .rl-mine-p.win { animation: none; } }
@@ -4685,3 +4698,28 @@ button.rl-cell:active { transform: scale(.94); }
     calc(var(--k, 3px) * -.08) calc(var(--k, 3px) * -.1) 0 rgba(255, 255, 255, .75), calc(var(--k, 3px) * .08) calc(var(--k, 3px) * .1) calc(var(--k, 3px) * .1) rgba(120, 98, 60, .35); }
 .dc-side b.r { background: radial-gradient(circle at 62% 66%, #FF6E74 0%, #D3222C 40%, #8E0A14 76%); }
 .dc-core { background: #E2D8C2; }
+
+/* v107 ダブルタップでの拡大をしない（ボタンを素早く2回押したときに画面が拡大されて戻せなくなるため）。2本指で広げる拡大はそのまま使える */
+html, body { touch-action: manipulation; }
+/* v107 参加者のスマホ：下の切り替えにチャットの未読の数を出す */
+.jump .seg button { position: relative; }
+.jump .seg button .chat-badge { top: 0; right: -2px; }
+
+/* v107 賭けの間の「準備OK」の一覧：左右に分けて並べ、真ん中に人数（3人までは右だけ） */
+.rl-okrow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: start; gap: 8px; margin: 0 0 8px; }
+.rl-okrow.few { grid-template-columns: auto minmax(0, 1fr); }
+.rl-ok-side { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.rl-ok-side.l { justify-content: flex-start; }
+.rl-ok-side.r { justify-content: flex-end; }
+.rl-ok-p { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; min-width: 0; padding: 2px 8px 2px 6px; border-radius: 999px; font-size: 11px; line-height: 16px;
+  color: rgba(255,255,255,.55); background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); transition: color .25s, background .25s, box-shadow .25s; }
+.rl-ok-p i { font-style: normal; font-weight: 700; flex: none; width: 10px; text-align: center; }
+.rl-ok-p span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rl-ok-p.ok { color: #fff; background: color-mix(in srgb, var(--accent) 26%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 60%, transparent); }
+.rl-ok-p.ok i { color: var(--accent); }
+.rl-ok-p.me { font-weight: 700; }
+.rl-ok-mid { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 44px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,.05); line-height: 1.1; }
+.rl-ok-mid b { font-size: 15px; font-variant-numeric: tabular-nums; color: #fff; }
+.rl-ok-mid small { font-size: 9px; letter-spacing: .08em; color: rgba(255,255,255,.5); }
+.rl-okrow.all .rl-ok-mid { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.rl-okrow.all .rl-ok-mid small { color: var(--accent); }

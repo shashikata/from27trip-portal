@@ -2269,7 +2269,7 @@ function memberSummary() {
         h("div", null, h("b", null, "ホーム画面に追加しておくと便利です"),
           h("div", null, "Safari の共有ボタンから「ホーム画面に追加」を選びます。追加したアプリを初めて開いたときだけ、カードの ID とパスワードを入力してください（iPhone はログイン状態が別になるため）。")),
         h("button", { class: "text-btn", onclick: () => { try { sessionStorage.removeItem("island.qrlogin"); } catch { /* なし */ } scheduleRender(); } }, "閉じる")));
-      if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => (myUnanswered(uid) || !document.getElementById("pay-top")?.childElementCount ? document.getElementById("sec-money") : document.getElementById("pay-top"))?.scrollIntoView({ behavior: "smooth", block: "start" }) }, icon("check"), todo.join(" ・ "), icon("chevron")));
+      if (todo.length) el.append(h("button", { class: "todo-banner", onclick: () => { if (myUnanswered(uid) || !document.getElementById("pay-top")?.childElementCount) { memberGo?.("money"); requestAnimationFrame(() => document.getElementById("sec-money")?.scrollIntoView({ behavior: "smooth", block: "start" })); } else document.getElementById("pay-top")?.scrollIntoView({ behavior: "smooth", block: "start" }); } }, icon("check"), todo.join(" ・ "), icon("chevron")));
     },
   };
 }
@@ -2434,7 +2434,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v106"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v107"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -4569,7 +4569,7 @@ function openMatch(id) {
   return el;
 }
 
-function adminTeams() {
+function adminTeams({ withTitle = true } = {}) {
   const attrs = attrEditor();
   const futsal = futsalRosterEditor();
   const futsalWrap = h("div", { class: "futsal-wrap" }, futsal.el);
@@ -4705,7 +4705,7 @@ function adminTeams() {
     }, "このチーム表を削除")),
   );
 
-  const el = h("div", null, largeTitle("チーム"), futsalWrap, setBar, noSets, detail, attrs.el);
+  const el = h("div", null, withTitle ? largeTitle("チーム") : null, futsalWrap, setBar, noSets, detail, attrs.el);
 
   return {
     el,
@@ -9603,7 +9603,7 @@ const totalUnread = () => chatList().reduce((s, c) => s + c.unread, 0);
 function paintChatBadges() {
   if (!S.user) return;
   const n = totalUnread();
-  for (const b of document.querySelectorAll("[data-sheet=chat]")) {
+  for (const b of document.querySelectorAll("[data-sheet=chat], [data-jump=chat], [data-tab=chat]")) {
     let dotEl = b.querySelector(".chat-badge");
     if (!dotEl) { dotEl = h("span", { class: "chat-badge" }); b.append(dotEl); }
     dotEl.textContent = n > 99 ? "99+" : String(n);
@@ -12038,6 +12038,9 @@ const dfgO = (o) => ({ jokers: 1, eight: true, revolution: true, stairs: true, s
 //   dealerTimer：手動のときに参加者の持ち時間を付けるか（false なら時間切れはなく、ディーラーが締め切るまで待つ）
 const cardManual = (o) => o?.dealer === "manual";
 const cardEnds = (o, sec) => (cardManual(o) && o?.dealerTimer === false ? null : nowS() + sec * 1000);
+// v107 大小・チンチロは、全員が「準備OK」を押すまで振らない（賭ける時間の制限なし。止まったときは管理者の「次の場面へ」で進める）
+const rlWaitAll = (o) => ["dice", "cc"].includes(rlO(o).mode);
+const rlBetEnds = (o, sec) => (rlWaitAll(o) ? null : cardEnds(o, sec));
 const cardNeed = (g) => (g.kind === "bj" ? [DEALER] : g.kind === "rl" ? [] : g.dfg?.seats ?? []);
 // v100 トランプ・ルーレット共通：設定といまの回
 const cardO = (g) => (g.kind === "bj" ? bjO(g.opts) : g.kind === "rl" ? rlO(g.opts) : dfgO(g.opts));
@@ -12508,7 +12511,7 @@ function rlStartState(players, o) {
   const chips = Object.fromEntries(players.map((u) => [u, Math.max(0, Math.floor(o.startChips?.[u] ?? x.chips))]));
   const st = { round: 1, chips, start: { ...chips }, hist: [], spin: null, bets: null, res: null, prev: null, ...(x.mode === "cc" ? { oya: players.find((u) => chips[u] > 0) ?? players[0], cc: null } : {}) };
   const same = new Set(Object.values(chips)).size === 1;
-  return { rl: st, phase: "bet", actKey: "b", actors: players.filter((u) => u !== st.oya && chips[u] >= Math.max(1, x.betMin)), endsAt: cardEnds(o, x.betSec),
+  return { rl: st, phase: "bet", actKey: "b", actors: players.filter((u) => u !== st.oya && chips[u] >= Math.max(1, x.betMin)), endsAt: rlBetEnds(o, x.betSec),
     log: [gLog(`${x.mode === "dice" ? "大小（サイコロ）" : x.mode === "bac" ? "バカラ" : x.mode === "crash" ? "クラッシュ" : x.mode === "cc" ? "チンチロ" : "ルーレット"}を始めます。${o.pt?.chips === "real" ? "旅行のポイントをチップとして持ち込みました" : "全員にチップを配りました"}（${same ? `${Object.values(chips)[0]}枚ずつ` : players.map((u) => `${memberName(u)} ${chips[u]}枚`).join("・")}）。${x.mode === "cc" ? `第1回の親は${memberName(st.oya)}さん。子は親と勝負する額を賭けてください。` : "第1回の賭けを置いてください。"}`, null, { type: "rlBet", round: 1 })] };
 }
 // 締め切って、玉を投げる（抽選は回す）
@@ -12548,7 +12551,7 @@ function rlSpin(g) {
     const hand = bacDeal(() => shoe.slice(i * 2, ++i * 2));
     st.shoe = shoe.slice(i * 2);
     const n = `${hand.p.join("")}|${hand.b.join("")}`;
-    st.spin = { n, at, dur: Math.ceil(bacPlanOf(n).D * 1000), seed, round: r, ...(mixed ? { mixed: true } : {}) };
+    st.spin = { n, at, dur: Math.ceil(bacPlanOf(n).D * 1000), seed, round: r, ...(mixed ? { mixed: true } : {}), ...(cardManual(g.opts) ? { gate: true, bq: [] } : {}) };
   } else if (rlCrash(g)) {
     // v104 クラッシュ：はじける倍率をくじで決める（約2% は 1.00x ですぐはじける）
     const x = crPoint();
@@ -12609,7 +12612,7 @@ function rlNext(g) {
   if (rlCc(g)) return ccNextRound(g, st);
   st.round += 1; st.prev = rlCrash(g) && st.bets ? Object.fromEntries(Object.entries(st.bets).map(([u, b]) => [u, crPlain(b)])) : st.bets ?? null; st.bets = null; st.res = null;
   const actors = g.players.filter((u) => (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
-  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
+  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: rlBetEnds(g.opts, o.betSec),
     log: [...(g.log ?? []), gLog(`第${st.round}回です。賭けを置いてください。`, null, { type: "rlBet", round: st.round })] } };
 }
 function rlEndUpdate(g, st, log) {
@@ -12638,7 +12641,8 @@ function rlRng(seed) {
 const DC_S = 16, DC_H = DC_S / 2, DC_I = (DC_S * DC_S) / 6, DC_RW = 58, DC_HC = 54, DC_G = 9810, DC_DT = 1 / 1000, DC_FPS = 60;
 // 物の性質：はね返り係数・摩擦係数（arXiv:1407.6307 のサイコロの実験に近い値：e≈0.5・μ≈0.29）
 // v106 上から落とす形式にしたので、台をつるっとした硬い台（漆塗りのような）に：はね返り 床 0.45→0.6・壁 0.5→0.6、摩擦 床 0.3→0.12・壁 0.2→0.15
-const DC_E = { floor: 0.6, wall: 0.6, glass: 0.55, die: 0.5 }, DC_MU = { floor: 0.12, wall: 0.15, glass: 0.15, die: 0.25 };
+// v107 床の摩擦を 0.12→0.45 に上げた（0.12 だと床に着いても回転に変わらず、平らなまま滑って見えた。床の近くの動きの 40% → 15%）
+const DC_E = { floor: 0.65, wall: 0.6, glass: 0.55, die: 0.5 }, DC_MU = { floor: 0.45, wall: 0.3, glass: 0.15, die: 0.25 };
 // サイコロの角（自分の向きでの座標）
 const DC_CORNERS = []; for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) DC_CORNERS.push([x * DC_H, y * DC_H, z * DC_H]);
 // サイコロどうしの当たりは、角に加えて辺の真ん中でも調べる（辺と辺が当たるときを見落とさない）
@@ -12679,7 +12683,8 @@ function dcLayout(seed) {
 // v106 投げ方を「上から落とす」に変えた（チンチロと同じ）：台の上（底から 9〜12cm）で手を開いて3個を落とし、
 //   少し前へ押し出して、手首のひねりで回転をかける。台の床で跳ね、ふちの壁に当たって転がる。強さ・向き・回転は種から決める
 //   （v103〜v105 は透明なドームの中の台を下から突き上げていた。ドームの天井はなくした）
-const DC_HZ = 90, DC_PW = 400, DC_PR = 300, DC_SPIN = 280, DC_DAMP = 0.03; // 手の高さ（mm）・押し出す速さとばらつき（mm/秒）・手首のひねり（rad/秒）・回転の減り
+const DC_HZ = 90, DC_PW = 500, DC_PR = 300, DC_SPIN = 380, DC_DAMP = 0.02; // 手の高さ（mm）・押し出す速さとばらつき（mm/秒）・手首のひねり（rad/秒）・回転の減り
+const DC_R0 = 4, DC_TIN = 0.3, DC_TINR = 0.4; // v107 手の位置（真ん中からの距離 mm）・内向きの割合とばらつき
 // init：前の回に止まった位置と向き（[x, y, z, qw, qx, qy, qz] × 3 の21個）。v106 からは、拾い上げる動きの見た目だけに使う（計算は手の中から始める）
 function dcSim(seed, init = null) {
   const rnd = rlRng(seed ^ 0x5bd1e995);
@@ -12689,11 +12694,11 @@ function dcSim(seed, init = null) {
   const D = [];
   // 手の位置：台の真ん中から少し外（向きは種から。三角関数を使わず、ばらばらな向きのベクトルを長さ1にする）
   let ux = rnd() - 0.5, uy = rnd() - 0.5; const ul = Math.sqrt(ux * ux + uy * uy) || 1; ux /= ul; uy /= ul;
-  const r0 = 4 + rnd() * 10, hx = ux * r0, hy = uy * r0, hz = DC_HZ + rnd() * 30;
+  const r0 = DC_R0 + rnd() * 10, hx = ux * r0, hy = uy * r0, hz = DC_HZ + rnd() * 30;
   // 手の中の3個の位置（はじめから重ならないよう、中心どうしを 29mm 以上離す）
   const offs = [[-16, 2, 0], [16, 4, 5], [0, -19, 14]];
   // 向き：台のふちに沿う向き（右回り・左回りは種から）に、内向きを混ぜる → 壁に当たりながら台の上をぐるっと転がる
-  const power = DC_PW + rnd() * DC_PR, turn = rnd() < 0.5 ? 1 : -1, tin = 0.3 + rnd() * 0.4, tt = Math.sqrt(1 - tin * tin);
+  const power = DC_PW + rnd() * DC_PR, turn = rnd() < 0.5 ? 1 : -1, tin = Math.min(0.98, DC_TIN + rnd() * DC_TINR), tt = Math.sqrt(1 - tin * tin);
   const vx0 = power * (-uy * turn * tt - ux * tin), vy0 = power * (ux * turn * tt - uy * tin), vz0 = -(40 + rnd() * 140);
   const spin = [g(DC_SPIN), g(DC_SPIN), g(DC_SPIN)];
   for (let i = 0; i < 3; i++) {
@@ -13015,12 +13020,20 @@ function dcSound(e, g, sp, P, t, D) {
   if (!s.zoom && t >= D + DC_ZOOM_AT) { s.zoom = true; if (t - D < DC_ZOOM_AT + 1) rlSfx("zoom", 0.7); }
   if (!s.done && t >= D + DC_REVEAL) { s.done = true; if (t - D < DC_REVEAL + 2.5) rlResultFx(g, sp); }
 }
+// v107 盤の上のチップ。枚数が前と変わったときだけ「ポン」と出す（前は描き直すたびに全部のチップが出直して、数字が点滅して見えた）
+//   押せる盤（自分の賭け）だけ覚える。見るだけの盤（結果の表など）は動かさない
+GC.chipAmt = new Map();
+function rlChipOn(spot, a, tap) {
+  const prev = tap ? GC.chipAmt.get(spot) ?? 0 : a;
+  if (tap) GC.chipAmt.set(spot, a);
+  return a ? h("i", { class: `rl-chip-on${prev !== a ? " pop" : ""}` }, rlAbbr(a)) : null;
+}
 // 賭けの盤（大小）。上から：小・奇数・偶数・大／合計／ゾロ目／ダブル／2つの組み合わせ／1つの目
 function dcBoard(mine, opt = {}) {
   const cell = (spot, cls, kids, aria) => {
     const a = mine?.[spot] ?? 0, win = opt.win != null && dcWins(spot, opt.win);
     const attrs = { class: `rl-cell dc-cell ${cls}${a ? " bet" : ""}${win ? " win" : ""}${opt.win != null && !win && a ? " lost" : ""}`, "aria-label": `${aria ?? dcSpotName(spot)}${a ? `（${a}枚）` : ""}` };
-    const all = [...kids, h("small", { class: "dc-pay" }, `×${dcPayText(spot)}`), a ? h("i", { class: "rl-chip-on" }, rlAbbr(a)) : null];
+    const all = [...kids, h("small", { class: "dc-pay" }, `×${dcPayText(spot)}`), rlChipOn(spot, a, !!opt.tap)];
     return opt.tap ? h("button", { type: "button", ...attrs, onclick: () => opt.tap(spot) }, all) : h("div", attrs, all);
   };
   const row = (cls, label, cells) => h("div", { class: `dc-row ${cls}` }, h("div", { class: "dc-rl" }, label), h("div", { class: "dc-cells" }, cells));
@@ -13123,6 +13136,42 @@ function bacPlan(n) {
 }
 const BAC_PLANS = new Map();
 const bacPlanOf = (n) => { let P = BAC_PLANS.get(n); if (!P) { if (BAC_PLANS.size > 100) BAC_PLANS.clear(); P = bacPlan(n); BAC_PLANS.set(n, P); } return P; };
+// v107 管理者が手で進めるとき（spin.gate）は、バンカーを絞る直前（2枚・3枚目とも）で止めて、管理者が「BANKER を絞る」を押すまで待つ
+//   押した時刻（spin.bq）だけ、そのあとの時間割を後ろへずらす。全員の端末が同じ計算をする
+//   G：止める所（時間割の秒）／at：それぞれを押したあとの、ずれの合計（秒）／wait：まだ押されていない所の番号（-1＝全部押された）
+function bacGate(sp) {
+  const P = bacPlanOf(sp.n);
+  const G = sp?.gate ? [...new Set(P.slots.filter((x) => x.side === "b" && x.sq).map((x) => x.sq))].sort((a, b) => a - b).map((x) => x - 0.05) : [];
+  const R = (sp?.bq ?? []).map((ms) => (ms - sp.at) / 1000), at = [];
+  let sh = 0;
+  for (let k = 0; k < G.length; k++) { if (R[k] == null) return { G, at, sh, wait: k }; sh += Math.max(0, R[k] - (G[k] + sh)); at.push(sh); }
+  return { G, at, sh, wait: -1 };
+}
+// 回し始めからの実際の秒 tr → 時間割の秒。止まっている間は、止める所の秒のまま
+function bacTime(sp, tr) {
+  const { G, at, wait } = bacGate(sp);
+  let sh = 0;
+  for (let k = 0; k < G.length; k++) {
+    if (tr < G[k] + sh) return tr - sh;
+    if (k === wait || tr < G[k] + at[k]) return G[k];
+    sh = at[k];
+  }
+  return tr - sh;
+}
+// 精算までに足す秒（まだ押されていなければ、ずっと先）
+const bacExtra = (sp) => { const x = bacGate(sp); return x.wait >= 0 ? 1e6 : x.sh; };
+// いま管理者を待っているか（止める所に着いていて、まだ押されていない）
+const bacHolding = (sp, now = nowS()) => { const x = bacGate(sp); return x.wait >= 0 && (now - sp.at) / 1000 >= x.G[x.wait] + x.sh; };
+// 管理者の「BANKER を絞る」。押した時刻を spin.bq に足す
+function bacGateBtn(g, cls = "") {
+  const sp = g.rl?.spin;
+  if (!S.isAdmin || !rlBac(g) || g.phase !== "spin" || !sp?.gate || bacGate(sp).wait < 0) return null;
+  const k = bacGate(sp).wait, third = k > 0;
+  const b = h("button", { type: "button", class: `btn-filled bc-gate-btn need${cls ? ` ${cls}` : ""}` }, icon("play"), third ? "BANKER の3枚目を絞る" : "BANKER を絞る");
+  b.addEventListener("click", () => { if (GBUSY.has(g.id)) return; GBUSY.add(g.id);
+    guard(b, () => gameStep(g.id, g.step ?? 0, (x) => { const s2 = x.rl?.spin; if (x.phase !== "spin" || !s2?.gate || (s2.bq ?? []).length !== k) return null; return { update: { rl: { ...x.rl, spin: { ...s2, bq: [...(s2.bq ?? []), nowS()] } } } }; })).finally(() => GBUSY.delete(g.id)); });
+  return b;
+}
 
 // ---- カードの表（本物のトランプと同じ並びのマーク）。横を絞ると左の列のマークが見える
 //   位置は 0〜100（横・縦）。下半分のマークは逆さ
@@ -13279,7 +13328,7 @@ function bacDraw(e, g, sp, now, loud) {
     rlWait(e, g.phase === "bet" ? "PLACE YOUR BETS" : g.phase === "ended" ? "GAME SET" : "");
     return false;
   }
-  const P = bacPlanOf(sp.n), D = P.D, t = (now - sp.at) / 1000, { p, b } = bacCards(sp.n);
+  const P = bacPlanOf(sp.n), D = P.D, t = bacTime(sp, (now - sp.at) / 1000), { p, b } = bacCards(sp.n), hold = bacHolding(sp, now);
   for (const [A, side] of [[e.P, "p"], [e.B, "b"]]) {
     for (let i = 0; i < 3; i++) bacRenderSlot(A.slots[i], null, P.slots.find((x) => x.side === side && x.i === i), t, e.mini);
     const mine = P.slots.filter((x) => x.side === side);
@@ -13312,7 +13361,7 @@ function bacDraw(e, g, sp, now, loud) {
   const my = rlMyBets(g);
   if (t < 0) rlWait(e, "NO MORE BETS");
   else if (shown) rlRead(e, `k:${sp.n}:${my ? 1 : 0}`, () => { const d = my ? rlJudge(rlO(g.opts), my, sp.n).d : null; return [bacBadge(sp.n, "big"), h("span", { class: "rl-nb-c" }, w === "T" ? "TIE" : `${w === "P" ? "PLAYER" : "BANKER"} WINS`), d == null ? null : h("em", { class: `rl-nb-d${d > 0 ? " up" : d < 0 ? " down" : ""}` }, sgn(d))]; });
-  else rlWait(e, sq ? "SQUEEZE…" : "• • •", true);
+  else rlWait(e, hold ? "BANKER ・ ディーラーが絞ります" : sq ? "SQUEEZE…" : "• • •", true);
   if (loud) bacSound(e, g, sp, P, t, D);
   return t < D + 14;
 }
@@ -13336,7 +13385,7 @@ function bacBoard(mine, opt = {}) {
   const cell = (spot, cls, kids) => {
     const a = mine?.[spot] ?? 0, win = opt.win != null && bacWins(spot, opt.win), push = opt.win != null && a && bacOut(spot, a, opt.win).r === "push";
     const attrs = { class: `rl-cell bc-cell ${cls}${a ? " bet" : ""}${win ? " win" : ""}${opt.win != null && !win && !push && a ? " lost" : ""}`, "aria-label": `${BAC_SPOTS[spot][0]}${a ? `（${a}枚）` : ""}` };
-    const all = [...kids, h("small", { class: "dc-pay" }, `×${bacPayText(spot)}`), a ? h("i", { class: "rl-chip-on" }, rlAbbr(a)) : null];
+    const all = [...kids, h("small", { class: "dc-pay" }, `×${bacPayText(spot)}`), rlChipOn(spot, a, !!opt.tap)];
     return opt.tap ? h("button", { type: "button", ...attrs, onclick: () => opt.tap(spot) }, all) : h("div", attrs, all);
   };
   return h("div", { class: `bc-board${opt.tap ? "" : " ro"}`, role: opt.tap ? "group" : null, "aria-label": "賭けの盤（バカラ）" },
@@ -13544,7 +13593,7 @@ function crBoard(g, d) {
   const setAuto = (A) => { (RLX.auto ??= new Map()).set(g.id, A); if (sum) rlSetBets(g, d, { [`cx${A}`]: sum }); else paintGameLive(); };
   return h("div", { class: "cr-board" },
     h("button", { type: "button", class: `rl-cell cr-bet${sum ? " bet" : ""}`, "aria-label": `賭ける${sum ? `（${sum}枚）` : ""}`, onclick: () => rlPlace(g, `cx${auto}`) },
-      h("b", null, "BET"), h("span", null, sum ? `${sum} ${chU(g)}` : "タップでチップを置く"), sum ? h("i", { class: "rl-chip-on" }, rlAbbr(sum)) : null),
+      h("b", null, "BET"), h("span", null, sum ? `${sum} ${chU(g)}` : "タップでチップを置く"), rlChipOn("cx", sum, true)),
     h("div", { class: "cr-autos", role: "radiogroup", "aria-label": "自動で降りる倍率" }, h("small", null, "AUTO（自動で降りる）"),
       h("div", { class: "cr-auto-row" }, CR_AUTOS.map((A) => h("button", { type: "button", role: "radio", "aria-checked": String(A === auto), class: `cr-auto${A === auto ? " on" : ""}`, "aria-label": A ? `${crFmt(A)}（降りられる確率 ${crReach(A).toFixed(1)}%）` : "なし", onclick: () => setAuto(A) }, A ? [h("b", null, crFmt(A)), h("small", null, `成功 ${crReach(A).toFixed(1)}%`)] : "なし")))),
     h("p", { class: "dc-note" }, "倍率が上がっていく間に CASH OUT を押すと、賭けた額×その倍率がもらえます（もうけは賭けた額×(倍率−1)）。押す前にはじけると、賭けた分は負け。AUTO を決めておくと、その倍率で自動で降ります"));
@@ -13828,7 +13877,7 @@ function ccNextRound(g, st) {
   st.round += 1; st.prev = st.bets ?? null; st.bets = null; st.res = null; st.cc = null;
   st.oya = ccNextOya(g, st);
   const actors = g.players.filter((u) => u !== st.oya && (st.chips[u] ?? 0) >= Math.max(1, o.betMin));
-  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: cardEnds(g.opts, o.betSec),
+  return { update: { rl: st, phase: "bet", actKey: "b", actors, endsAt: rlBetEnds(g.opts, o.betSec),
     log: [...(g.log ?? []), gLog(`第${st.round}回です。親は${memberName(st.oya)}さん。子は賭けてください。`, null, { type: "rlBet", round: st.round, oya: st.oya })] } };
 }
 
@@ -14051,7 +14100,7 @@ const RL_POCKET = 360 / 37;
 // v103 玉が止まってから、入ったポケットへズームし始めるまで・ズームにかかる時間（秒）。数字はズームし終わってから出す
 const RL_ZOOM_AT = 1.1, RL_ZOOM_DUR = 1.4, RL_REVEAL = RL_ZOOM_AT + RL_ZOOM_DUR, RL_ZOOM_X = 2.7;
 // 数字が分かる（結果を見せてよい）瞬間：止まった時刻＋ズームの分（抽選は止まった瞬間）
-const rlRevealD = (g, sp) => (rlLottery(g) ? rlPlanOf(sp, rlLotPlan).D : rlDice(g) ? dcPlanOf(sp).D + DC_REVEAL : rlBac(g) ? bacPlanOf(sp.n).D + BAC_REVEAL : rlCrash(g) ? sp.dur / 1000 + CR_HOLD : rlCc(g) ? ccPlanOf(sp).D + CC_REVEAL : rlPlanOf(sp, rlCasinoPlan).D + RL_REVEAL);
+const rlRevealD = (g, sp) => (rlLottery(g) ? rlPlanOf(sp, rlLotPlan).D : rlDice(g) ? dcPlanOf(sp).D + DC_REVEAL : rlBac(g) ? bacPlanOf(sp.n).D + BAC_REVEAL + bacExtra(sp) : rlCrash(g) ? sp.dur / 1000 + CR_HOLD : rlCc(g) ? ccPlanOf(sp).D + CC_REVEAL : rlPlanOf(sp, rlCasinoPlan).D + RL_REVEAL);
 const RL_RT = 0.885, RL_RP = 0.612; // 玉が縁を転がる半径・ポケットの半径（円盤の絵の半径 100 に対する割合）
 // 動きの計画は、同じ回転（種・数字）なら1回だけ作って覚えておく（ゲームのデータには書かない）
 const RL_PLANS = new Map();
@@ -14353,6 +14402,9 @@ function rlMineMark(e, bets, hitN) {
   RL_ORDER.forEach((n, i) => {
     if (!spots.some((k) => rlWins(k, n))) return;
     kids.push(svgEl("path", { class: `rl-mine-p${n === hitN ? " win" : ""}`, d: rlSector((i - 0.5) * A, (i + 0.5) * A, 56, 78) }));
+    // v107 賭けた所が分かりやすいように、ポケットの真ん中に紫の点を置く
+    const [x, y] = rlXY(i * A, 61);
+    kids.push(svgEl("circle", { class: `rl-mine-d${n === hitN ? " win" : ""}`, cx: rlF(x), cy: rlF(y), r: 2.5 }));
   });
   e.mine.replaceChildren(...kids);
 }
@@ -14787,7 +14839,7 @@ function rlBoard(mine, opt = {}) {
   const cell = (spot, cls, style, label) => {
     const a = mine?.[spot] ?? 0, n = opt.others?.[spot] ?? 0, win = opt.win != null && rlWins(spot, opt.win);
     const attrs = { class: `rl-cell ${cls}${a ? " bet" : ""}${win ? " win" : ""}${opt.win != null && !win && a ? " lost" : ""}`, style, "aria-label": `${rlSpotName(spot)}${a ? `（${a}枚）` : ""}` };
-    const kids = [h("span", { class: "rl-cell-l" }, label), a ? h("i", { class: "rl-chip-on" }, rlAbbr(a)) : null, n ? h("i", { class: "rl-chip-o", title: `ほかの人 ${n}人` }, String(n)) : null];
+    const kids = [h("span", { class: "rl-cell-l" }, label), rlChipOn(spot, a, !!opt.tap), n ? h("i", { class: "rl-chip-o", title: `ほかの人 ${n}人` }, String(n)) : null];
     return opt.tap ? h("button", { type: "button", ...attrs, onclick: () => opt.tap(spot) }, kids) : h("div", attrs, kids);
   };
   const out = [h("div", { class: "rl-cell blank", style: "grid-column:1/3;grid-row:1" }, h("small", null, opt.note ?? "")), cell("n0", "num g", "grid-column:3/6;grid-row:1", "0")];
@@ -14904,11 +14956,39 @@ function rlCrowd(g) {
 // 玉が止まった瞬間に、画面（自分の賭けの結果など）を描き直す（その回で1回だけ予約）
 const RL_LAND = new Set();
 function rlAtLand(g, sp) {
-  const k = `${g.id}.${sp.seed}`;
+  const k = `${g.id}.${sp.seed}.${sp.bq?.length ?? 0}`;
   if (RL_LAND.has(k)) return;
   if (RL_LAND.size > 300) RL_LAND.clear();
   RL_LAND.add(k);
   setTimeout(() => { if (S.games.get(g.id)?.phase === "spin") { paintGameLive(); if (S.isAdmin) scheduleRender(); } }, Math.max(50, sp.at + rlRevealD(g, sp) * 1000 - nowS() + 40));
+}
+// v107 賭けの間、だれが「準備OK」かを全員の画面に出す。参加者はほかの人の操作（gameActs）を読めないので、
+// 管理者の端末が OK の人の一覧を games の rlOk に書く（同じ内容は書き直さない）
+const RL_OK = new Map();
+function rlSyncOk(g) {
+  const r = g.rl?.round, u = g.actors.filter((x) => rlParseBets(cardAct(g, "b", x, `r${r}`))?.ready);
+  const sig = `${r}:${u.join()}`;
+  if ((g.rlOk?.r === r && (g.rlOk?.u ?? []).join() === u.join()) || RL_OK.get(g.id) === sig) return;
+  RL_OK.set(g.id, sig);
+  const want = { r, u };
+  if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), rlOk: want });
+  updateDoc(D("games", g.id), { rlOk: want }).catch((e) => { RL_OK.delete(g.id); console.warn("rl ok", e); });
+}
+// 左右に分けて並べる（3人までは右だけ）。自分の分は手元の操作をすぐ反映する
+function rlOkRow(g, myReady = null) {
+  if (g.phase !== "bet" || !g.actors?.length) return null;
+  const me = S.user?.uid, r = g.rl?.round;
+  const okSet = new Set(S.isAdmin ? g.actors.filter((x) => rlParseBets(cardAct(g, "b", x, `r${r}`))?.ready) : g.rlOk?.r === r ? g.rlOk.u ?? [] : []);
+  if (myReady != null && g.actors.includes(me)) { if (myReady) okSet.add(me); else okSet.delete(me); }
+  const n = g.actors.filter((x) => okSet.has(x)).length, all = g.actors.length;
+  const pill = (u) => h("li", { class: `rl-ok-p${okSet.has(u) ? " ok" : ""}${u === me ? " me" : ""}` },
+    h("i", { "aria-hidden": "true" }, okSet.has(u) ? "✓" : "…"), h("span", null, memberName(u)));
+  const few = all <= 3, half = Math.ceil(all / 2);
+  const L = few ? [] : g.actors.slice(0, half), R = few ? g.actors : g.actors.slice(half);
+  return h("div", { class: `rl-okrow${few ? " few" : ""}${n === all ? " all" : ""}`, role: "status", "aria-label": `準備OK ${n} / ${all}人` },
+    few ? null : h("ul", { class: "rl-ok-side l" }, L.map(pill)),
+    h("div", { class: "rl-ok-mid", "aria-hidden": "true" }, h("b", null, `${n}/${all}`), h("small", null, n === all ? "ALL OK" : "OK")),
+    h("ul", { class: "rl-ok-side r" }, R.map(pill)));
 }
 function rlMemberBody(g) {
   const uid = S.user.uid, st = g.rl, o = rlO(g.opts), r = st.round, U = chU(g);
@@ -14929,7 +15009,7 @@ function rlMemberBody(g) {
   if (rlCc(g) && g.phase !== "bet") return ccMemberBody(g);
   if (g.phase === "bet") {
     const canBet = g.actors.includes(uid);
-    if (!canBet) return [h("section", { class: `cx-table rl-x${rlCc(g) ? " cc" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }), h("p", { class: "cx-note rl-wait" }, rlCc(g) && st.oya === uid ? "あなたが親です ・ 子が賭けています" : chips <= 0 ? `${U} 0 ・ この回は見るだけ` : "ほかの人が賭けています"), rlCc(g) ? ccHands(g) : rlHistEl(g))];
+    if (!canBet) return [h("section", { class: `cx-table rl-x${rlCc(g) ? " cc" : ""}` }, rlWheel(g, "m", { size: "big", loud: true }), h("p", { class: "cx-note rl-wait" }, rlCc(g) && st.oya === uid ? "あなたが親です ・ 子が賭けています" : chips <= 0 ? `${U} 0 ・ この回は見るだけ` : "ほかの人が賭けています"), rlOkRow(g), rlCc(g) ? ccHands(g) : rlHistEl(g))];
     const d = rlDraft(g), sum = rlSum(d.bets), ch = rlChipChoices(o, chips);
     let v = RLX.chip.get(g.id);
     if (!ch.includes(v)) { v = ch.find((x) => x >= 5) ?? ch[0]; RLX.chip.set(g.id, v); }
@@ -14948,7 +15028,7 @@ function rlMemberBody(g) {
       cxBtn("dup", "前回", "btn-filled", { disabled: !canPrev, onclick: () => { d.hist = []; rlSetBets(g, d, { ...prev }); } }),
       cxBtn("plus", "×2", "btn-filled", { disabled: !canDbl, onclick: () => { d.hist = []; rlSetBets(g, d, Object.fromEntries(Object.entries(d.bets).map(([k, a]) => [k, a * 2]))); } }),
       cxBtn("check", d.ready ? "OK済" : "準備OK", `btn-filled${d.ready ? " on" : sum ? " need" : ""}`, { onclick: () => { d.ready = !d.ready; rlSendDraft(g, d); paintGameLive(); } }));
-    return [h("section", { class: "cx-table rl-x bet" }, head,
+    return [h("section", { class: "cx-table rl-x bet" }, head, rlOkRow(g, !!d.ready),
       rlCc(g) ? ccBoard(g, d) : rlDice(g) ? dcBoard(d.bets, { tap: (s) => rlPlace(g, s) }) : rlBac(g) ? bacBoard(d.bets, { tap: (s) => rlPlace(g, s) }) : rlCrash(g) ? crBoard(g, d) : rlBoard(d.bets, { tap: (s) => rlPlace(g, s), note: o.betMax ? `1か所 ${o.betMin}–${o.betMax}` : `1か所 ${o.betMin}〜` }),
       chipRow, acts,
       h("p", { class: "cx-note" }, `${d.ready ? "準備OK ・ 締め切りまで変えられます" : "タップで置く ・ 締め切りまで変えられます"}${rlCc(g) ? ` ・ ${o.betMin}${o.betMax ? `–${o.betMax}` : "〜"}` : rlDice(g) || rlBac(g) || rlCrash(g) ? ` ・ 1か所 ${o.betMin}${o.betMax ? `–${o.betMax}` : "〜"}` : o.partage ? " ・ 0は赤黒などが半分戻る" : " ・ 0は外側の賭けが負け"}`))];
@@ -14960,7 +15040,9 @@ function rlMemberBody(g) {
   const n = landed && sp ? sp.n : null;
   if (n != null) return [h("section", { class: "cx-table rl-x spin landed" }, rlWheel(g, "m", { size: "big", loud: true, cash: true }), rlResTable(g, n),
     g.phase === "spin" ? null : rlScoreTable(g))];
+  const gate = bacGateBtn(g);
   return [h("section", { class: `cx-table rl-x spin${landed ? " landed" : ""}` }, rlWheel(g, "m", { size: "big", loud: true, cash: true }),
+    gate ? h("div", { class: "cx-acts" }, gate) : null,
     h("div", { class: "rl-me" }, h("div", { class: "gl-label" }, "MY BETS", my ? h("small", null, ` ${rlSum(my)} ${U}${n != null && st.res?.[uid] ? ` ・ ${sgn(st.res[uid].d)}` : ""}`) : null),
       rlBetsList(g, my, n))),
     h("div", { class: "rl-crowd-wrap" }, rlCrowd(g))];
@@ -15036,10 +15118,10 @@ function cardTick(g) {
   } else if (g.kind === "rl") {
     // v100 ルーレット：賭けの締め切り（時間切れ・全員が準備OK）→ 回す → 全員の画面で止まってから精算 → 次の回
     const st = g.rl, r = `r${st.round}`;
-    if (g.phase === "bet" && !manual && (timeUp || (g.actors.length > 0 && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready) && cardGrace(g)))) fn = rlSpin;
+    if (g.phase === "bet" && !manual && ((timeUp && !rlWaitAll(g.opts)) || ((g.actors.length > 0 || rlWaitAll(g.opts)) && g.actors.every((u) => rlParseBets(cardAct(g, "b", u, r))?.ready) && cardGrace(g)))) fn = rlSpin;
     else if (g.phase === "ready" && g.actKey === "s" && (timeUp || cardAct(g, "s", rlSpinner(g), r) != null)) fn = rlSpin;
     else if (g.phase === "roll" && rlCc(g) && (timeUp || cardAct(g, "t", g.actors[0], `${r}t${st.cc?.seq ?? 0}`) != null)) fn = rlSpin;
-    else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + (rlLottery(g) ? 0 : (rlDice(g) ? DC_REVEAL : rlBac(g) ? BAC_REVEAL : rlCrash(g) ? CR_HOLD : rlCc(g) ? CC_REVEAL + CC_HOLD : RL_REVEAL) * 1000) + 400) fn = rlSettle;
+    else if (g.phase === "spin" && st.spin && now >= st.spin.at + st.spin.dur + (rlLottery(g) ? 0 : (rlDice(g) ? DC_REVEAL : rlBac(g) ? BAC_REVEAL + bacExtra(st.spin) : rlCrash(g) ? CR_HOLD : rlCc(g) ? CC_REVEAL + CC_HOLD : RL_REVEAL) * 1000) + 400) fn = rlSettle;
     else if (g.phase === "result" && g.endsAt && now >= g.endsAt) fn = rlNext;
   } else {
     const st = g.dfg;
@@ -15088,13 +15170,13 @@ function cardPrompt(g) {
       const u = ccRoller(g);
       if (g.phase === "roll") return `${memberName(u)}さん${u === g.rl.oya ? "（親）" : ""}が振る番です（${(g.rl.cc?.k ?? 0) + 1}投目）。自分のスマホの「振る」でサイコロを投げます。`;
       if (g.phase === "spin") return `${memberName(u)}さんがサイコロを投げました…`;
-      if (g.phase === "bet") return `親は${memberName(g.rl.oya)}さん。子は親と勝負する額を賭けてください。${man ? "ディーラー（管理者）が締め切ると、親から振ります。" : "全員が「準備OK」を押すか、時間になると締め切って親から振ります。"}`;
+      if (g.phase === "bet") return `親は${memberName(g.rl.oya)}さん。子は親と勝負する額を賭けてください。${man ? "ディーラー（管理者）が締め切ると、親から振ります。" : "全員が「準備OK」を押したら、親から振ります。"}`;
     }
     if (g.phase === "spin") return rlLottery(g) ? "回っています…" : rlDice(g) ? "ノーモアベット。サイコロを振っています…" : rlBac(g) ? "ノーモアベット。カードを配っています…" : rlCrash(g) ? "倍率が上がっています。はじける前に CASH OUT！" : "ノーモアベット。玉が回っています…";
     if (g.phase === "result" && rlLottery(g)) return `「${g.rl?.hist?.at(-1) ?? "?"}」に決まりました。${rlIsLast(g) ? "まもなく終わります。" : "まもなく次の回です。"}`;
     if (g.phase === "result" && rlIsLast(g)) return "最後の回の結果です。まもなく順位が出ます。";
     if (g.phase === "result") return `この回の結果です。${rlO(g.opts).autoNext && !man ? "まもなく次の回が始まります。" : man ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。"}`;
-    return `${rlDice(g) ? "小・大・合計などにチップを置いてください。" : rlBac(g) ? "プレイヤー・バンカー・タイなどにチップを置いてください。" : rlCrash(g) ? "賭ける額と、自動で降りる倍率（AUTO）を決めてください。" : "数字や赤・黒などにチップを置いてください。"}${man ? `ディーラー（管理者）が締め切ると${rlDice(g) ? "サイコロを振ります" : rlBac(g) ? "カードを配ります" : rlCrash(g) ? "倍率が上がり始めます" : "玉を投げます"}。` : "全員が「準備OK」を押すか、時間になると締め切ります。"}`;
+    return `${rlDice(g) ? "小・大・合計などにチップを置いてください。" : rlBac(g) ? "プレイヤー・バンカー・タイなどにチップを置いてください。" : rlCrash(g) ? "賭ける額と、自動で降りる倍率（AUTO）を決めてください。" : "数字や赤・黒などにチップを置いてください。"}${man ? `ディーラー（管理者）が締め切ると${rlDice(g) ? "サイコロを振ります" : rlBac(g) ? "カードを配ります" : rlCrash(g) ? "倍率が上がり始めます" : "玉を投げます"}。` : rlDice(g) ? "全員が「準備OK」を押したら、サイコロを振ります。" : "全員が「準備OK」を押すか、時間になると締め切ります。"}`;
   }
   const manual = cardManual(g.opts), auto = (g.kind === "bj" ? bjO(g.opts) : dfgO(g.opts)).autoNext && !manual;
   const after = auto ? "まもなく次の回が始まります。" : manual ? "ディーラー（管理者）が「次の回へ」を押すと、次の回が始まります。" : "管理者が「次の回へ」を押すと、次の回が始まります。";
@@ -15222,6 +15304,16 @@ function cxAnim(el, key, isNew, kind, dur, wait = 0) {
   el.style.animationDelay = `${a[0] - now}ms`;
   return a[0] + a[2] - now; // 終わるまでの残り
 }
+// v107 一度だけ出す動き（合計のポップ・BLACKJACK の光など）は、最初に出した時刻を覚えておく。
+//   描き直しても、続きから動かす（負の animation-delay）。それまでは描き直すたびに最初から出直し、点滅して見えた
+GC.at = new Map();
+function cxAt(key, wait = 0) {
+  const now = Date.now();
+  if (!GC.at.has(key)) { GC.at.set(key, now + Math.max(0, wait)); if (GC.at.size > 800) GC.at.delete(GC.at.keys().next().value); }
+  return GC.at.get(key) - now; // 正：まだ待つ ms ／ 負：始まってからの ms
+}
+// 「あと何 ms 待ってから出すか」を、続きから動くスタイルにする（終わって十分たったものは何も付けない）
+const cxLateAt = (key, wait, cls = "late", span = 600) => { const d = cxAt(key, wait); return d > -span ? { cls: ` ${cls}`, style: `--late:${d}ms;` } : { cls: "", style: "" }; };
 const cxFan = (cs, cls = "", zone = null, step = 300) => {
   let d = 0, t = 0;
   const slow = cls.includes("bj-slow"), dl = cls.includes("bj-dl"), dealMs = dl ? BJ_DEALER_FLIP_MS : slow ? BJ_FLIP_MS : CX_DEAL_MS, flipMs = dl ? BJ_DEALER_FLIP_MS : slow ? BJ_FLIP_MS : CX_FLIP_MS;
@@ -15356,10 +15448,13 @@ function cardMemberBody(g) {
     // ディーラーのカードは先に作って、めくり終わるまでの時間を知る（勝ち負けは、めくり終わってから出す）
     const dFan = dealer.length ? cxFan(dealer, " bj-slow bj-dl", `d${g.id}.${st.round}`, BJ_DEALER_STEP) : cxFan([null, null], " ghost");
     const late = Number(dFan.dataset.t) || 0;
-    const lateA = late ? { style: `--late:${late}ms` } : {};
-    const lateC = late ? " late" : "";
+    // v107 勝ち負け・ディーラーの合計は、めくり終わってから出す。描き直しても出直さない（最初に出した時刻から続ける）
+    const lateL = cxLateAt(`dl:${g.id}.${st.round}.${dealer.join()}`, late);
+    const lateA = lateL.style ? { style: lateL.style } : {};
+    const lateC = lateL.cls;
     // 自分の手
     const U = chU(g);
+    const handT = new Map(); // 手ごとの「カードの動きが終わるまでの残り ms」
     const waitText = g.phase === "bet" ? (g.actors.includes(uid) ? "YOUR HAND" : chips <= 0 ? `${U} 0` : "ほかの人が BET 中")
       : g.phase === "ended" ? "END" : chips <= 0 ? `${U} 0` : "この回は見送り";
     const hands = keys.length
@@ -15375,11 +15470,15 @@ function cardMemberBody(g) {
           fan.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); bjOpenCard(S.games.get(g.id) ?? g, k); } });
         }
         const bust = full && bjValue(hd.cards).total > 21;
-        const bfx = bust ? fallFx(`bust:${g.id}:${st.round}:${k}`, true, Number(fan.dataset.t) || 0) : { cls: "", style: "" }; // バーストは、引いたカードがめくれ終わってから光らせる
-        const bjA = isBJ || bfx.style ? { style: `${isBJ ? `--bjd:${Number(fan.dataset.t) || 0}ms;` : ""}${bfx.style}` } : {};
+        const ft = Number(fan.dataset.t) || 0, zk = `h${g.id}.${st.round}.${k}`;
+        handT.set(k, ft);
+        const bfx = bust ? fallFx(`bust:${g.id}:${st.round}:${k}`, true, ft) : { cls: "", style: "" }; // バーストは、引いたカードがめくれ終わってから光らせる
+        // v107 合計は、カードが表になって数字が見えてから出す（BLACKJACK の光も同じ時刻から。描き直しても出直さない）
+        const tl = closed ? { cls: "", style: "" } : cxLateAt(`tot:${zk}:${shown.join()}`, ft);
+        const bjA = isBJ || bfx.style ? { style: `${isBJ ? `--bjd:${cxAt(`bj:${zk}`, ft)}ms;` : ""}${bfx.style}` } : {};
         return h("div", { class: `cx-hand${keys.length > 1 && k === cur ? " cur" : ""}${hd.res ? ` r-${hd.res}` : ""}${isBJ ? " is-bj" : ""}${bust ? " is-bust" : ""}${bfx.cls}`, ...bjA },
           fan,
-          h("div", { class: `cx-total${closed ? " need" : ""}` }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${closed ? `TAP ▸ OPEN（${closed}）` : isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
+          h("div", { class: `cx-total${closed ? " need" : ""}${isBJ ? "" : tl.cls}`, ...(!isBJ && tl.style ? { style: tl.style } : {}) }, `${keys.length > 1 ? `#${bjNo(k)} · ` : ""}${closed ? `TAP ▸ OPEN（${closed}）` : isBJ ? "BLACKJACK" : bjTot(hd.cards, hd.split)}${hd.doubled ? " · DBL" : ""}`),
           hd.res ? h("div", { class: `cx-res${lateC}`, title: BJ_RES[hd.res], ...lateA }, `${BJ_RES_S[hd.res]} ${sgn(hd.delta)}`) : hd.surr ? h("div", { class: "cx-res" }, "SURR") : null);
       }))
       : g.phase === "bet" && g.actors.includes(uid) ? null // 賭けを選ぶ間は、空の手札の枠を出さない（ボタンを1画面に収めるため）
@@ -15419,6 +15518,14 @@ function cardMemberBody(g) {
           : [bjHandsOf(st, uid).length > 1 ? `#${bjNo(cur)} の手` : null, can.d ? `DOUBLE → BET ${hd.bet * 2} ・ +1枚` : null, can.p ? `SPLIT → +${hd.bet} ${U}` : null, can.r ? `SURR. → ${Math.floor(hd.bet / 2)} ${U} 戻る` : null].filter(Boolean).join(" ・ "))];
     } else if (g.phase === "play" && keys.length) ctl = h("p", { class: "cx-note" }, cardManual(g.opts) && !g.actors.length ? "✓ 全員 STAND ・ ディーラーがカードを開けるのを待機中…"
       : bjTap(g) && !bjCur(st, uid) && Object.keys(st.hands).every((k) => st.hands[k].done) && g.actors.length ? "✓ STAND ・ ほかの人がカードを開くのを待っています…" : "✓ STAND ・ 待機中…");
+    // v107 ボタン（OPEN・保険・HIT / STAND など）は、カードが届いて表になってから出す。待つ間は見えず押せない
+    if (ctl && keys.length && g.phase !== "bet") {
+      const dk = `d${g.id}.${st.round}:0:${st.dealer?.[0]}`, da = GC.anim.get(dk);
+      const wait = Math.max(0, ...keys.map((k) => handT.get(k) || 0), g.phase === "insure" && da ? da[0] + da[2] - Date.now() : 0);
+      const ak = `act:${g.id}.${st.round}.${g.phase}.${cur ?? ""}.${keys.map((k) => bjShown(g, st, k).join()).join("|")}`;
+      const w = cxLateAt(ak, wait, "wait", 400);
+      if (w.cls) for (const el of [ctl].flat()) if (el) { el.classList.add("wait"); el.style.setProperty("--late", w.style.slice(7, -1)); }
+    }
     // ほかの人の席
     const others = cxAfter(g.players, uid), crowd = others.length > BJ_RING_MAX;
     // バーストした人（ほかの人）：その瞬間に2秒光らせる
@@ -15468,7 +15575,8 @@ function cardMemberBody(g) {
         settled.length ? h("div", { class: `cx-sum ${sum > 0 ? "plus" : sum < 0 ? "minus" : ""}${cxOnce(`s${g.id}.${st.round}`) ? " pop" : ""}${lateC}`, ...lateA }, `${sgn(sum)} `, h("small", null, U)) : null,
         st.ins?.[uid] ? h("div", { class: "cx-note" }, `INS ${st.ins[uid]}${st.insRes?.[uid] != null ? ` · ${sgn(st.insRes[uid])}` : ""}`) : null),
         (() => { const dBust = !hide && (st.dealer?.length ?? 0) > 2 && bjValue(st.dealer).total > 21, dfx = dBust ? fallFx(`bust:${g.id}:${st.round}:dealer`, true, late) : { cls: "", style: "" };
-          return h("div", { class: `cx-dealer${!hide && bjIsBJ(st.dealer ?? []) ? " is-bj" : ""}${dBust ? " is-bust" : ""}${dfx.cls}`, ...(late || dfx.style ? { style: `${late ? `--bjd:${late}ms;` : ""}${dfx.style}` } : {}) },
+          const dIsBJ = !hide && bjIsBJ(st.dealer ?? []);
+          return h("div", { class: `cx-dealer${dIsBJ ? " is-bj" : ""}${dBust ? " is-bust" : ""}${dfx.cls}`, ...(dIsBJ || dfx.style ? { style: `${dIsBJ ? `--bjd:${cxAt(`bjd:${g.id}.${st.round}`, late)}ms;` : ""}${dfx.style}` } : {}) },
           h("div", { class: `cx-total${lateC}`, ...lateA }, h("small", null, "DEALER"), dealer.length ? (hide ? bjTot([st.dealer[0]]) : bjIsBJ(st.dealer) ? "BLACKJACK" : bjTot(st.dealer)) : "—"),
           dFan); })()),
       h("div", { class: "cx-me" }, hands, ctl)));
@@ -15731,6 +15839,7 @@ function gameAutoTick() {
   if (!S.isAdmin || !S.user || !CLOCK.ready) return;
   const now = nowS();
   for (const g of S.games.values()) {
+    if (g.kind === "rl" && g.phase === "bet") rlSyncOk(g);
     if (isCardKind(g.kind) && gLive(g) && !GBUSY.has(g.id)) { cardTick(g); continue; }
     if (g.kind === "ng" && gLive(g)) ngSyncOutWords(g); // 自動の司会がオフでも行う
     if (g.kind === "num" && g.phase === "rank") numSyncBoard(g);
@@ -15841,6 +15950,11 @@ function cardForwardFn(g) {
 }
 // 管理者の画面の「ディーラーの操作」（大きいボタン1つと、いまの状況）
 function cardDealerBox(g) {
+  if (g.kind === "rl" && rlBac(g) && g.phase === "spin") {
+    const b = bacGateBtn(g, "gp-dealer-btn");
+    return b ? h("div", { class: "gp-dealer" }, h("div", { class: "gp-dealer-head" }, h("b", null, "ディーラーの操作"),
+      h("small", null, "バンカーのカードは、押すまで伏せたまま待ちます。プレイヤーのカードを見てから、好きなときに絞ってください。")), b) : null;
+  }
   const label = cardDealerLabel(g), fn = cardForwardFn(g);
   if (!label || !fn) return null;
   let sub = null, ready = true;
@@ -17451,11 +17565,11 @@ function gamesAdmin() {
   // v103 大小（サイコロ）の決まり（カジノの設定の上に出す）
   const dcInfo = group("大小（サイコロ）の配当", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
     "小（合計4〜10）・大（11〜17）・奇数・偶数：1倍（ゾロ目が出たら負け）／合計 4・17：60倍、5・16：30倍、6・15：17倍、7・14：12倍、8・13：8倍、9〜12：6倍／ゾロ目どれでも：30倍、決めた数のゾロ目：180倍／決めた数のダブル（2個以上）：10倍／2つの目の組み合わせ：5倍／1つの目：出た個数ぶん（1〜3倍）"))],
-    "配当は gamerules.com の表に合わせました（お店によって少し違います）。サイコロは中国式（1 と 4 が赤い）。動きと出る目は、台の突き上げ・重力・ぶつかり・摩擦の計算で決まり、全員の画面で同じ動きになります。");
+    "配当は gamerules.com の表に合わせました（お店によって少し違います）。サイコロは中国式（1 と 4 が赤い）。全員が「準備OK」を押すまで振りません（賭ける時間の制限はありません。押さない人がいて止まったときは、管理者の「次の場面へ」で振れます）。動きと出る目は、台の突き上げ・重力・ぶつかり・摩擦の計算で決まり、全員の画面で同じ動きになります。");
   // v104 バカラの決まり
   const bacInfo = group("バカラの決まりと配当", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
     "カードの数え方：A＝1、2〜9＝そのまま、10・J・Q・K＝0。合計の1の位（例 7＋8＝15 → 5）が9に近いほうの勝ち。／配り方：プレイヤー・バンカーに2枚ずつ。どちらかが8・9（ナチュラル）なら終わり。プレイヤーは0〜5で3枚目を引く。バンカーはプレイヤーの3枚目に応じた決まりで引く（自動）。／配当：プレイヤー 1倍・バンカー 0.95倍（手数料5%・端数切り捨て）・タイ 8倍（タイのとき、プレイヤー・バンカーの賭けは戻る）・プレイヤーのペア／バンカーのペア（最初の2枚が同じ数字）11倍"))],
-    "決まりと配当は、カジノでいちばん多い「プント・バンコ」に合わせました（お店によって少し違います）。トランプは8組（416枚）を混ぜたシューから配り、残りが16枚を切ったら混ぜ直します。カードは全員の画面で同じ時刻に、少しずつ絞ってめくります。");
+    "決まりと配当は、カジノでいちばん多い「プント・バンコ」に合わせました（お店によって少し違います）。トランプは8組（416枚）を混ぜたシューから配り、残りが16枚を切ったら混ぜ直します。カードは全員の画面で同じ時刻に、少しずつ絞ってめくります。ディーラーを「管理者が手で進める」にしたときは、バンカーのカードを絞る前で止まり、管理者が「BANKER を絞る」を押したときに絞り始めます（プレイヤーのカードを見てから、好きなときに絞れます）。");
   // v104 クラッシュの決まり
   const crInfo = group("クラッシュの決まり", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
     "倍率は 1.00x から上がっていきます（6秒で2倍・12秒で4倍・約20秒で10倍）。はじける前に CASH OUT を押すと、賭けた額×その倍率がもらえます（もうけ＝賭けた額×(倍率−1)、端数切り捨て）。押す前にはじけると、賭けた分は負け。AUTO（1.20x〜20x）を決めておくと、その倍率で自動で降ります。／はじける倍率：0.99÷(1−くじ)。約50回に1回（2%）は 1.00x ですぐはじけ、2.00x まで届くのは約半分（49.5%）、10x は約10回に1回。上限 100x。どの倍率で降りても、平均すると賭けの約1%が負けになる（控除 1%）"))],
@@ -17466,7 +17580,7 @@ function gamesAdmin() {
   const ccInfo = group("チンチロの決まり", [h("div", { class: "cell dc-paytab" }, h("div", { class: "cell-sub" },
     "役（強い順）：ピンゾロ 1・1・1（×5）＞ゾロ目 6〜2（×3）＞シゴロ 4・5・6（×2）＞目（2個そろったときの残り1個の数。6の目〜1の目、×1）＞目なし・ションベン（負け）＞ヒフミ 1・2・3（2倍払い）。／目なしは3回まで振り直し。サイコロが丼の外に出たらションベンで、その場で負け。／親が ピンゾロ・ゾロ目・シゴロ なら子全員から倍率ぶん取り、ヒフミなら子全員に2倍、目なし・ションベンなら子全員に1倍を払い、子は振りません。親が「目」なら子が1人ずつ振り、親より強ければ子の勝ち（子の役の倍率）、弱ければ子の負け（ヒフミは2倍）、同じ目は分け。／親のチップが足りないときは、勝った子に割合で払います。")),
     field("親を回す回数", ccCycles), field("1人の振る持ち時間（過ぎると自動で振ります）", ccTurnSec)],
-    "役と倍率は、チンチロでよく使われる決まりに合わせました（地方や遊ぶ人によって少し違います）。親は席の順に交代し、チップがなくなった人は親を飛ばします。サイコロは丼（直径 約16cm・深さ 約6cm）に手から投げ入れたものとして、重力・はね返り・摩擦・丼の曲面とふち・サイコロどうしのぶつかりを計算して動かし、出る目は計算の結果で決まります（全員の画面で同じ動き）。");
+    "役と倍率は、チンチロでよく使われる決まりに合わせました（地方や遊ぶ人によって少し違います）。親は席の順に交代し、チップがなくなった人は親を飛ばします。子の全員が「準備OK」を押すまで親は振りません（賭ける時間の制限はありません。押さない人がいて止まったときは、管理者の「次の場面へ」で進められます）。サイコロは丼（直径 約16cm・深さ 約6cm）に手から投げ入れたものとして、重力・はね返り・摩擦・丼の曲面とふち・サイコロどうしのぶつかりを計算して動かし、出る目は計算の結果で決まります（全員の画面で同じ動き）。");
   const rlModeGroup = group("ルーレットの種類", [h("div", { class: "cell seat-cell" }, rlMode)]);
   const rlOpts = h("div", null, rlModeGroup, dcInfo, bacInfo, crInfo, ccInfo, rlCasinoBox, rlLotBox);
   // v103 大小は、ルーレットの仕組みを使う（kind は rl、opts.mode は dice）
@@ -17594,9 +17708,9 @@ function gamesAdmin() {
     wolfOpts.hidden = k !== "wolf"; wordOpts.hidden = k !== "word"; ngOpts.hidden = k !== "ng"; numOpts.hidden = k !== "num"; bjOpts.hidden = k !== "bj"; dfgOpts.hidden = k !== "dfg"; rlOpts.hidden = k !== "rl";
     const rlLot = rlModeV() === "lottery", rlMan = rlDealer.value === "manual";
     rlCasinoBox.hidden = rlLot; rlLotBox.hidden = !rlLot;
-    rlTimer.closest(".cell").hidden = !rlMan; rlAuto.closest(".cell").hidden = rlMan;
+    rlTimer.closest(".cell").hidden = !rlMan || dice || ccm; rlAuto.closest(".cell").hidden = rlMan;
     rlResult.closest(".cell").hidden = rlMan || !rlAuto.checked;
-    rlBetSec.closest(".cell").hidden = rlMan && !rlTimer.checked;
+    rlBetSec.closest(".cell").hidden = (rlMan && !rlTimer.checked) || dice || ccm;
     rlReadySec.closest(".cell").hidden = rlSpinBy.value !== "turn";
     rlCount.textContent = `${rlItemList().length}個`;
     nightSec.closest(".cell").hidden = voteSec.closest(".cell").hidden = !auto.checked;
@@ -18054,6 +18168,11 @@ const LOBBY_ADMIN_TABS = [
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
 
+// v107 参加者のスマホ：上のボタンで開くチーム・表メモ／下の切り替えでいま出している欄
+const MEMBER_TOP_TEAM = { key: "team", icon: "flag", label: "チーム", view: () => { const v = memberTeam({ compact: true }); v.el.querySelector(":scope > .section-title")?.remove(); return v; }, sheet: true };
+const MEMBER_TOP_NOTES = { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ withTitle: false }), sheet: true };
+const MEMBER_SEC = { key: "home" };
+let memberGo = null; // 参加者のスマホの欄を切り替える（buildMemberPageShell が設定する）
 const MEMBER_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: memberHome },
   { key: "team", icon: "flag", label: "チーム", view: memberTeam },
@@ -18068,16 +18187,16 @@ const MEMBER_TABS = [
 ];
 const ADMIN_TABS = [
   { key: "home", icon: "megaphone", label: "お知らせ", view: adminAnnouncements },
-  { key: "team", icon: "flag", label: "チーム", view: adminTeams },
+  { key: "team", icon: "flag", label: "チーム", view: adminTeams, mobileSheet: true }, // v107 スマホは上のボタン（小窓）
   { key: "points", icon: "trophy", label: "ポイント", view: adminPoints },
   { key: "side", icon: "note", label: "表・メモ", backLabel: "表・メモ・参加者", view: adminSide, desktopOnly: true },
-  { key: "notes", icon: "note", label: "表・メモ", view: () => notesView({ admin: true }), mobileOnly: true },
+  { key: "notes", icon: "note", label: "表・メモ", view: (o = {}) => notesView({ admin: true, withTitle: o.withTitle !== false }), mobileOnly: true, mobileSheet: true },
   { key: "members", icon: "people", label: "参加者", view: adminMembers, mobileOnly: true },
-  { key: "quiz", icon: "quiz", label: "クイズ・ゲーム", view: quizAndGames, sheet: true },
+  { key: "quiz", icon: "quiz", label: "クイズ・ゲーム", tabLabel: "クイズ", view: quizAndGames, sheet: true, mobileTab: true }, // v107 スマホは下のタブ
   { key: "allocs", icon: "bed", label: "部屋・車", view: adminAllocs, sheet: true },
   { key: "money", icon: "check", label: "出欠・集金", view: adminMoney, sheet: true },
   { key: "checklist", icon: "list", label: "チェック", view: checklistAdmin, sheet: true },
-  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true },
+  { key: "chat", icon: "chat", label: "チャット", view: chatView, sheet: true, mobileTab: true },
   { key: "map", icon: "map", label: "地図", view: mapView, sheet: true },
   { key: "settings", icon: "gear", label: "設定", view: settingsView, sheet: true },
 ];
@@ -18168,8 +18287,9 @@ function paintStatus(status) {
 }
 
 function buildMobileShell(allTabs) {
-  const tabs = allTabs.filter((t) => !t.sheet && !t.desktopOnly);
-  const sheetTabs = allTabs.filter((t) => t.sheet);
+  // v107 mobileTab：スマホでは下のタブ（クイズ・チャット）／mobileSheet：スマホでは上のボタン（チーム・表メモ）
+  const tabs = allTabs.filter((t) => (!t.sheet || t.mobileTab) && !t.desktopOnly && !t.mobileSheet);
+  const sheetTabs = allTabs.filter((t) => (t.sheet && !t.mobileTab) || t.mobileSheet);
   const navTitle = h("div", { class: "nav-title" });
   const appName = profileSwitcher("app-name");
   const status = statusBar();
@@ -18181,7 +18301,7 @@ function buildMobileShell(allTabs) {
         if (S.tab === t.key) return window.scrollTo({ top: 0, behavior: "smooth" });
         S.tab = t.key; shell.view = null; scheduleRender(); window.scrollTo(0, 0);
       },
-    }, icon(t.icon), h("span", null, t.label))));
+    }, icon(t.icon), h("span", null, t.tabLabel ?? t.label))));
   const chip = S.isAdmin ? null : meChip();
   const gears = h("div", { class: "nav-left" }, sheetTabs.map((t) => h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   // 管理者の「管理者1」は、上のボタンの列ではなく旅行名の行の右端に出す（上の列に置くと、ボタンが7個並ぶ幅のスマホでは更新ボタンに重なって押せなかった）
@@ -18222,6 +18342,7 @@ function buildMobileShell(allTabs) {
       paintSheet();
       requestAnimationFrame(fitTitle); // 地図のボタンの表示・非表示で左の列の幅が変わる
     },
+    partial(kinds) { if (this.view && ((S.tab === "quiz" && (kinds.has("quiz") || kinds.has("game"))) || (S.tab === "chat" && kinds.has("chat")))) this.view.update(); },
   };
 }
 
@@ -18358,43 +18479,50 @@ function buildMemberPageShell() {
     { key: "archives", label: "過去旅行資料", view: memberArchives({ compact: true }) },
   ] : [
     { key: "home", label: "お知らせ", view: memberHome({ compact: true }) },
-    { key: "team", label: "チーム", view: memberTeam({ compact: true }) },
     noPoints() ? null : { key: "points", label: "ポイント", view: memberPoints({ compact: true }) },
-    { key: "notes", label: "表・メモ", view: notesView({ compact: true }) },
     { key: "money", label: "出欠", view: memberMoney({ compact: true, pinned: "split" }) }, // 上部のボタンは短く（見出しは「出欠・集金」）
     { key: "checklist", label: "チェック", view: checklistMember({ compact: true }) },
+    { key: "chat", label: "チャット", view: chatView() }, // v107 チャットは下の切り替えへ（チーム・表メモは上のボタンへ）
   ].filter(Boolean);
   const summary = memberSummary();
   const chip = lobby ? null : meChip();
   const navTitle = h("div", { class: "nav-title" });
-  const gear = h("div", { class: "nav-left" }, lobby ? null : h("span", { class: "live-btns" }), (lobby ? LOBBY_MEMBER_TABS : MEMBER_TABS).filter((t) => t.sheet && !t.desktopOnly).map((t) =>
+  // v107 上のボタン：チーム・表メモ（小窓で開く）＋部屋・車・地図・設定。チャットは下の切り替えにある
+  const topTabs = lobby ? LOBBY_MEMBER_TABS.filter((t) => t.sheet && !t.desktopOnly && t.key !== "chat")
+    : [MEMBER_TOP_TEAM, MEMBER_TOP_NOTES, ...MEMBER_TABS.filter((t) => t.sheet && !t.desktopOnly && t.key !== "chat")];
+  const gear = h("div", { class: "nav-left" }, lobby ? null : h("span", { class: "live-btns" }), topTabs.map((t) =>
     h("button", { class: "nav-gear", "data-sheet": t.key, "aria-label": t.label, onclick: () => openSheet(t) }, icon(t.icon))), refreshButton());
   const header = h("header", { class: "navbar" }, gear, navTitle, chip);
   const switcher = profileSwitcher("big");
   const title = h("h1", { class: "large-title" }, switcher);
   const status = statusBar();
-  const jump = h("nav", { class: "jump", "aria-label": "セクションへ移動" }, h("div", { class: "seg" }, sections.map((sec) =>
-    h("button", {
-      type: "button", "data-jump": sec.key,
-      onclick: () => document.getElementById(`sec-${sec.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" }),
-    }, sec.label))));
-  const main = h("main", null, sections.map((sec) => h("section", { class: "page-section", id: `sec-${sec.key}` }, sec.view.el)));
+  // v107 縦一列ではなく、押した欄だけを下に出す（管理者のタブと同じ考え方）。切り替えるときは、ふわっと出す
+  if (!sections.some((x) => x.key === MEMBER_SEC.key)) MEMBER_SEC.key = sections[0].key;
+  const secEls = new Map(sections.map((sec) => [sec.key, h("section", { class: "page-section", id: `sec-${sec.key}` }, sec.view.el)]));
+  const main = h("main", { class: "member-main" });
+  const jump = h("nav", { class: "jump", "aria-label": "画面を切り替える" }, h("div", { class: "seg", role: "tablist" }, sections.map((sec) =>
+    h("button", { type: "button", role: "tab", "data-jump": sec.key, onclick: () => go(sec.key, true) }, sec.label))));
+  const go = (key, user = false) => {
+    if (!secEls.has(key)) return;
+    const same = MEMBER_SEC.key === key && main.firstChild === secEls.get(key);
+    MEMBER_SEC.key = key;
+    for (const b of jump.querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.jump === key));
+    if (!same) { if (user) sections.find((x) => x.key === key)?.view.update(); main.replaceChildren(secEls.get(key)); vtIn(secEls.get(key)); paintChatBadges(); }
+    if (user) {
+      // 切り替えたら、ボタンの列が上に来る所まで戻す（下までスクロールしていても、新しい欄の頭から見える）
+      const top = jump.getBoundingClientRect().top + window.scrollY - (header.getBoundingClientRect().height || 44);
+      if (window.scrollY > top) window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+      if (same) window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+  memberGo = (key) => { go(key); return secEls.get(key); };
+  go(MEMBER_SEC.key);
   const payTop = sections.find((x) => x.key === "money").view.top;
   const ask = pushBanner();
   const root = h("div", { class: "shell single" }, header, h("div", { class: "page" }, title, status, ask.el, summary.el, payTop, jump, main));
 
   // スクロール位置に合わせて、上部のボタンの選択状態とナビゲーションバーの表示を変える
-  const onScroll = () => {
-    header.classList.toggle("scrolled", window.scrollY > 44);
-    let current = sections[0].key;
-    for (const sec of sections) {
-      const el = document.getElementById(`sec-${sec.key}`);
-      if (el && el.getBoundingClientRect().top < 160) current = sec.key;
-    }
-    // 一番下まで来たら（それ以上スクロールできないので）最後の欄を選択中にする
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = sections[sections.length - 1].key;
-    for (const b of jump.querySelectorAll("button")) b.setAttribute("aria-selected", String(b.dataset.jump === current));
-  };
+  const onScroll = () => { header.classList.toggle("scrolled", window.scrollY > 44); };
   window.addEventListener("scroll", onScroll, { passive: true });
   requestAnimationFrame(onScroll);
 
@@ -18408,9 +18536,11 @@ function buildMemberPageShell() {
       ask.update();
       chip?.paint();
       summary.update();
-      sections.forEach((sec) => sec.view.update());
+      // v107 出している欄と、上の集金の帯（出欠の欄の一部）だけ描き直す。見ていないチャットを既読にしない
+      sections.forEach((sec) => { if (sec.key === MEMBER_SEC.key || sec.key === "money") sec.view.update(); });
       paintSheet();
     },
+    partial(kinds) { const sec = sections.find((x) => x.key === MEMBER_SEC.key); if (sec?.key === "chat" && kinds.has("chat")) sec.view.update(); },
   };
 }
 
@@ -18436,7 +18566,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v106"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v107"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
@@ -18486,6 +18616,7 @@ function render(kinds) {
     for (const open of [S.sheet, deskSideCurrent]) { // 小窓と、PC の右の欄
       if (open && ((kinds.has("loc") && open.key === "map") || ((kinds.has("quiz") || kinds.has("game")) && open.key === "quiz") || (kinds.has("chat") && open.key === "chat"))) open.view.update();
     }
+    shell.partial?.(kinds); // v107 タブ・欄に置いたクイズ・チャット
     if (kinds.has("game")) paintGameLive();
     if (kinds.has("chat")) paintChatBadges();
     if (kinds.has("quiz")) paintQuizLive();
