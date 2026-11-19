@@ -258,7 +258,7 @@ const S = {
   stats: null,               // ポイントの合計 stats/points（参加者は履歴を全部は読まず、合計はここから出す）
   feedRaw: {},               // 参加者：最近のお知らせ・ポイント（自分に関係するものだけ annSrc / logSrc に入れる）
   annLimit: 50,              // 参加者が読み込むお知らせの件数（「過去の分を読み込む」で増える）
-  logLimit: 150,             // 参加者が読み込むポイント履歴の件数
+  logLimit: 80,              // 参加者が読み込むポイント履歴の件数（v110 150 → 80。合計は stats から読むので、履歴は表示の分だけでよい）
   meta: {},                  // クエリごとの fromCache / hasPendingWrites
   listenErr: {},             // v96 受け取りでエラーになったクエリ（設定の「受信の確認」に出す）
   tab: "home",
@@ -284,26 +284,35 @@ if (USE_EMULATOR) window.__S = S; // テスト用
 //   quiz : クイズの進行・解答（クイズの画面だけ）
 const RENDER_KIND = { msgRecent: "chat", dmRecent: "chat", chatOpen: "chat", locations: "loc", mapPins: "loc", live: "quiz", quizAnswers: "quiz", quizSabo: "quiz", quizBets: "quiz", games: "game", gameSecrets: "game", gameActs: "game", gameLobbies: "game", playLogs: "game" };
 
+// テスト用（エミュレーターのときだけ）：届いたデータの件数（＝読み取りの回数）と、描き直しの回数・時間を数える
+const PERF = USE_EMULATOR ? (window.__perf = { reads: {}, renders: {}, renderMs: 0 }) : null;
 function listen(key, ref, onData) {
   if (subs.has(key)) return;
   const unsub = onSnapshot(
     ref,
     { includeMetadataChanges: true },
     (snap) => {
+      if (PERF && !snap.metadata.fromCache) { const n = typeof snap.docChanges === "function" ? snap.docChanges().length : 1; if (n) PERF.reads[key] = (PERF.reads[key] ?? 0) + n; }
       const meta = { cache: snap.metadata.fromCache, pending: snap.metadata.hasPendingWrites };
       const prev = S.meta[key];
       S.meta[key] = meta;
       // 中身も通信状態も変わっていない通知（メタデータだけの通知）は描き直さない
       const changed = typeof snap.docChanges === "function" ? snap.docChanges({ includeMetadataChanges: false }).length > 0 : true;
-      const metaChanged = !prev || prev.cache !== meta.cache || prev.pending !== meta.pending;
+      const cacheChanged = !prev || prev.cache !== meta.cache;
+      const metaChanged = cacheChanged || prev.pending !== meta.pending;
       if (!changed && !metaChanged && prev) return;
-      // 中身は同じで「端末の保存分 → サーバーで確認済み」に変わっただけなら、上の通信状態の表示だけ直す
+      // 中身は同じで「端末の保存分 → サーバーで確認済み」「送信中 → 送信済み」に変わっただけなら、上の通信状態の表示だけ直す
       // （起動直後は受信の数だけこれが届くので、毎回すべて描き直すと重い）
-      if (!changed && prev && prev.pending === meta.pending) { onData(snap); scheduleRender("status"); return; }
+      if (!changed && prev) { onData(snap); scheduleRender("status"); return; }
       DATA_VER++;
       delete S.listenErr[key];
       onData(snap);
-      scheduleRender(metaChanged ? "all" : RENDER_KIND[key] ?? "all");
+      // v110 自分の書き込みで「送信中」になっただけでは画面全体を描き直さない（ゲームの進行で管理者が書くたびに全体を描き直して重かった）。
+      // 全体を描き直すのは、はじめて届いたとき・電波の状態（端末の保存分かどうか）が変わったときと、種類を決めていないデータだけ。
+      // ただしゲーム・チャットなど描く範囲が決まっているデータは、2回目からはその範囲と通信状態の表示だけにする
+      // （「新しい10件」の受け取りは、1件消えると「端末の保存分 → サーバーで補った分」と2回届くため）
+      if (cacheChanged && (!prev || !RENDER_KIND[key])) scheduleRender("all");
+      else { scheduleRender(RENDER_KIND[key] ?? "all"); if (metaChanged) scheduleRender("status"); }
     },
     (err) => {
       console.warn(`[${key}]`, err.code, err.message);
@@ -591,7 +600,7 @@ function listenRecent(uid) {
 function loadOlder() {
   const uid = S.user.uid;
   S.annLimit += 50;
-  S.logLimit += 150;
+  S.logLimit += 80;
   unlisten("annRecent");
   unlisten("logRecent");
   listenRecent(uid);
@@ -684,7 +693,7 @@ function resetProfileData() {
   Object.assign(S, {
     me: undefined, config: { title: APP_TITLE },
     members: new Map(), sets: new Map(), teams: new Map(), memberships: new Map(), memSrc: {}, acks: new Map(), notes: new Map(), locations: new Map(), locGroups: new Map(), ptQrs: new Map(), ptClaims: new Map(), attrDefs: new Map(), memberAttrs: new Map(), personFields: new Map(), personInfo: new Map(),
-    annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 150,
+    annSrc: {}, logSrc: {}, meta: {}, tab: "home", stats: null, feedRaw: {}, annLimit: 50, logLimit: 80,
     quizzes: new Map(), pwChangedIds: null, live: null, quizAnswers: new Map(), quizSabo: new Map(), quizBets: new Map(),
     lobbySrc: {}, msgSrc: {}, lobbyMembers: null, lobbyAnnRaw: null, polls: new Map(), votes: new Map(), pollTally: new Map(), payments: new Map(), payReports: new Map(), expenses: new Map(), extMembers: new Map(), extExpenses: new Map(), videos: new Map(), archives: new Map(), allocs: new Map(), allocCfg: null, futsal: null, matches: new Map(), pollReqs: new Map(), checklists: new Map(), checks: new Map(), checkSrc: {}, mapPins: new Map(), msgRecent: new Map(), chatMsgs: new Map(),
   });
@@ -2435,7 +2444,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v109"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v110"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -11211,8 +11220,12 @@ const GSPEAK = { on: false, said: new Map() }; // 読み上げ（司会の画面
 const GBUSY = new Set(); // 進めている最中のゲーム
 const GDONE = new Map(); // 全員そろった時刻（自動の司会で、最後の人が選び直せるよう少し待つ）
 
+// v110 参加者は、新しい10件だけを受け取る（終わったゲームが残っていても、起動のたびに全部は読まない）。
+// 参加者の画面が使うのは「自分が入っている進行中か6時間以内のゲーム」と「観戦できる進行中のゲーム」だけ。
+// 10件より前に始めたゲームが、まだ進行中のことはまずない（並行で遊べるのは数件まで）。管理者はすべて受け取る
+const G_RECENT = 10;
 function listenGames(uid) {
-  listen("games", C("games"), (s) => { if (s) S.games = demoMix(toMap(s), "games"); });
+  listen("games", uid ? query(C("games"), orderBy("no", "desc"), limit(G_RECENT)) : C("games"), (s) => { if (s) S.games = demoMix(toMap(s), "games"); });
   listen("gameLobbies", C("gameLobbies"), (s) => { if (s) S.gameLobbies = toMap(s); });
   listen("gameSecrets", uid ? query(C("gameSecrets"), where("uid", "==", uid)) : C("gameSecrets"), (s) => { if (s) S.gameSecrets = demoMix(toMap(s), "secrets"); });
   // 管理者の端末は、操作が届いたらすぐ進める（トランプは1秒待たずに反映する）
@@ -15016,11 +15029,16 @@ function rlAtLand(g, sp) {
 }
 // v107 賭けの間、だれが「準備OK」かを全員の画面に出す。参加者はほかの人の操作（gameActs）を読めないので、
 // 管理者の端末が OK の人の一覧を games の rlOk に書く（同じ内容は書き直さない）
+// v110 書き写しは1つのゲームにつき1秒に1回まで（20人が次々に OK を押すたびに書くと、その度に全員の端末へ届いて読み取りが増える）。
+// 間に入った変更は、1秒ごとの自動の司会（gameAutoTick）でまとめて書く。進行は管理者の端末が操作を直接見て決めるので、遅れても進み方は変わらない
+const SYNC_AT = new Map();
+const syncSoon = (k) => { const now = Date.now(); if (now - (SYNC_AT.get(k) ?? 0) < 900) return false; SYNC_AT.set(k, now); return true; };
 const RL_OK = new Map();
 function rlSyncOk(g) {
   const r = g.rl?.round, u = g.actors.filter((x) => rlParseBets(cardAct(g, "b", x, `r${r}`))?.ready);
   const sig = `${r}:${u.join()}`;
   if ((g.rlOk?.r === r && (g.rlOk?.u ?? []).join() === u.join()) || RL_OK.get(g.id) === sig) return;
+  if (!g.demo && !syncSoon(`ok:${g.id}`)) return;
   RL_OK.set(g.id, sig);
   const want = { r, u };
   if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), rlOk: want });
@@ -16617,6 +16635,7 @@ function numSyncBoard(g) {
   const want = Object.fromEntries(Object.entries(numPicksAdmin(g)).map(([u, v]) => [u, String(v)]));
   const sig = `${g.actKey}:${JSON.stringify(Object.entries(want).sort())}`;
   if (JSON.stringify(Object.entries(want).sort()) === JSON.stringify(Object.entries(g.board ?? {}).sort()) || NUM_BD.get(g.id) === sig) return;
+  if (!g.demo && !syncSoon(`bd:${g.id}`)) return; // v110 1秒に1回まで（上の rlSyncOk と同じ）
   NUM_BD.set(g.id, sig);
   if (g.demo) return demoPut("games", g.id, { ...S.games.get(g.id), board: want });
   updateDoc(D("games", g.id), { board: want }).catch((e) => { NUM_BD.delete(g.id); console.warn("num board", e); });
@@ -17035,7 +17054,21 @@ function gameAutoArchive() {
     GARCH.add(g.id);
     setDoc(D("playLogs", `game_${g.id}`), gameArchive(g)).catch((e) => { console.warn("archive", e); GARCH.delete(g.id); });
   }
+  // v110 終わって24時間たったゲームは、記録（playLogs）に残っていれば片付ける（役職・カード・操作のデータも一緒に消す）。
+  // 残しておくと、参加者の端末が起動のたびに自分の役職・操作の分を読み込み、遊ぶほど読み取りが増えていくため。
+  // 終わったゲームの中身は「履歴」でいつでも見られる。開いているゲームと、役職・操作をまだ受け取っていないときは片付けない
+  if (!S.meta.gameSecrets || !S.meta.gameActs) return;
+  let n = 0;
+  for (const g of S.games.values()) {
+    if (n >= 3) break;
+    if (g.demo || gLive(g) || GDEL.has(g.id) || GA.open === g.id || !S.playLogs.has(`game_${g.id}`) || nowS() - gEndAt(g) < GAME_KEEP_MS) continue;
+    GDEL.add(g.id); n++;
+    deleteGame(g).catch((e) => { console.warn("cleanup", e); GDEL.delete(g.id); });
+  }
 }
+const GAME_KEEP_MS = 24 * 3600000, GDEL = new Set();
+// 終わった時刻の目安（最後の記録の時刻。記録がなければ始めた時刻）
+const gEndAt = (g) => Math.max(gStart(g), ...(g.log ?? []).map((x) => Number(x?.t) || 0));
 setInterval(gameAutoArchive, 3000);
 
 // ---- 記録の読み方
@@ -18371,6 +18404,7 @@ function scheduleRender(kind = "all") {
     renderQueued = false;
     const kinds = renderKinds;
     renderKinds = new Set();
+    if (PERF) { const t0 = performance.now(); render(kinds); PERF.renderMs += performance.now() - t0; const k = kinds.has("all") ? "all" : [...kinds].sort().join("+"); PERF.renders[k] = (PERF.renders[k] ?? 0) + 1; return; }
     render(kinds);
   });
 }
@@ -18721,7 +18755,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v109"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v110"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;
