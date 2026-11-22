@@ -4758,3 +4758,8 @@ html, body { touch-action: manipulation; }
 /* 申請ボタンが出ている間は、本文の最後までボタンの上にスクロールできるように下の余白を広げる */
 body:has(> .lobby-fab) .shell.single .page { padding-bottom: calc(230px + env(safe-area-inset-bottom)); }
 body:has(> .lobby-fab.up) .shell.single .page { padding-bottom: calc(290px + env(safe-area-inset-bottom)); }
+
+/* v111 大小：賭けを締め切ったあと、サイコロの画面で OK を押して振る */
+.rl-x.go .rl-okrow { margin-top: 12px; }
+.cx-acts.rl-go-acts { margin-top: 10px; }
+.rl-x.go .rl-me { margin-top: 12px; }
