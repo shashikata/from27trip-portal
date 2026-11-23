@@ -367,6 +367,18 @@ await test("参加者の情報：参加者は本人の分も含めて読めな�
   await assertFails(deleteDoc(doc(alice(), "personInfo/alice")));
 });
 
+// ----- 参加者のカラー（動画の編集用。全旅行で共通）
+await test("参加者のカラー：管理者だけ書ける・ログインしている人は読める", async () => {
+  await assertSucceeds(setDoc(doc(admin(), "personColors/all"), { c: { alice: "#E5484D", bob: "#0090FF" } }));
+  await assertSucceeds(getDoc(doc(alice(), "personColors/all")));
+  await assertSucceeds(getDoc(doc(carol(), "personColors/all")));   // ほかの旅行の人も同じ色を使う
+  await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "personColors/all")));
+  await assertFails(setDoc(doc(alice(), "personColors/all"), { c: { alice: "#000000" } }, { merge: true }));
+  await assertFails(updateDoc(doc(bob(), "personColors/all"), { "c.bob": "#FFFFFF" }));
+  await assertFails(deleteDoc(doc(alice(), "personColors/all")));
+  await assertFails(setDoc(doc(outsider(), "personColors/x"), { c: {} }));
+});
+
 // ----- 人ごとに送ったお知らせの内容（暗証番号など）
 await test("人ごとの内容：本人だけ読める・参加者は書けない", async () => {
   await env.withSecurityRulesDisabled(async (ctx) => {

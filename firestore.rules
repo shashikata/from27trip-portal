@@ -24,6 +24,7 @@ rules_version = '2';
 //   旅行の一覧                : /profiles/{pid}（root は1つ目の旅行を表す）
 //   アカウントの一覧          : /accounts/{loginId}（旅行をまたいでアカウントを使い回すため）
 //   参加者の情報（全旅行で共通）: /personFields/{id}（項目）, /personInfo/{uid}（住所・大学など）
+//   参加者のカラー（全旅行で共通）: /personColors/all { c: { uid: "#RRGGBB" } }（全員が読める・管理者だけ書ける）
 //
 // 新しいコレクションを足したときは、下の READ_ALL か各ルールに追加しないと、参加者は読み書きできない（管理者はできる）
 service cloud.firestore {
@@ -309,7 +310,7 @@ service cloud.firestore {
 
     // 1つ目の旅行のデータ（ルート直下）。旅行のデータではない一覧（下の管理者だけのもの）は除く
     function rootTrip(coll) {
-      return !(coll in ['profiles', 'accounts', 'personFields', 'personInfo']);
+      return !(coll in ['profiles', 'accounts', 'personFields', 'personInfo', 'personColors']);
     }
     match /{coll}/{docId} {
       allow get: if rootTrip(coll) && (canGet('root', coll) || (coll == 'members' && signedIn() && docId == me()));
@@ -329,6 +330,12 @@ service cloud.firestore {
     }
     match /personInfo/{uid} {
       allow read, write: if isAdmin();
+    }
+
+    // 参加者のカラー（動画の編集用。全旅行で共通）：ログインしていれば読める（uid と色だけで、名前などは入らない）。書けるのは管理者だけ
+    match /personColors/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
     }
   }
 }

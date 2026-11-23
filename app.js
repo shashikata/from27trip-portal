@@ -223,6 +223,7 @@ const S = {
   attrDefs: new Map(),       // 管理者：参加者の属性の項目 attrDefs/{id} { name, options: [..], order }
   memberAttrs: new Map(),    // 管理者：参加者ごとの属性 memberAttrs/{uid} { values: { 項目id: 値 } }
   personFields: new Map(),   // 管理者：参加者の情報の項目 personFields/{id}（ルート直下。全旅行で共通）
+  pcolors: {},              // v112 参加者のカラー（動画の編集用）personColors/all { c: { uid: "#RRGGBB" } }。全旅行で共通・全員が読める
   personInfo: new Map(),     // 管理者：参加者の情報（住所・大学など） personInfo/{uid}（ルート直下。全旅行で共通）
   futsal: null,              // フットサルチーム用の旅行：config/futsal（選手名簿・役割）
   matches: new Map(),        // フットサルの試合 matches/{id}（タイマー・得点・シュートなど。参加者には公開したものだけ）
@@ -412,6 +413,7 @@ function startAdmin() {
   // 参加者の情報（住所・大学など）は旅行をまたいで共通なので、どの旅行でもルート直下を見る
   listen("personFields", collection(db, "personFields"), (s) => { if (s) S.personFields = toMap(s); });
   listen("personInfo", collection(db, "personInfo"), (s) => { if (s) S.personInfo = toMap(s); });
+  listenColors();
   listen("ptClaims", C("ptClaims"), (s) => { if (s) S.ptClaims = toMap(s); });
   // パスワードを本人が変えた記録（印刷に使う。変えた人の分だけなので少ない）
   listen("pwChanged", C("pwChanged"), (s) => { if (s) S.pwChangedIds = new Set(s.docs.map((d) => d.id)); });
@@ -519,6 +521,7 @@ function startMemberData(uid) {
     syncLocationSharing();
   });
   listen("members", C("members"), (s) => { if (s) S.members = toMap(s); });
+  listenColors();
   // セキュリティルールは「フィルタ」ではないので、読める範囲に合わせてクエリを分ける
   listen("sets", published("teamSets"), (s) => { S.sets = toMap(s); });
   listen("teams", published("teams"), (s) => { S.teams = toMap(s); });
@@ -932,6 +935,52 @@ const myTeamIds = (uid) => membershipsOf((m) => m.uid === uid && S.teams.has(m.t
 const DEMO = { games: new Map(), secrets: new Map(), acts: new Map(), names: {}, wait: new Map() };
 const isDemo = (gid) => typeof gid === "string" && gid.startsWith("demo-");
 const demoMix = (m, kind) => { for (const [k, v] of DEMO[kind]) m.set(k, v); return m; };
+// ---- v112 参加者のカラー（動画の編集用）
+// personColors/all { c: { uid: "#RRGGBB" } }（ルート直下。uid は旅行をまたいで同じなので、どの旅行でも同じ色になる）
+// 管理者が確定前ページの「参加者」で決める。全員の画面のアイコン・名前の横に出す
+const PC_DOC = () => doc(db, "personColors", "all");
+function listenColors() {
+  listen("pcolors", PC_DOC(), (s, err) => { if (err || !s) return; S.pcolors = s.exists() ? (s.data().c ?? {}) : {}; DATA_VER++; });
+}
+// 黒い画面でも、動画のテロップでも見分けやすい24色。隣どうしが似ないように、色相をとばして並べた
+const PC_PALETTE = ["#E5484D", "#0090FF", "#FFC53D", "#46A758", "#8E4EC6", "#00A2C7", "#F76B15", "#D6409F",
+  "#BDEE63", "#3E63DD", "#12A594", "#E93D82", "#FFE629", "#6E56CF", "#86EAD4", "#AD7F58",
+  "#7CE2FE", "#AB4ABA", "#29A383", "#FF977D", "#5B5BD6", "#C2A499", "#978365", "#F5A9D0"];
+const PC_RE = /^#[0-9A-F]{6}$/;
+const pColor = (uid) => { const c = S.pcolors?.[uid]; return typeof c === "string" && PC_RE.test(c) ? c : null; };
+// 色の上に乗せる文字は、明るい色なら黒・暗い色なら白（相対輝度 WCAG の式）
+function pcFg(hex) {
+  const ch = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  const L = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+  return L > 0.19 ? "#111114" : "#FFFFFF"; // 白・黒それぞれとのコントラスト比が等しくなる輝度（約0.19）で分ける
+}
+const pcVars = (uid) => { const c = pColor(uid); return c ? `--pc:${c};--pc-fg:${pcFg(c)}` : null; };
+// 頭文字のアイコン（ゲームの席など）に色を付けるための class と style
+const pcAv = (uid, base) => ({ class: pColor(uid) ? `${base} pc` : base, style: pcVars(uid) });
+// 名前の横に置く小さな丸
+const pDot = (uid) => (pColor(uid) ? h("i", { class: "pc-dot", style: pcVars(uid), "aria-hidden": "true" }) : null);
+// 24色を使い切ったら、色相を黄金角ずつずらして作る（重ならない）
+function pcExtra(n) {
+  const hue = (n * 137.508) % 360, s = 0.72, l = 0.58;
+  const f = (k) => { const a = s * Math.min(l, 1 - l); const kk = (k + hue / 30) % 12; return l - a * Math.max(-1, Math.min(kk - 3, 9 - kk, 1)); };
+  return `#${[f(0), f(8), f(4)].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+// 色のない人に、まだ使っていない色を ID の順に配る。all=true なら全員を配り直す
+function pcAutoAssign(uids, all = false) {
+  // 配り直すときも、この一覧にいない人（ほかの旅行だけの人）の色は使わない
+  const mine = new Set(uids);
+  const used = new Set(Object.keys(S.pcolors ?? {}).filter((u) => !(all && mine.has(u))).map(pColor).filter(Boolean));
+  const out = {};
+  let extra = 0;
+  for (const u of uids) {
+    if (!all && pColor(u)) continue;
+    let c = PC_PALETTE.find((x) => !used.has(x));
+    while (!c) { const x = pcExtra(extra++); if (!used.has(x)) c = x; }
+    used.add(c); out[u] = c;
+  }
+  return out;
+}
+
 const memberName = (uid) => S.members.get(uid)?.name ?? DEMO.names[uid] ?? gameNameOf(uid) ?? extMemberName(uid) ?? "（削除済み）";
 // v99 管理者もゲームで遊べる。管理者は参加者の名簿にいないので、名前はゲームに書いておく（games.names）
 function gameNameOf(uid) {
@@ -2419,6 +2468,8 @@ function settingsView({ withTitle = true } = {}) {
   } else paintSwitch(null);
   const pushBox = pushSettingsBox();
   const pushAdmin = S.isAdmin ? adminPushSetup() : null;
+  // v112 参加者：自分のカラー（動画の編集用。管理者が決める）
+  const myColor = h("div", { class: "cell", hidden: true });
   const el = h("div", null,
     withTitle ? largeTitle("設定") : null,
     switchBox,
@@ -2428,6 +2479,7 @@ function settingsView({ withTitle = true } = {}) {
     group(null, [
       cell("ID", emailToId(S.user.email)),
       cell("名前", S.isAdmin ? adminName(S.user.email) : S.me?.name ?? ""),
+      myColor,
     ]),
     adminBox,
     h("form", {
@@ -2444,7 +2496,7 @@ function settingsView({ withTitle = true } = {}) {
     }, group("パスワード", [field("現在", cur), field("新規", next), btn], "変更したパスワードは管理者にもわかりません。忘れないようにしてください。")),
     isOwnerAdmin() ? group("開発者向け", h("button", { class: "cell cell-button", onclick: openDevPage }, icon("list"), "ルールテストとアプリの構成を見る"), `${adminName(idToEmail(OWNER_ADMIN || "admin1"))}だけに表示しています。`) : null,
     diag.el,
-    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v111"),
+    group(null, h("button", { class: "cell cell-button destructive", onclick: () => { if (confirm("ログアウトしますか？")) signOut(auth); } }, "ログアウト"), "バージョン v112"),
   );
   let built = false;
   const locGroupsBox = locGroupsEditor();
@@ -2453,6 +2505,9 @@ function settingsView({ withTitle = true } = {}) {
     update() {
       diag.update();
       profiles.update();
+      const mc = S.isAdmin ? null : pColor(S.user.uid);
+      myColor.hidden = !mc;
+      if (mc && myColor.dataset.c !== mc) { myColor.dataset.c = mc; setKids(myColor, h("div", { class: "cell-main" }, "あなたのカラー"), h("div", { class: "cell-detail" }, pDot(S.user.uid), h("span", { class: "mono" }, mc))); }
       locGroupsBox.update();
       pushBox.update();
       pushAdmin?.update();
@@ -2864,6 +2919,7 @@ function adminMembers({ withTitle = true } = {}) {
     h("div", { class: "group-footer" }, "名前を書き換えたら「保存」を押してください。"));
   const created = [];
   const info = personInfoSection();
+  const pcs = pcSection();
 
   // 別の旅行ですでに作った ID なら、新しく作らずにこの旅行へ追加する（パスワードは前と同じ）
   async function createAccount(loginId, displayName, password) {
@@ -2946,6 +3002,7 @@ function adminMembers({ withTitle = true } = {}) {
     ], "この旅行の参加者全員分を印刷します。この機能を入れる前に作ったIDはパスワードの記録がないので、空欄（手書き用）になります。"),
     listEmpty,
     listGroup,
+    pcs.el,
     info.el,
   );
 
@@ -2976,6 +3033,7 @@ function adminMembers({ withTitle = true } = {}) {
       listEmpty.hidden = ms.length > 0;
       listGroup.hidden = ms.length === 0;
       info.update();
+      pcs.update(ms);
       keyedList(listBody, ms, (m) => {
         const nm = editableInput({ class: "plain", "aria-label": `${m.loginId} の名前` });
         const sub = h("div", { class: "cell-sub" });
@@ -3091,6 +3149,66 @@ function openPersonInfo(uid) {
 }
 
 // 管理者の参加者の画面に出す欄：項目の設定・一覧・CSV
+// v112 動画用のカラー（参加者の画面の一番下）。確定前ページで決める（確定前ページがない間は、旅行のページでも決められる）
+function pcSection() {
+  let open = null, sig = "";
+  const actions = h("div", { class: "group-body" });
+  const body = h("div", { class: "group-body" });
+  const foot = h("div", { class: "group-footer" });
+  const el = h("section", { class: "group pc-group" }, h("div", { class: "group-header" }, "動画用のカラー（全旅行で共通）"), actions, body, foot);
+  const save = (map, msg) => fire(setDoc(PC_DOC(), { c: map }, { merge: true }), msg);
+  const who = (c, me) => Object.keys(S.pcolors ?? {}).filter((u) => u !== me && pColor(u) === c);
+  const pick = (m, c) => {
+    const dup = who(c, m.id);
+    if (dup.length && !confirm(`${dup.map(memberName).join("・")}さんと同じ色です。${m.name}さんにも使いますか？`)) return;
+    open = null; sig = "";
+    save({ [m.id]: c }, `${m.name}さんの色を ${c} にしました`);
+  };
+  return {
+    el,
+    update(ms) {
+      const editable = S.isAdmin && (inLobby() || !S.profiles.has(LOBBY));
+      const now = JSON.stringify([editable, open, ms.map((m) => [m.id, m.name, m.loginId, pColor(m.id)]), Object.values(S.pcolors ?? {}).length]);
+      if (now === sig) return;
+      sig = now;
+      el.hidden = !ms.length;
+      const none = ms.filter((m) => !pColor(m.id));
+      const text = ["名前\tID\t色", ...ms.map((m) => `${m.name}\t${m.loginId}\t${pColor(m.id) ?? "（なし）"}`)].join("\n");
+      setKids(actions,
+        editable && none.length ? h("button", { class: "cell cell-button", onclick: () => save(pcAutoAssign(none.map((m) => m.id)), `${none.length}人に色を割り当てました`) }, icon("star"), `色のない人に自動で割り当てる（${none.length}人）`) : null,
+        editable && ms.length - none.length ? h("button", { class: "cell cell-button", onclick: () => {
+          if (!confirm(`この一覧の ${ms.length}人の色を、すべて割り当て直しますか？\n今の色は消えます（ほかの旅行だけにいる人の色は変わりません）。`)) return;
+          save(pcAutoAssign(ms.map((m) => m.id), true), "割り当て直しました");
+        } }, "全員を割り当て直す") : null,
+        h("button", { class: "cell cell-button", onclick: () => navigator.clipboard.writeText(text).then(() => toast("色コードの一覧をコピーしました")) }, icon("copy"), "色コードの一覧をコピー"),
+      );
+      setKids(body, ms.map((m) => {
+        const c = pColor(m.id);
+        const row = h("div", { class: "cell pc-row" },
+          h("span", { class: `pc-sw${c ? "" : " none"}`, style: pcVars(m.id), "aria-hidden": "true" }, [...(m.name || "?")][0]),
+          h("div", { class: "cell-main" }, m.name, h("div", { class: "cell-sub" }, m.loginId)),
+          h("span", { class: "mono pc-hex" }, c ?? "なし"),
+          editable ? h("button", { class: "text-btn", "aria-expanded": String(open === m.id), onclick: () => { open = open === m.id ? null : m.id; sig = ""; this.update(ms); } }, open === m.id ? "閉じる" : "変更") : null);
+        if (!editable || open !== m.id) return row;
+        const custom = h("input", { type: "color", value: (c ?? "#E5484D").toLowerCase(), "aria-label": `${m.name}さんの色を自由に選ぶ`,
+          onchange: (e) => pick(m, e.target.value.toUpperCase()) });
+        return [row, h("div", { class: "cell pc-pick" },
+          h("div", { class: "pc-grid" }, PC_PALETTE.map((x) => {
+            const by = who(x, m.id);
+            return h("button", { class: `pc-cand${x === c ? " on" : ""}${by.length ? " used" : ""}`, style: `--pc:${x};--pc-fg:${pcFg(x)}`, title: by.length ? `${x}（${by.map(memberName).join("・")}）` : x,
+              "aria-label": `${x}${by.length ? `（${by.map(memberName).join("・")}さんが使用中）` : ""}`, onclick: () => pick(m, x) }, by.length ? [...memberName(by[0])][0] : x === c ? "✓" : "");
+          })),
+          h("div", { class: "pc-pick-row" },
+            h("label", { class: "pc-custom" }, custom, "ほかの色"),
+            c ? h("button", { class: "text-btn destructive", onclick: () => { open = null; sig = ""; fire(updateDoc(PC_DOC(), { [`c.${m.id}`]: deleteField() }), "色を消しました"); } }, "色を消す") : null))];
+      }));
+      setKids(foot, editable
+        ? "色は ID ごとに1つで、どの旅行でも同じ色になります。参加者全員の画面のアイコン・名前の横に出ます。丸に頭文字が入っている色は、ほかの人が使っています。"
+        : "色は確定前ページの「参加者」で変えます。どの旅行でも同じ色です。");
+    },
+  };
+}
+
 function personInfoSection() {
   const defsBox = h("div");
   const presetBox = h("div", { class: "person-presets" });
@@ -9738,12 +9856,12 @@ function chatView() {
       }
       const mine = r.uid === S.user.uid;
       const d = r.at?.toDate ? r.at.toDate() : null;
-      const sig = `${r.text}|${r.image}|${d?.getTime()}|${mine}`;
+      const sig = `${r.text}|${r.image}|${d?.getTime()}|${mine}|${pColor(r.uid)}`;
       if (row.sig === sig) return;
       row.sig = sig;
       row.el.className = `chat-msg${mine ? " mine" : ""}${r.from ? " admin" : ""}`;
       setKids(row.el,
-        mine ? null : h("div", { class: "chat-name" }, senderName(r)),
+        mine ? null : h("div", { class: "chat-name" }, r.from ? null : pDot(r.uid), senderName(r)),
         r.image ? (() => {
           const img = h("img", { class: "chat-img", alt: "写真", onclick: () => { if (img.src) openLightbox(img.src); } });
           const box = h("div", { class: "chat-imgbox loading" }, img);
@@ -15068,7 +15186,7 @@ function rlOkRow(g, myReady = null) {
   if (myReady != null && g.actors.includes(me)) { if (myReady) okSet.add(me); else okSet.delete(me); }
   const n = g.actors.filter((x) => okSet.has(x)).length, all = g.actors.length;
   const pill = (u) => h("li", { class: `rl-ok-p${okSet.has(u) ? " ok" : ""}${u === me ? " me" : ""}` },
-    h("i", { "aria-hidden": "true" }, okSet.has(u) ? "✓" : "…"), h("span", null, memberName(u)));
+    h("i", { "aria-hidden": "true" }, okSet.has(u) ? "✓" : "…"), pDot(u), h("span", null, memberName(u)));
   const few = all <= 3, half = Math.ceil(all / 2);
   const L = few ? [] : g.actors.slice(0, half), R = few ? g.actors : g.actors.slice(half);
   return h("div", { class: `rl-okrow${few ? " few" : ""}${n === all ? " all" : ""}`, role: "status", "aria-label": `準備OK ${n} / ${all}人` },
@@ -15397,7 +15515,7 @@ function deathCutin(g, uids) {
         // 設定で「分けない」にしたときは、処刑も襲撃も同じ「DEAD・脱落しました」にする
         const ex = u !== g.lastDeath, self = u === me, cause = g.opts?.showCause !== false;
         return h("div", { class: `cx-death-one${self ? " self" : ""}` },
-          h("div", { class: "cx-death-av", "aria-hidden": "true" }, h("span", { class: "cx-death-ch" }, [...memberName(u)][0] ?? "?"), h("span", { class: "cx-death-x" }, "✕")),
+          h("div", { ...pcAv(u, "cx-death-av"), "aria-hidden": "true" }, h("span", { class: "cx-death-ch" }, [...memberName(u)][0] ?? "?"), h("span", { class: "cx-death-x" }, "✕")),
           h("b", { class: "cx-death-en" }, !cause ? "DEAD" : ex ? "EXECUTED" : "KILLED"),
           h("div", { class: "cx-death-nm" }, self ? "あなた" : `${memberName(u)}さん`),
           h("small", { class: "cx-death-why" }, !cause ? "脱落しました" : ex ? "投票で処刑されました" : "夜に人狼に襲われました"));
@@ -15451,7 +15569,7 @@ const cxFan = (cs, cls = "", zone = null, step = 300) => {
 // 自分のあとに座る順（自分の左隣から時計回り）
 const cxAfter = (list, me) => { const i = list.indexOf(me); return i < 0 ? [...list] : [...list.slice(i + 1), ...list.slice(0, i)]; };
 // ほかの人の席（丸い頭文字・名前・中身）
-const cxSeat = (u, cls, badge, ...kids) => h("div", { class: `cx-seat${cls}` }, h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?", badge ? h("span", { class: "cx-badge" }, badge) : null), h("b", { class: "cx-nm" }, memberName(u)), ...kids);
+const cxSeat = (u, cls, badge, ...kids) => h("div", { class: `cx-seat${cls}` }, h("div", pcAv(u, "cx-av"), [...memberName(u)][0] ?? "?", badge ? h("span", { class: "cx-badge" }, badge) : null), h("b", { class: "cx-nm" }, memberName(u)), ...kids);
 // 丸テーブル：薄い円の線の上に、自分の左隣から時計回りに席を並べる（自分は下の台）。top はディーラーなど
 function cxFelt(seats, center, top = null, sz = null) {
   const k = seats.length, bj = !!top;
@@ -15664,7 +15782,7 @@ function cardMemberBody(g) {
       const line = ks.length ? ks.map((k) => { const hd = st.hands[k]; return !bjFull(g, st, k) ? "?" : bjIsBJ(hd.cards, hd.split) ? "BJ" : hd.res ? BJ_RES_S[hd.res] : hd.surr ? "SURR" : `${bjTot(hd.cards, hd.split)}${hd.done && g.phase === "play" ? "✓" : ""}`; }).join("/") : seatMeta(u);
       const res = ks.length === 1 ? st.hands[ks[0]] : null;
       return withFx(h("div", { class: `cx-cs${seatCls(u)}`, role: "listitem", title: memberName(u) },
-        h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?"), h("b", { class: "cx-nm" }, memberName(u)),
+        h("div", pcAv(u, "cx-av"), [...memberName(u)][0] ?? "?"), h("b", { class: "cx-nm" }, memberName(u)),
         h("small", { class: `cx-cs-m${res?.res ? lateC : ""}`, ...(res?.res ? lateA : {}) }, line)), seatFx(u));
     })) : null;
     const seats = crowd ? [] : others.map((u) => {
@@ -16866,7 +16984,7 @@ function gxTop(g, close) {
     h("div", { class: "cx-bal cx-gname" }, h("span", null, g.title), h("small", null, G_EN[g.kind] ?? "GAME")), close);
 }
 // 席（丸い頭文字・名前）。tag を "button" にすると押して選べる
-const gSeat = (tag, u, cls, attrs, badge, ...kids) => h(tag, { class: `cx-seat${cls}`, ...attrs }, h("div", { class: "cx-av" }, [...memberName(u)][0] ?? "?", badge ? h("span", { class: "cx-badge" }, badge) : null), h("b", { class: "cx-nm" }, memberName(u)), ...kids);
+const gSeat = (tag, u, cls, attrs, badge, ...kids) => h(tag, { class: `cx-seat${cls}`, ...attrs }, h("div", pcAv(u, "cx-av"), [...memberName(u)][0] ?? "?", badge ? h("span", { class: "cx-badge" }, badge) : null), h("b", { class: "cx-nm" }, memberName(u)), ...kids);
 function partyMemberBody(g) {
   const uid = S.user.uid, sec = gSecret(g, uid), live = gLive(g);
   // v98 数字ならべ：新しい回が始まったら、自分の札をもう一度伏せる（新しい数字を「タップしてめくる」ように）
@@ -18792,7 +18910,7 @@ function recvCheck() {
       const qe = S.listenErr.live;
       const quizTxt = qe ? `受け取れません：${errText(qe)}` : S.live && S.live.phase !== "off" ? `進行中（${S.live.phase}）${S.isAdmin ? "" : quizActiveForMe(S.live) ? "・あなたは解答者" : "・あなたは解答者ではない"}` : "進行中のクイズはありません";
       const clk = !CLOCK.ready ? "確認中…" : CLOCK_SKEW ? `サーバーと ${Math.round(CLOCK_SKEW / 1000)} 秒ずれています（補正して使います）` : "合っています";
-      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v111"]];
+      const rows = [["開いているページ", `${pageName(S.pid)}${inLobby() ? "（確定前ページ）" : ""}`], ["ページの番号", S.pid ?? "-"], ["ゲームのデータ", gameTxt], ["いちばん新しいゲーム", newTxt], ["クイズ", quizTxt], ["この端末の時計", clk], ["バージョン", "v112"]];
       const s2 = JSON.stringify(rows);
       if (s2 === sig) return;
       sig = s2;

@@ -4763,3 +4763,23 @@ body:has(> .lobby-fab.up) .shell.single .page { padding-bottom: calc(290px + env
 .rl-x.go .rl-okrow { margin-top: 12px; }
 .cx-acts.rl-go-acts { margin-top: 10px; }
 .rl-x.go .rl-me { margin-top: 12px; }
+
+/* v112 参加者のカラー（動画の編集用）。--pc が色、--pc-fg がその上の文字の色 */
+.pc-dot { display: inline-block; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--pc); margin-right: 5px; vertical-align: .05em; box-shadow: 0 0 0 1px rgba(0, 0, 0, .35); }
+.cx-av.pc, .cx-seat .cx-av.pc, .cx-seat.turn .cx-av.pc { background: var(--pc); color: var(--pc-fg); }
+.cx-death-av.pc { background: var(--pc); }
+.cx-death-av.pc .cx-death-ch { color: var(--pc-fg); }
+.rl-ok-p .pc-dot { margin: 0 3px 0 1px; }
+.chat-name .pc-dot { margin-right: 4px; }
+.pc-row { gap: 12px; }
+.pc-sw { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700; background: var(--pc); color: var(--pc-fg); }
+.pc-sw.none { background: transparent; color: var(--label-2); box-shadow: inset 0 0 0 1.5px var(--label-3); }
+.pc-hex { flex: none; font-size: 13px; color: var(--label-2); }
+.pc-pick { display: block; padding-top: 4px; }
+.pc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 8px; }
+.pc-cand { aspect-ratio: 1; min-height: 38px; border: 0; border-radius: 50%; background: var(--pc); color: var(--pc-fg); font-size: 13px; font-weight: 700; cursor: pointer; padding: 0; }
+.pc-cand.used { opacity: .45; }
+.pc-cand.on { opacity: 1; box-shadow: 0 0 0 3px var(--cell), 0 0 0 5px var(--label); }
+.pc-pick-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.pc-custom { display: inline-flex; align-items: center; gap: 8px; color: var(--label); font-size: 15px; cursor: pointer; }
+.pc-custom input[type=color] { width: 44px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
